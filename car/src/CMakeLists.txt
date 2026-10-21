@@ -1,0 +1,11 @@
+add_library(app_core STATIC app/App.cpp app/Backend.cpp common/Config.cpp common/RunLogger.cpp)
+target_include_directories(app_core PUBLIC ../include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(app_core PUBLIC Threads::Threads ${OpenCV_LIBS})
+if(UCR_FAKE_HW)
+    target_compile_definitions(app_core PUBLIC UCR_FAKE_HW=1)
+else()
+    add_subdirectory(sensor/tof)
+    target_sources(app_core PRIVATE common/Logger.cpp hardware/Motor.cpp hardware/Servo.cpp
+        hardware/SH1106.cpp sensor/BNO055.cpp sensor/TOF.cpp)
+    target_link_libraries(app_core PRIVATE tof_backend i2c)
+endif()

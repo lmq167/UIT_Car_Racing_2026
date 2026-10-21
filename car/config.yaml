@@ -1,0 +1,37 @@
+%YAML:1.0
+---
+camera_pipeline: "nvarguscamerasrc sensor-mode=5 wbmode=0 ! video/x-raw(memory:NVMM),width=1080,height=720,framerate=60/1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,width=640,height=384,format=BGR ! appsink drop=true max-buffers=1"
+fake_source: ""
+camera_hz: 50
+sensor_hz: 50
+control_hz: 50
+odometry_hz: 20
+ui_hz: 5
+max_speed_cms: 20.0
+max_steering_deg: 20
+servo_trim_deg: 0
+servo_invert: 0
+tof_safety_enabled: 1
+tof_brake_mm: 250
+tof_timeout_ms: 500
+image_timeout_ms: 500
+imu_calibration_file: "../include/sensor/bno055_calibration.txt"
+imu_drift_ms: 500
+yaw_axis: 2
+pitch_axis: 1
+roll_axis: 2
+yaw_sign: 1.0
+pitch_sign: 1.0
+roll_sign: 1.0
+log_dir: "../runs"
+image_every_n: 5
+jpeg_quality: 85
+image_queue_size: 8
+speed_filter_size: 5
+enable_oled: 1
+enable_display: 1
+keyboard_speed_step_cms: 5.0
+keyboard_steering_step_deg: 5
+motor_keepalive_ms: 200
+fps_report_ms: 2000
+tof_names: [front, rear, left, right]
