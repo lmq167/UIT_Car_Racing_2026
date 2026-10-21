@@ -37,6 +37,13 @@ struct Config {
     int keyboard_steering_step_deg = 5;
     int motor_keepalive_ms = 200;
     int fps_report_ms = 2000;
+    int collect_fps = 3;
+    float collect_min_speed_cms = 1.0f;
+    float collect_duplicate_threshold = 0.8f;
+    int collect_confirm_ms = 2000;
+    // Thứ tự: nhanh, chậm, trái, phải, dừng, ghi, xóa, thoát, mục tiêu -/+, nhịp +/-.
+    std::vector<std::string> collect_keys{"w","s","a","d"," ","c","u","esc","[","]","+","-"};
+    std::string collect_luot_keys = "123456789";
     std::vector<std::string> tof_names{"front", "rear", "left", "right"};
     void Load(const std::string &path);
     int FrontSlot() const;

@@ -18,12 +18,23 @@ App::App(common::Config c,std::string mode,std::string path):c_(std::move(c)),mo
 App::~App() { RequestStop(); Wait(); }
 void App::Init() {
     logger_.reset(new common::RunLogger(c_,config_path_,mode_));
+    if(mode_=="collect") {
+        const char *display=std::getenv("DISPLAY"), *wayland=std::getenv("WAYLAND_DISPLAY");
+        if(!c_.enable_display || !((display&&*display)||(wayland&&*wayland)))
+            throw std::runtime_error("Thu ảnh cần cửa sổ nhận bàn phím; bật enable_display và mở phiên màn hình trước khi chạy");
+        collector_.reset(new common::CollectRecorder(c_,logger_->Directory(),std::cin,std::cout));
+    }
     backend_.Init();
 }
 void App::Launch(std::function<void()> work) {
     threads_.emplace_back([this,work]{
         try { work(); }
-        catch(const std::exception &e) { std::cerr << "Loi luong: " << e.what() << '\n'; failed_=true; RequestStop(); }
+        catch(const std::exception &e) {
+            failed_=true; RequestStop();
+            std::cerr << "Lỗi luồng: " << e.what() << '\n'
+                      << "Đã yêu cầu dừng xe. Kiểm tra nguồn, dây nối, quyền UART/I²C/camera và dung lượng ghi; "
+                         "xử lý lỗi trước khi khởi động phiên mới. Không tự thay cấu hình phần cứng.\n";
+        }
         catch(...) { failed_=true; RequestStop(); }
     });
 }
@@ -128,12 +139,20 @@ void App::UIThread() {
     const char *display=std::getenv("DISPLAY"), *wayland=std::getenv("WAYLAND_DISPLAY");
     const bool show=c_.enable_display && ((display&&*display)||(wayland&&*wayland));
     if(mode_=="manual"&&!show) std::cerr << "Khong co cua so ban phim; xe giu dung, Ctrl+C de thoat\n";
+    auto rendered=common::Clock::time_point{};
     while(running_) {
-        auto s=Snapshot(); backend_.Render(s,mode_);
+        auto s=Snapshot(); const auto now=common::Clock::now();
+        if(now-rendered>=std::chrono::duration<double>(1.0/c_.ui_hz)) { backend_.Render(s,mode_); rendered=now; }
         if(show) {
-            if(!s.observation.frame.empty()) cv::imshow("UCR",s.observation.frame);
-            const int key=cv::waitKey(1)&255;
-            if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
+            if(!s.observation.frame.empty()) cv::imshow("UCR",collector_ ? collector_->View(s) : s.observation.frame);
+            const int raw_key=cv::waitKey(1);
+            const int key=raw_key<0 ? -1 : raw_key&255;
+            if(collector_) {
+                auto cmd=s.requested;
+                if(collector_->Key(key,cmd)) { RequestStop(); break; }
+                { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.requested=cmd; }
+                collector_->Capture(s);
+            } else if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
             if(mode_=="manual") {
                 std::lock_guard<std::mutex> lock(shared_.mutex); auto &cmd=shared_.value.requested;
                 switch(key) {
@@ -148,7 +167,7 @@ void App::UIThread() {
                 cmd.steeringDeg=std::clamp(cmd.steeringDeg,-c_.max_steering_deg,c_.max_steering_deg);
             }
         }
-        Sleep(c_.ui_hz);
+        Sleep(collector_ ? std::max(20,c_.control_hz) : c_.ui_hz);
     }
     if(show) cv::destroyAllWindows();
 }

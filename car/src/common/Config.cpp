@@ -55,6 +55,25 @@ void Config::Load(const std::string &path) {
     read("keyboard_steering_step_deg", keyboard_steering_step_deg);
     read("motor_keepalive_ms", motor_keepalive_ms);
     read("fps_report_ms", fps_report_ms);
+    read("collect_fps", collect_fps);
+    read("collect_min_speed_cms", collect_min_speed_cms);
+    read("collect_duplicate_threshold", collect_duplicate_threshold);
+    read("collect_confirm_ms", collect_confirm_ms);
+    read("collect_keys", collect_keys);
+    read("collect_luot_keys", collect_luot_keys);
+    if(collect_fps<1 || collect_fps>10 || !std::isfinite(collect_min_speed_cms) || collect_min_speed_cms<=0 ||
+       !std::isfinite(collect_duplicate_threshold) || collect_duplicate_threshold<0 || collect_duplicate_threshold>255 ||
+       collect_confirm_ms<1 || collect_keys.size()!=12 || collect_luot_keys.size()!=9)
+        throw std::runtime_error("Cấu hình thu ảnh không hợp lệ: nhịp 1–10, tốc độ tối thiểu > 0, ngưỡng trùng 0–255");
+    std::string used;
+    auto add_key=[&](const std::string &key) {
+        const char ch=key=="esc" ? 27 : (key.size()==1 ? key[0] : 0);
+        if(!ch || (ch!=27 && (ch<32 || ch>126 || (ch>='A'&&ch<='Z'))) || used.find(ch)!=std::string::npos)
+            throw std::runtime_error("Bảng phím thu ảnh phải dùng ký tự ASCII thường, không trùng nhau");
+        used+=ch;
+    };
+    for(const auto &key:collect_keys) add_key(key);
+    for(char ch:collect_luot_keys) add_key(std::string(1,ch));
     read("tof_names", tof_names);
     if (tof_names.size()!=4 || FrontSlot()<0) throw std::runtime_error("tof_names phai co 4 slot va mot front");
     auto names=tof_names; std::sort(names.begin(),names.end());

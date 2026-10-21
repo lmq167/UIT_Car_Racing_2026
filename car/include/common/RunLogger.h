@@ -16,6 +16,7 @@ public:
     void Record(const Snapshot &s);
     void Close();
     bool Failed() const { return failed_.load(); }
+    const std::string &Directory() const { return directory_; }
 private:
     void ImageThread();
     Config c_;
@@ -29,5 +30,6 @@ private:
     bool done_=false;
     std::atomic<bool> failed_{false};
     std::uint64_t last_saved_=0;
+    bool collect_=false;
 };
 }

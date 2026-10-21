@@ -17,6 +17,9 @@ for ((i=0; i<${#args[@]}; ++i)); do
         args[i+1]=$config
         has_config=1
     fi
+    # Giữ nhóm tiền cảnh cho câu hỏi phiên thu, tránh SIGTTIN khi đọc terminal.
+    # main tự đăng ký lại SIGINT/SIGTERM ngay khi khởi động.
+    if [[ ${args[i]} == --mode && ${args[i+1]:-} == collect ]]; then set +m; fi
 done
 if [[ $has_config == 0 ]]; then args+=(--config "$config"); fi
 cd "$build" || exit 1
@@ -35,7 +38,7 @@ trap 'forward INT' INT
 trap 'forward TERM' TERM
 # Không dùng exec: tiến trình bao phải sống để dừng khi con bị SIGKILL.
 # Đặt lại SIGINT vốn có thể bị bash bỏ qua cho tác vụ nền không tương tác.
-( trap - INT TERM; exec "$build/main" "${args[@]}" ) &
+( trap - INT TERM; exec "$build/main" "${args[@]}" ) <&0 &
 child=$!
 status=0
 while :; do

@@ -30,6 +30,12 @@ private:
     bool motor_ready_=false, servo_ready_=false, oled_ready_=false;
     double yaw_=0, bias_=0;
     std::atomic<bool> stopping_{false};
+#ifdef UCR_FAKE_HW
+    double fake_position_=0;
+    float fake_speed_=0;
+    common::Clock::time_point fake_updated_=common::Clock::now();
+    void AdvanceFake();
+#endif
 #ifndef UCR_FAKE_HW
     Motor motor_;
     Servo servo_;

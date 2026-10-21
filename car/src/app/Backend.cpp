@@ -5,6 +5,13 @@
 #include <stdexcept>
 #include <thread>
 namespace app {
+#ifdef UCR_FAKE_HW
+void Backend::AdvanceFake() {
+    const auto now=common::Clock::now();
+    fake_position_+=fake_speed_*std::chrono::duration<double>(now-fake_updated_).count();
+    fake_updated_=now;
+}
+#endif
 namespace {
 double Axis(const BNO055::Vector3 &v, int axis) { return axis==0 ? v.x : axis==1 ? v.y : v.z; }
 void Check(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
@@ -84,7 +91,7 @@ bool Backend::Sensors(common::Observation &o, double dt) {
 bool Backend::Position(float &cm) {
     std::lock_guard<std::mutex> lock(motor_mutex_);
 #ifdef UCR_FAKE_HW
-    cm=0; return true;
+    AdvanceFake(); cm=static_cast<float>(fake_position_); return true;
 #else
     return motor_.GetPositionCm(&cm);
 #endif
@@ -98,11 +105,15 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
       if(stopping_) return;
       Check(servo_.SetAngle(c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg)),"Loi gui servo"); }
 #else
-    (void)c; (void)send_motor;
+    std::lock_guard<std::mutex> lock(motor_mutex_);
+    AdvanceFake(); if(!stopping_ && send_motor) fake_speed_=c.speedCmPerSec;
 #endif
 }
 void Backend::Stop() noexcept {
     stopping_=true;
+#ifdef UCR_FAKE_HW
+    try { std::lock_guard<std::mutex> lock(motor_mutex_); AdvanceFake(); fake_speed_=0; } catch(...) {}
+#endif
 #ifndef UCR_FAKE_HW
     try { std::lock_guard<std::mutex> lock(motor_mutex_); if(motor_ready_) motor_.SetSpeedCms(0); } catch(...) {}
     try { std::lock_guard<std::mutex> lock(i2c_mutex_); if(servo_ready_) servo_.SetAngle(c_.servo_trim_deg); } catch(...) {}

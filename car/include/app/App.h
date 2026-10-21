@@ -2,6 +2,7 @@
 #include "app/Backend.h"
 #include "app/IController.h"
 #include "common/RunLogger.h"
+#include "common/CollectRecorder.h"
 #include "common/SharedChannels.h"
 #include <atomic>
 #include <functional>
@@ -32,6 +33,7 @@ private:
     Backend backend_;
     common::SharedData shared_;
     std::unique_ptr<common::RunLogger> logger_;
+    std::unique_ptr<common::CollectRecorder> collector_;
     std::unique_ptr<IController> controller_;
     std::atomic<bool> running_{false}, failed_{false};
     std::vector<std::thread> threads_;
