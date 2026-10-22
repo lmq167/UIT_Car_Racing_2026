@@ -1,5 +1,8 @@
 #include "app/App.h"
 #include "app/Safety.h"
+#ifdef UCR_FAKE_HW
+#include "app/FakeHardware.h"
+#endif
 #include <opencv2/highgui.hpp>
 #include <algorithm>
 #include <cmath>
@@ -39,11 +42,17 @@ void App::Launch(std::function<void()> work) {
     });
 }
 void App::Start() {
+    started_=true;
     running_=true;
     try {
         Launch([this]{CameraThread();}); Launch([this]{SensorThread();}); Launch([this]{OdometryThread();});
         Launch([this]{ActuatorThread();}); Launch([this]{AutonomyThread();}); Launch([this]{UIThread();});
     } catch(...) { failed_=true; RequestStop(); throw; }
+}
+void App::SetController(std::unique_ptr<IController> controller) {
+    if(started_) throw std::logic_error("Chỉ được thay bộ điều khiển trước Start");
+    if(!controller) throw std::invalid_argument("Bộ điều khiển không được rỗng");
+    controller_=std::move(controller);
 }
 void App::RequestStop() noexcept { running_=false; backend_.Stop(); }
 void App::Wait() {
@@ -67,6 +76,9 @@ void App::CameraThread() {
 void App::SensorThread() {
     auto previous=common::Clock::now();
     while(running_) {
+#ifdef UCR_FAKE_HW
+        fake::Fault("sensor_throw");
+#endif
         auto now=common::Clock::now(); common::Observation o;
         backend_.Sensors(o,std::chrono::duration<double>(now-previous).count()); previous=now;
         { std::lock_guard<std::mutex> lock(shared_.mutex); auto &v=shared_.value.observation;
@@ -98,6 +110,9 @@ void App::OdometryThread() {
 void App::ActuatorThread() {
     common::ControlCommand previous; auto sent=common::Clock::time_point{};
     while(running_) {
+#ifdef UCR_FAKE_HW
+        fake::Fault("actuator_throw");
+#endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
         std::string state=mode_=="auto" ? "DUNG" : "LAI_TAY";
         cmd=SafeCommand(c_,s.observation,cmd,now,state);

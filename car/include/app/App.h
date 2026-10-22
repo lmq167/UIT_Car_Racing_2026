@@ -15,6 +15,8 @@ public:
     ~App();
     void Init();
     void Start();
+    // Chỉ thay bộ điều khiển trước lần Start đầu tiên; không được truyền con trỏ rỗng.
+    void SetController(std::unique_ptr<IController> controller);
     void RequestStop() noexcept;
     void Wait();
     bool IsRunning() const { return running_; }
@@ -37,5 +39,6 @@ private:
     std::unique_ptr<IController> controller_;
     std::atomic<bool> running_{false}, failed_{false};
     std::vector<std::thread> threads_;
+    std::atomic<bool> started_{false};
 };
 }

@@ -1,5 +1,9 @@
 #include "app/Backend.h"
+#ifdef UCR_FAKE_HW
+#include "app/FakeHardware.h"
+#endif
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -49,13 +53,21 @@ void Backend::Init() {
     if (c_.enable_oled) { Check(oled_.Init(), "Loi khoi tao OLED"); oled_ready_=true; }
     Check(camera_.open(c_.camera_pipeline,cv::CAP_GSTREAMER), "Loi mo camera");
 #else
+    if(motor_ready_) throw std::runtime_error("Không được lặp khởi tạo motor giả");
+    fake::TraceNumber("motor_init",1);
+    // Mô phỏng đúng thứ tự chuỗi khởi tạo driver; mỗi lệnh một dòng.
+    for(const char *cmd:{"N1 O K1","N1 O D1","N1 $008=0","N1 $002=330","N1 O M3","N1 $101=1","N1 O U C r"})
+        fake::Trace("motor_cfg",cmd);
     motor_ready_=servo_ready_=true;
+    Apply({});
     // Nguồn trống tạo ảnh kiểm tra; có thể dùng video hoặc mẫu tên ảnh %06d.jpg.
     if (!c_.fake_source.empty()) Check(camera_.open(c_.fake_source), "Loi mo nguon anh gia lap");
 #endif
 }
 bool Backend::EmergencyOpenAndStop() {
 #ifdef UCR_FAKE_HW
+    fake::TraceNumber("motor_speed",0);
+    fake::TraceNumber("servo_angle",c_.servo_trim_deg);
     std::cout << "Gia lap: motor 0, servo " << c_.servo_trim_deg << '\n'; return true;
 #else
     // Thử cả hai thiết bị ngay cả khi một cổng lỗi; không khởi tạo driver motor.
@@ -69,6 +81,7 @@ bool Backend::EmergencyOpenAndStop() {
 }
 bool Backend::Frame(cv::Mat &frame) {
 #ifdef UCR_FAKE_HW
+    if(fake::CameraGap()) return false;
     if(c_.fake_source.empty()) { frame=cv::Mat(384,640,CV_8UC3,cv::Scalar(40,60,40)); return true; }
 #endif
     return camera_.read(frame) && !frame.empty();
@@ -77,7 +90,17 @@ bool Backend::Sensors(common::Observation &o, double dt) {
     std::lock_guard<std::mutex> lock(i2c_mutex_);
 #ifdef UCR_FAKE_HW
     o.imu_valid=true;
-    for(auto &t:o.tof) { t.distanceMm=2000; t.valid=t.initialized=t.hasSample=true; t.updatedAt=common::Clock::now(); }
+    std::array<int,4> distances{{2000,2000,2000,2000}};
+    const auto now=fake::Millis();
+    const auto &rows=fake::TofScript();
+    // Trước dòng đầu tiên của kịch bản: chưa có mẫu đo, không coi là đường trống.
+    if(!fake::Env("UCR_FAKE_TOF_SCRIPT").empty()) distances.fill(-1);
+    for(const auto &row:rows) if(row.ms<=now) distances=row.mm;
+    for(std::size_t i=0;i<o.tof.size();++i) {
+        auto &t=o.tof[i]; t.distanceMm=distances[i]; t.initialized=true;
+        t.valid=t.hasSample=distances[i]>=0; t.rangeStatus=t.valid ? 0 : 255;
+        t.updatedAt=common::Clock::now();
+    }
 #else
     o.imu_valid=imu_.read(o.imu);
     Check(tof_.Read(o.tof,std::chrono::milliseconds(c_.tof_timeout_ms)), "Loi doc ToF");
@@ -106,13 +129,19 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
       Check(servo_.SetAngle(c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg)),"Loi gui servo"); }
 #else
     std::lock_guard<std::mutex> lock(motor_mutex_);
-    AdvanceFake(); if(!stopping_ && send_motor) fake_speed_=c.speedCmPerSec;
+    if(stopping_) return;
+    AdvanceFake();
+    if(send_motor) { fake_speed_=c.speedCmPerSec; fake::TraceNumber("motor_speed",fake_speed_); }
+    const int angle=c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg);
+    fake::TraceNumber("servo_angle",std::max(-60,std::min(60,angle)));
 #endif
 }
 void Backend::Stop() noexcept {
     stopping_=true;
 #ifdef UCR_FAKE_HW
-    try { std::lock_guard<std::mutex> lock(motor_mutex_); AdvanceFake(); fake_speed_=0; } catch(...) {}
+    try { std::lock_guard<std::mutex> lock(motor_mutex_); AdvanceFake(); fake_speed_=0;
+          if(motor_ready_) fake::TraceNumber("motor_speed",0);
+          if(servo_ready_) fake::TraceNumber("servo_angle",c_.servo_trim_deg); } catch(...) {}
 #endif
 #ifndef UCR_FAKE_HW
     try { std::lock_guard<std::mutex> lock(motor_mutex_); if(motor_ready_) motor_.SetSpeedCms(0); } catch(...) {}
