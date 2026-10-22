@@ -19,5 +19,8 @@ echo "OpenCV_DIR=$OpenCV_DIR"; grep -m1 "OpenCV_VERSION " "$OpenCV_DIR/OpenCVCon
 mkdir -p /tmp/build && cd /tmp/build
 echo "== cấu hình"; cmake -DUCR_FAKE_HW=ON -DBUILD_TESTING=ON /src
 echo "== biên dịch"; cmake --build . -- -j4
-echo "== ctest"; ctest --output-on-failure
+rc=0
+echo "== ctest (tất cả test)"; ctest --output-on-failure || rc=$?
+echo "== ctest (riêng nhãn acceptance: test chấp nhận)"; ctest -L acceptance --output-on-failure || rc=$?
+exit $rc
 '
