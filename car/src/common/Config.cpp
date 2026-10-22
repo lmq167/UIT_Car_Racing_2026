@@ -1,4 +1,5 @@
 #include "common/Config.h"
+#include "common/ConfigValue.h"
 #include <opencv2/core.hpp>
 #include <algorithm>
 #include <cmath>
@@ -9,17 +10,13 @@ void Config::Load(const std::string &path) {
     cv::FileStorage fs(path, cv::FileStorage::READ);
     if (!fs.isOpened()) throw std::runtime_error("Khong mo duoc config: " + path);
     auto read = [&](const char *name, auto &value) {
-        if (fs[name].empty()) std::cerr << "Thieu khoa, dung mac dinh: " << name << '\n';
-        else fs[name] >> value;
+        if (!HasConfigKey(fs.root(),name)) std::cerr << "Thieu khoa, dung mac dinh: " << name << '\n';
+        else ReadConfigValue(name,fs[name],value);
     };
     auto flag = [&](const char *name, int &value) {
         const auto node=fs[name];
-        if(node.empty()) { std::cerr << "Thieu khoa, dung mac dinh: " << name << '\n'; return; }
-        if(node.isString()) {
-            std::string text; node >> text;
-            if(text=="true" || text=="false") value=text=="true";
-            else throw std::runtime_error(std::string("Co khong hop le: ")+name);
-        } else { node >> value; if(value!=0&&value!=1) throw std::runtime_error("Co phai la 0/1 hoac true/false"); }
+        if(!HasConfigKey(fs.root(),name)) { std::cerr << "Thieu khoa, dung mac dinh: " << name << '\n'; return; }
+        ReadConfigFlag(name,node,value);
     };
     read("camera_pipeline", camera_pipeline);
     read("fake_source", fake_source);
@@ -83,10 +80,12 @@ void Config::Load(const std::string &path) {
         throw std::runtime_error("control_hz phai >= 10 Hz (thoi gian nghi kiem tra an toan <= 100 ms)");
     if (sensor_hz<10)
         throw std::runtime_error("sensor_hz phai >= 10 Hz (thoi gian nghi cap nhat ToF <= 100 ms)");
+    if (tof_timeout_ms<1 || tof_timeout_ms>500)
+        throw std::runtime_error("tof_timeout_ms="+std::to_string(tof_timeout_ms)+" ngoài khoảng hợp lệ [1, 500] ms");
     if (camera_hz<1 || odometry_hz<1 || ui_hz<1 ||
         !std::isfinite(max_speed_cms) || max_speed_cms<=0 || max_steering_deg<0 ||
         (servo_trim_deg < -60 || servo_trim_deg > 60) || max_steering_deg>60-std::abs(servo_trim_deg) ||
-        image_timeout_ms<1 || image_timeout_ms>500 || tof_timeout_ms<1 || tof_brake_mm<1 ||
+        image_timeout_ms<1 || image_timeout_ms>500 || tof_brake_mm<1 ||
         imu_drift_ms<1 || image_every_n<1 || jpeg_quality<1 || jpeg_quality>100 ||
         image_queue_size<1 || speed_filter_size<1 || motor_keepalive_ms<1 || motor_keepalive_ms>200 || fps_report_ms<1 ||
         yaw_axis<0 || yaw_axis>2 || pitch_axis<0 || pitch_axis>2 || roll_axis<0 || roll_axis>2 ||
