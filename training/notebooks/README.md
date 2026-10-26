@@ -6,6 +6,7 @@ Hai notebook tự chứa mã, dùng trên Google Colab với Python hiện đạ
 |---|---|---|
 | `road_train_car.ipynb` | Phân vùng mặt đường hoặc vạch làn, một hay nhiều lớp tiền cảnh | RGB, 96×160 (cao×rộng) |
 | `yolo_train_car.ipynb` | Phát hiện biển, vật cản, đèn, người theo lớp của dữ liệu | RGB, 320×320 |
+| `export_candidates.ipynb` | Xuất 6 ứng viên ONNX thử tốc độ; hướng dẫn chép nguồn mã và chạy CPU nằm đầu notebook | YOLO 320/416; đường đọc `INPUT_HW` từ notebook huấn luyện |
 
 ## Chạy thử bằng dữ liệu giả
 
