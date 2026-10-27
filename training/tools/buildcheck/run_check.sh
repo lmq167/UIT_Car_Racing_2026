@@ -11,35 +11,47 @@ done
 container_seconds=${UCR_CONTAINER_TIMEOUT:-$((build_seconds + test_seconds + 60))}
 [[ $container_seconds =~ ^[1-9][0-9]*$ ]] || { echo 'Giới hạn container không hợp lệ.' >&2; exit 2; }
 kind=${UCR_NATIVE:-container}
+profile=${UCR_PROFILE:-full}
+[[ $profile == quick || $profile == full ]] || { echo 'Chế độ không hợp lệ.' >&2; exit 2; }
+[[ $profile != quick || $kind == asan ]] || { echo 'Quick chỉ chạy ASan/UBSan.' >&2; exit 2; }
+jobs=${UCR_JOBS:-4}
+[[ $jobs =~ ^[1-9][0-9]{0,3}$ ]] || { echo 'Số job không hợp lệ.' >&2; exit 2; }
+(( jobs <= $(nproc) )) || { echo 'Số job vượt số nhân CPU.' >&2; exit 2; }
 if [[ $kind == container && ${UCR_IN_CONTAINER:-0} != 1 ]]; then
     image=${2:-ucr-jetson-buildcheck:opencv4.1.1}
     name="ucr-buildcheck-$$-$(date +%s)"
     cleanup() { timeout -k 2s 15s docker rm -f "$name" >/dev/null 2>&1 || true; }
     trap cleanup EXIT
     trap 'exit 3' HUP INT TERM
+    # Giữ build ngoài nguồn; chạy bằng UID/GID hiện tại để không tạo file của root.
+    build=${UCR_CONTAINER_BUILD_DIR:-$HOME/ucr_build_container}
+    mkdir -p "$build" || exit 2
+    build=$(cd "$build" && pwd)
     echo 'UCR_STEP container'
     rc=0
     timeout -k 5s "${container_seconds}s" docker run --pull=never --rm --name "$name" \
+        --user "$(id -u):$(id -g)" -v "$build:/build" \
         -v "$src:/src:ro" -v "$(cd "$(dirname "$0")" && pwd)/run_check.sh:/runner.sh:ro" \
         -e UCR_IN_CONTAINER=1 -e UCR_BUILD_TIMEOUT="$build_seconds" \
-        -e UCR_TEST_TIMEOUT="$test_seconds" -e UCR_ONLY_ACCEPTANCE="${UCR_ONLY_ACCEPTANCE:-0}" \
-        "$image" bash /runner.sh /src /tmp/build || rc=$?
+        -e UCR_TEST_TIMEOUT="$test_seconds" \
+        -e UCR_PROFILE="$profile" -e UCR_JOBS="$jobs" \
+        "$image" bash /runner.sh /src /build || rc=$?
     case "$rc" in 124|137) exit 3 ;; *) exit "$rc" ;; esac
 fi
 build=${2:-/tmp/build}
 flags='-Wall -Wextra'
 build_type=Release
 labels=()
-[[ ${UCR_ONLY_ACCEPTANCE:-0} != 1 ]] || labels=(-L acceptance)
 case "$kind" in
     asan) build_type=Debug; flags+=' -fsanitize=address,undefined -fno-omit-frame-pointer'
           export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ;;
     tsan) build_type=Debug; flags+=' -fsanitize=thread -fno-omit-frame-pointer'
           export TSAN_OPTIONS=halt_on_error=1
-          [[ ${UCR_ONLY_ACCEPTANCE:-0} == 1 ]] || labels=(-L 'threads|acceptance') ;;
+          labels=(-L threads) ;;
     container) ;;
     *) echo 'Môi trường build không hợp lệ.' >&2; exit 2 ;;
 esac
+[[ $profile != quick ]] || labels+=(-LE slow)
 mkdir -p "$build" || exit 2
 cd "$build" || exit 2
 echo "UCR_STEP build $kind"
@@ -50,8 +62,8 @@ timeout -k 5s "${build_seconds}s" bash -c '
     cmake --version | head -1
     cmake -DUCR_FAKE_HW=ON -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE="$2" \
         -DCMAKE_C_FLAGS="$3" -DCMAKE_CXX_FLAGS="$3" "$1"
-    cmake --build . -- -j4
-' bash "$src" "$build_type" "$flags" || rc=$?
+    cmake --build . -- -j"$4"
+' bash "$src" "$build_type" "$flags" "$jobs" || rc=$?
 case "$rc" in 0) ;; 124|137) echo 'HẾT GIỜ ở bước build'; exit 3 ;; *) exit 2 ;; esac
 echo UCR_BUILD_OK
 echo "UCR_STEP ctest $kind"
@@ -59,7 +71,7 @@ echo "UCR_STEP ctest $kind"
 # Chỉ xoá kết quả trong thư mục build đã phân giải, tránh đọc XML lượt cũ.
 rm -rf -- "$(pwd -P)/Testing" || exit 1
 rc=0
-timeout -k 5s "${test_seconds}s" ctest -T Test --no-compress-output --timeout 120 --output-on-failure "${labels[@]}" || rc=$?
+timeout -k 5s "${test_seconds}s" ctest -j"$jobs" -T Test --no-compress-output --timeout 120 --output-on-failure "${labels[@]}" || rc=$?
 if [[ -f Testing/TAG ]]; then
     tag=$(head -n 1 Testing/TAG)
     if [[ -f Testing/$tag/Test.xml ]]; then
