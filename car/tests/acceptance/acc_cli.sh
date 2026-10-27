@@ -35,7 +35,7 @@ mkcfg "$T/u/ok.yaml" "$T/u/runs"
 unknown_case() {   # unknown_case "mô tả" tên-tham-số-lạ args...
     local desc=$1 name=$2; shift 2
     local out rc
-    out=$(cd "$T/u" && timeout 10 "$MAIN" "$@" 2>&1); rc=$?
+    out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$MAIN" "$@" 2>&1); rc=$?
     check "$desc: ma thoat phai khac 0 va sach (1..127), nhan $rc" clean_nonzero "$rc"
     check "$desc: phai bao 'tham so khong biet' (yeu cau thong bao tham so); nhan: $out" does_match "$UNKNOWN_RE" "$out"
     check "$desc: phai neu dung ten tham so '$name'; nhan: $out" grep -qF -- "$name" <<<"$out"
@@ -51,7 +51,7 @@ unknown_case "tham so la dang -x" "-x" --config "$T/u/ok.yaml" -x
 missing_case() {   # tham số ĐÃ BIẾT thiếu giá trị
     local desc=$1; shift
     local out rc
-    out=$(cd "$T/u" && timeout 10 "$MAIN" "$@" 2>&1); rc=$?
+    out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$MAIN" "$@" 2>&1); rc=$?
     check "$desc: ma thoat phai khac 0 va sach, nhan $rc" clean_nonzero "$rc"
     check "$desc: phai bao thieu gia tri; nhan: $out" does_match "$MISSING_RE" "$out"
     check "$desc: KHONG duoc goi la 'tham so khong biet'; nhan: $out" not_match "$UNKNOWN_RE" "$out"
@@ -59,14 +59,14 @@ missing_case() {   # tham số ĐÃ BIẾT thiếu giá trị
 missing_case "--mode thieu gia tri" --config "$T/u/ok.yaml" --mode
 missing_case "--config thieu gia tri" --mode auto --config
 
-out=$(cd "$T/u" && timeout 10 "$MAIN" --config "$T/u/ok.yaml" --mode fly 2>&1); rc=$?
+out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$MAIN" --config "$T/u/ok.yaml" --mode fly 2>&1); rc=$?
 check "che do khong hop le '--mode fly': ma thoat phai khac 0 va sach, nhan $rc" clean_nonzero "$rc"
 check "che do khong hop le: phai co thong bao (khong im lang)" test -n "$out"
-out=$(cd "$T/u" && timeout 10 "$MAIN" --config "$T/u/khong_ton_tai.yaml" --mode auto 2>&1); rc=$?
+out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$MAIN" --config "$T/u/khong_ton_tai.yaml" --mode auto 2>&1); rc=$?
 check "file config khong ton tai: ma thoat phai khac 0 va sach, nhan $rc" clean_nonzero "$rc"
 check "file config khong ton tai: phai co thong bao" test -n "$out"
 printf 'day khong phai yaml {{{ [[[ \n::::\n' > "$T/u/hong.yaml"
-out=$(cd "$T/u" && timeout 10 "$MAIN" --config "$T/u/hong.yaml" --mode auto 2>&1); rc=$?
+out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$MAIN" --config "$T/u/hong.yaml" --mode auto 2>&1); rc=$?
 check "file config hong: ma thoat phai khac 0 va sach, nhan $rc" clean_nonzero "$rc"
 check "khong tao du lieu chay khi config loi (tru gate gia co san)" test -z "$(find "$T/u/runs" -mindepth 1 -maxdepth 1 ! -name smoke_gate.json -print)"
 
@@ -77,7 +77,7 @@ reject_case() {   # reject_case "tên" khoá=giá-trị...
     local d="$T/r_$RANDOM$RANDOM"; mkdir -p "$d/runs"
     mkcfg "$d/c.yaml" "$d/runs" "$@"
     local out rc
-    out=$(cd "$d" && timeout 10 "$MAIN" --config "$d/c.yaml" --mode auto 2>&1); rc=$?
+    out=$(cd "$d" && acc_run timeout --foreground -k 2s 10 "$MAIN" --config "$d/c.yaml" --mode auto 2>&1); rc=$?
     check "tu choi [$name] ($*): ma thoat phai khac 0 va sach (1..127), nhan $rc" clean_nonzero "$rc"
     check "tu choi [$name]: phai co thong bao ly do" test -n "$out"
     check "tu choi [$name]: khong duoc tao du lieu chay ngoai gate gia co san" test -z "$(find "$d/runs" -mindepth 1 -maxdepth 1 ! -name smoke_gate.json -print)"
@@ -117,7 +117,12 @@ reject_case "tof_names ten la"         'tof_names=[front, rear, left, middle]'
 run_and_signal() {   # run_and_signal <nhãn> <tín-hiệu> <file-config> -> đặt RES, ALIVE, STOP_MS, HUNG, OUTFILE
     local label=$1 sig=$2 cfg=$3 mode=${4:-auto}
     OUTFILE="$T/out_$label.txt"
-    sigrun "$sig" 2500 "$OUTFILE" "$MAIN" --config "$cfg" --mode "$mode"
+    export UCR_FAKE_HW_TRACE="$T/cli_trace_$label.csv"
+    local ACC_READY_STALE
+    unset ACC_READY_STALE
+    [[ $label == imgloss ]] && export ACC_READY_STALE=1
+    ACC_READY_FILE="$UCR_FAKE_HW_TRACE" ACC_READY_KIND=init ACC_READY_LOG_DIR="$(dirname "$cfg")/runs" ACC_READY_MODE="$mode" \
+        sigrun "$sig" 0 "$OUTFILE" "$MAIN" --config "$cfg" --mode "$mode"
 }
 
 accept_case() {   # accept_case <nhãn> <tín-hiệu> khoá=giá-trị...
@@ -125,7 +130,7 @@ accept_case() {   # accept_case <nhãn> <tín-hiệu> khoá=giá-trị...
     local d="$T/a_$label"; mkdir -p "$d/runs"
     mkcfg "$d/c.yaml" "$d/runs" "$@"
     run_and_signal "$label" "$sig" "$d/c.yaml"
-    check "[$label] bien hop le phai chay duoc (con song sau 2.5 s); dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
+    check "[$label] bien hop le phai chay duoc (con song khi da san sang); dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
     check "[$label] phai thoat trong <= 8 s sau $sig (khong treo)" test "$HUNG" = 0
     check "[$label] sau $sig phai tu xu ly va thoat binh thuong (exited:0/130/143, khong bi tin hieu giet), nhan $RES" graceful_exit "$RES"
     check "[$label] dung xong trong <= 4000 ms, mat $STOP_MS" test "$STOP_MS" -le 4000
@@ -146,7 +151,7 @@ mkdir -p "$T/m/runs"
 printf '%%YAML:1.0\n---\nlog_dir: "%s"\nfake_source: ""\nenable_display: 0\nenable_oled: 0\n' "$T/m/runs" > "$T/m/c.yaml"
 # Hiệu chuẩn/an toàn: ánh xạ thiếu phải mặc định false và chặn auto; kiểm mặc định ở manual, không đi vòng cổng smoke.
 run_and_signal missing INT "$T/m/c.yaml" manual
-check "thieu khoa: van phai chay voi mac dinh (con song sau 2.5 s); dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
+check "thieu khoa: van phai chay voi mac dinh (con song khi da san sang); dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
 check "thieu khoa: phai in canh bao/ghi chu dung mac dinh; dau ra: $(head -c 600 "$OUTFILE")" \
       grep -qiE 'c(a|ả)nh b(a|á)o|warn|m(a|ặ)c (d|đ)(i|ị)nh|default|thi(e|ế)u' "$OUTFILE"
 check "thieu khoa: thoat chu dong sau INT, nhan $RES" graceful_exit "$RES"
@@ -197,9 +202,9 @@ fi
 
 # ---------------------------------------------------------------------------------------------------------------
 # ucr_stop (bản giả lập): thoát 0 khi cấu hình tốt; mã khác 0 sạch khi cấu hình không đọc được (docs/ucr_car.md)
-out=$(cd "$T/u" && timeout 10 "$STOP" --config "$T/u/ok.yaml" 2>&1); rc=$?
+out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$STOP" --config "$T/u/ok.yaml" 2>&1); rc=$?
 check "ucr_stop voi config tot (ban gia lap) phai thoat 0, nhan $rc; dau ra: $out" test "$rc" -eq 0
-out=$(cd "$T/u" && timeout 10 "$STOP" --config "$T/u/khong_ton_tai.yaml" 2>&1); rc=$?
+out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$STOP" --config "$T/u/khong_ton_tai.yaml" 2>&1); rc=$?
 check "ucr_stop voi config khong doc duoc phai thoat khac 0 va sach, nhan $rc" clean_nonzero "$rc"
 
 acc_finish acc_cli

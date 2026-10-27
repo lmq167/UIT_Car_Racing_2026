@@ -182,8 +182,8 @@ bool StateAt(const Trace &t, const std::string &kind, long long tmoc, double &v)
     return f;
 }
 
-int Inconclusive(const std::string &why) {
-    std::fprintf(stderr, "CHUA KIEM DUOC: %s\n", why.c_str());
+int FailedPrecondition(const std::string &why) {
+    std::fprintf(stderr, "[HONG] Tien de khong dat: %s\n", why.c_str());
     return 1;
 }
 
@@ -206,7 +206,7 @@ int ServoScenario(const std::string &name) {
     });
     const auto o = RunApp(x, "auto", std::move(ctl), static_cast<long long>(steer.size()) * phase_ms + 700);
     const Trace t = CommonChecks(x, o);
-    if (!acc::Moved(t)) return Inconclusive("xe khong di chuyen (bo dieu khien khong duoc goi?)");
+    if (!acc::Moved(t)) return FailedPrecondition("xe khong di chuyen (bo dieu khien khong duoc goi?)");
 
     std::vector<double> seq;
     for (const auto &l : acc::Of(t, "servo_angle")) {
@@ -267,7 +267,7 @@ int TailScenario(const std::string &name) {
     auto ctl = std::make_unique<FnController>(fn);
     const auto o = RunApp(x, "auto", std::move(ctl), run_ms, destroy_only);
     const Trace t = acc::ReadTrace(x.trace);
-    if (!acc::Moved(t)) return Inconclusive("xe khong di chuyen truoc khi dung (bo dieu khien khong duoc goi / loi xay ra truoc khi chay)");
+    if (!acc::Moved(t)) return FailedPrecondition("xe khong di chuyen truoc khi dung (bo dieu khien khong duoc goi / loi xay ra truoc khi chay)");
     const Trace all = CommonChecks(x, o);
 
     if (name == "tail_ctl_throw") {
@@ -305,7 +305,7 @@ int KeepaliveScenario(const std::string &name) {
     });
     const auto o = RunApp(x, "auto", std::move(ctl), 2600);
     const Trace t = CommonChecks(x, o);
-    if (first_call.load() < 0) return Inconclusive("bo dieu khien chua duoc goi");
+    if (first_call.load() < 0) return FailedPrecondition("bo dieu khien chua duoc goi");
     // E4: gần 8 ở cuối tăng mềm chưa phải lệnh giữ tốc độ; không cộng thêm dung sai sau khi tăng mềm xong.
     const long long steady_from = first_call.load() + std::llround(1000 * x.c.soft_start_s);
     std::printf("[keepalive] first_call=%lld steady_from=%lld stop=%lld K=%d vet=%s\n",
@@ -321,7 +321,7 @@ int KeepaliveScenario(const std::string &name) {
         near8.push_back(l);
         if (l.ms >= steady_from) v8.push_back(l);
     }
-    if (v8.size() < 2) return Inconclusive("xe khong di chuyen / khong co lenh lap lai nao (chi " + std::to_string(v8.size()) + " dong toc do 8)");
+    if (v8.size() < 2) return FailedPrecondition("xe khong di chuyen / khong co lenh lap lai nao (chi " + std::to_string(v8.size()) + " dong toc do 8)");
     const double steady = static_cast<double>(o.stop_req_ms - v8.front().ms);
     ACC_CHECK(steady >= 4 * K, "tien de: can it nhat 4 chu ky giu ket noi sau tang mem E4");
     const double expected = steady / K;
@@ -352,7 +352,7 @@ int SpeedChangeScenario() {
     });
     const auto o = RunApp(x, "auto", std::move(ctl), 3300);
     const Trace t = CommonChecks(x, o);
-    if (t9.load() < 0 || t5b.load() < 0) return Inconclusive("bo dieu khien khong duoc goi du lau");
+    if (t9.load() < 0 || t5b.load() < 0) return FailedPrecondition("bo dieu khien khong duoc goi du lau");
     std::vector<double> seq;
     for (const auto &l : acc::Of(t, "motor_speed")) {
         // E4: chỉ kiểm đổi lệnh khi đã qua tăng mềm ban đầu; vẫn giữ hạn đổi 150 ms.
@@ -448,11 +448,11 @@ int TofScenario(const std::string &name) {
     // Trước mốc đổi ToF phải đã chạy được, nếu không thì bài thử vô nghĩa.
     const long long first_event = kind == StartInvalid ? 2600 : kT1;
     if (kind != StartInvalid) {
-        if (!p || p->ms > first_event - 150) return Inconclusive("xe chua kip chay truoc moc doi ToF (dong chay dau tien luc " + (p ? std::to_string(p->ms) : std::string("khong co")) + " ms)");
+        if (!p || p->ms > first_event - 150) return FailedPrecondition("xe chua kip chay truoc moc doi ToF (dong chay dau tien luc " + (p ? std::to_string(p->ms) : std::string("khong co")) + " ms)");
     } else {
-        if (o.begin_ms > 2000) return Inconclusive("khoi dong qua cham (" + std::to_string(o.begin_ms) + " ms) de kiem tra giai doan truoc dong ToF dau tien");
+        if (o.begin_ms > 2000) return FailedPrecondition("khoi dong qua cham (" + std::to_string(o.begin_ms) + " ms) de kiem tra giai doan truoc dong ToF dau tien");
         for (const auto &l : ms) if (l.ms < 2600) ACC_CHECK(l.num <= 1e-3, "truoc dong ToF dau tien (2600 ms) moi slot khong hop le: khong duoc co lenh tien, thay " + l.value + " luc " + std::to_string(l.ms) + " ms");
-        if (!p) return Inconclusive("xe khong chay duoc ca sau khi ToF hop le xuat hien");
+        if (!p) return FailedPrecondition("xe khong chay duoc ca sau khi ToF hop le xuat hien");
         ACC_CHECK(p->ms >= 2600, "lenh tien dau tien luc " + std::to_string(p->ms) + " ms truoc khi ToF hop le xuat hien");
         ACC_CHECK(p->ms <= 2600 + bound + 400, "ToF da hop le tu 2600 ms nhung xe chi chay luc " + std::to_string(p->ms) + " ms");
         return acc::Finish("acc_hwtrace tof_start_invalid");
@@ -519,9 +519,9 @@ int CameraGapScenario(const std::string &name) {
     auto ctl = std::make_unique<FnController>([](long long, long long) { return common::ControlCommand{8.0f, 5}; });
     const auto o = RunApp(x, "auto", std::move(ctl), 7000);
     const Trace t = CommonChecks(x, o);
-    if (o.begin_ms > 2000) return Inconclusive("khoi dong qua cham, chua chay truoc khi ngat camera");
+    if (o.begin_ms > 2000) return FailedPrecondition("khoi dong qua cham, chua chay truoc khi ngat camera");
     double v = 0;
-    if (!StateAt(t, "motor_speed", gaps[0].first - 50, v) || !acc::Near(v, 8.0)) return Inconclusive("xe khong chay truoc khi camera ngat");
+    if (!StateAt(t, "motor_speed", gaps[0].first - 50, v) || !acc::Near(v, 8.0)) return FailedPrecondition("xe khong chay truoc khi camera ngat");
 
     // Bằng chứng camera giả thực sự bị ngắt: tuổi ảnh trong log.csv đạt xấp xỉ độ dài khoảng ngắt.
     const std::string run = acc::FindRunDir(x.logdir, "_auto");

@@ -18,6 +18,7 @@ mkdir -p "$B"
 cat > "$B/main" <<'EOF'
 #!/usr/bin/env bash
 echo $$ > "$ACC_RUN/mainpid"
+acc_track_group "$$" || exit 1
 printf '%s\n' "$@" > "$ACC_RUN/main_args"
 case "${ACC_MAIN_MODE:-exit0}" in
     exit0) exit 0 ;;
@@ -33,6 +34,7 @@ esac
 EOF
 cat > "$B/ucr_stop" <<'EOF'
 #!/usr/bin/env bash
+acc_track_group "$$" || exit 1
 mp=$(cat "$ACC_RUN/mainpid" 2>/dev/null)
 if [ -n "$mp" ] && kill -0 "$mp" 2>/dev/null; then st=alive; else st=dead; fi
 echo "$st" >> "$ACC_RUN/stop_calls"
@@ -50,7 +52,7 @@ stop_state() { head -n1 "$RUN/stop_calls" 2>/dev/null; }
 run_sync() {
     local mode=$1; shift
     newrun
-    ACC_MAIN_MODE=$mode UCR_BUILD_DIR="$B" timeout 30 bash "$RUNSH" "$@" >"$RUN/out" 2>&1
+    ACC_MAIN_MODE=$mode UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" "$@" >"$RUN/out" 2>&1
     RC=$?
 }
 
@@ -74,68 +76,69 @@ check "main tu SIGKILL: ucr_stop chay khi main da chet (thay: $(stop_state))" te
 
 # kill -9 từ bên ngoài vào chương trình chính khi run.sh đang chờ
 newrun
-ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 &
-rpid=$!
+ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" acc_start bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 || exit 1
+rpid=$ACC_PID
 if wait_file "$RUN/ready" 10; then
     kill -KILL "$(cat "$RUN/mainpid")" 2>/dev/null
-    if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else kill -KILL "$rpid"; RC=999; fi
+    if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else RC=999; fi
+    acc_reap "$rpid"
     check "kill -9 main tu ngoai => run.sh thoat 137, nhan $RC" test "$RC" -eq 137
     check "kill -9 main tu ngoai => ucr_stop goi dung 1 lan (nhan $(calls))" test "$(calls)" -eq 1
     check "kill -9 main tu ngoai: ucr_stop chay khi main da chet (thay: $(stop_state))" test "$(stop_state)" = dead
 else
-    kill -KILL "$rpid" 2>/dev/null
+    acc_reap "$rpid"
     fail "main gia (che do wait) khong bao san sang"
 fi
 
 # SIGINT / SIGTERM vào run.sh: chuyển tiếp cho main, chờ main kết thúc, gọi ucr_stop đúng 1 lần, thoát bằng mã của main
 for sig in INT TERM; do
     newrun
-    ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 &
-    rpid=$!
+    ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" acc_start bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 || exit 1
+    rpid=$ACC_PID
     if wait_file "$RUN/ready" 10; then
-        sleep 0.3
         kill -s "$sig" "$rpid"
-        if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else kill -KILL "$rpid"; RC=999; fi
+        if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else RC=999; fi
+        acc_reap "$rpid"
         want=$([[ $sig == INT ]] && echo 9 || echo 7)
         check "$sig vao run.sh: main phai nhan duoc $sig (chuyen tiep); sig file: $(cat "$RUN/sig" 2>/dev/null)" grep -qx "$sig" "$RUN/sig"
         check "$sig vao run.sh: run.sh thoat voi ma cua main ($want), nhan $RC" test "$RC" -eq "$want"
         check "$sig vao run.sh: ucr_stop goi dung 1 lan (nhan $(calls))" test "$(calls)" -eq 1
         check "$sig vao run.sh: ucr_stop chay SAU khi main ket thuc (thay: $(stop_state))" test "$(stop_state)" = dead
     else
-        kill -KILL "$rpid" 2>/dev/null
+        acc_reap "$rpid"
         fail "main gia (che do wait) khong bao san sang"
     fi
 done
 
 # Hai tín hiệu liên tiếp vẫn chỉ một lần ucr_stop
 newrun
-ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 &
-rpid=$!
+ACC_MAIN_MODE=wait UCR_BUILD_DIR="$B" acc_start bash "$RUNSH" --mode auto >"$RUN/out" 2>&1 || exit 1
+rpid=$ACC_PID
 if wait_file "$RUN/ready" 10; then
-    sleep 0.3
     kill -s INT "$rpid"; kill -s TERM "$rpid" 2>/dev/null
-    if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else kill -KILL "$rpid"; RC=999; fi
+    if wait_gone "$rpid" 10; then wait "$rpid"; RC=$?; else RC=999; fi
+    acc_reap "$rpid"
     check "INT roi TERM lien tiep: run.sh phai ket thuc (khong treo), nhan $RC" test "$RC" -ne 999
     check "INT roi TERM lien tiep: ucr_stop van dung 1 lan (nhan $(calls))" test "$(calls)" -eq 1
 else
-    kill -KILL "$rpid" 2>/dev/null; fail "main gia khong san sang"
+    acc_reap "$rpid"; fail "main gia khong san sang"
 fi
 
 # ucr_stop lỗi: vẫn gọi 1 lần, không đổi mã thoát của main, có in thông báo
 newrun
-ACC_STOP_RC=5 ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
+ACC_STOP_RC=5 ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
 check "ucr_stop loi (5) + main 0 => run.sh van thoat 0 (docs: loi dung khan duoc in nhung khong doi ma), nhan $RC" test "$RC" -eq 0
 check "ucr_stop loi: phai in thong bao ro (dau ra khong rong)" test -s "$RUN/out"
 check "ucr_stop loi: van chi goi 1 lan" test "$(calls)" -eq 1
 newrun
-ACC_STOP_RC=5 ACC_MAIN_MODE=exit3 UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
+ACC_STOP_RC=5 ACC_MAIN_MODE=exit3 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
 check "ucr_stop loi (5) + main 3 => run.sh thoat 3, nhan $RC" test "$RC" -eq 3
 
 # Không có chương trình chính (không chạy được): vẫn phải gọi ucr_stop 1 lần và báo lỗi
 mkdir -p "$T/build_nomain"
 cp "$B/ucr_stop" "$T/build_nomain/ucr_stop"
 newrun
-UCR_BUILD_DIR="$T/build_nomain" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
+UCR_BUILD_DIR="$T/build_nomain" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
 check "khong co main => run.sh phai thoat khac 0, nhan $RC" test "$RC" -ne 0
 check "khong co main => ucr_stop van duoc goi dung 1 lan (nhan $(calls))" test "$(calls)" -eq 1
 
@@ -143,7 +146,7 @@ check "khong co main => ucr_stop van duoc goi dung 1 lan (nhan $(calls))" test "
 mkdir -p "$T/work/cau hinh"
 cp "$ROOT/config.yaml" "$T/work/cau hinh/xe.yaml"
 newrun
-(cd "$T/work" && ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" bash "$RUNSH" --config "cau hinh/xe.yaml" --mode auto >"$RUN/out" 2>&1); RC=$?
+(cd "$T/work" && ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --config "cau hinh/xe.yaml" --mode auto >"$RUN/out" 2>&1); RC=$?
 want="$T/work/cau hinh/xe.yaml"
 check "main nhan duong dan config tuyet doi co dau cach ('$want'); nhan: $(tr '\n' '|' < "$RUN/main_args")" \
       grep -qxF -- "$want" "$RUN/main_args"
@@ -154,7 +157,7 @@ check "ucr_stop nhan '--config' ngay truoc duong dan" bash -c 'grep -x -A1 -- "-
 
 # Không có --config: mặc định config.yaml ở gốc ucr_car, truyền cho cả hai
 newrun
-(cd "$T/work" && ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" bash "$RUNSH" --mode auto >"$RUN/out" 2>&1)
+(cd "$T/work" && ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1)
 check "khong --config: main nhan config.yaml o goc ucr_car ($ROOT/config.yaml); nhan: $(tr '\n' '|' < "$RUN/main_args")" \
       bash -c 'grep -x -A1 -- "--config" "$1" | grep -qxF -- "$2"' _ "$RUN/main_args" "$ROOT/config.yaml"
 check "khong --config: ucr_stop nhan cung config mac dinh" bash -c 'grep -x -A1 -- "--config" "$1" | grep -qxF -- "$2"' _ "$RUN/stop_args" "$ROOT/config.yaml"

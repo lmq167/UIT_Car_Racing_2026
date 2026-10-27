@@ -35,11 +35,22 @@ target_link_libraries(acc_make_frames PRIVATE app_core)
 add_test(NAME acc_cli COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_cli.sh
     $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_make_frames> $<TARGET_FILE:acc_sigrun>)
 add_test(NAME acc_run_sh COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_run_sh.sh)
-add_test(NAME acc_signals COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_signals.sh
-    $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun>)
+if(UCR_FAKE_HW)
+    # Dùng lại main tiêm SetController qua API công khai; không thêm điểm cắm vào mã xe.
+    set(ACC_SIGNAL_MAIN $<TARGET_FILE:acc_recovery_main>)
+else()
+    set(ACC_SIGNAL_MAIN $<TARGET_FILE:main>)
+endif()
+foreach(scenario run_INT run_TERM kill_main direct_INT direct_TERM invalid_config invalid_args)
+    add_test(NAME acc_signals_${scenario} COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_signals.sh
+        ${ACC_SIGNAL_MAIN} $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun> ${scenario})
+    set_tests_properties(acc_signals_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
+endforeach()
+add_test(NAME acc_shell_harness COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_harness.sh $<TARGET_FILE:acc_sigrun>)
+set_tests_properties(acc_shell_harness PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
 
 set(ACC_TESTS acc_safety_logic acc_app_lifecycle acc_app_fault_throw acc_app_fault_clamp_pos acc_app_fault_clamp_neg
-    acc_app_fault_nan acc_app_fault_pass acc_app_fault_imgloss acc_motor_uart acc_cli acc_run_sh acc_signals)
+    acc_app_fault_nan acc_app_fault_pass acc_app_fault_imgloss acc_motor_uart acc_cli acc_run_sh)
 foreach(t ${ACC_TESTS})
     # Không biến lỗi thiết lập/mã 77 thành bỏ qua ở nhãn acceptance.
     set_tests_properties(${t} PROPERTIES LABELS "acceptance" TIMEOUT 120)
@@ -68,11 +79,24 @@ if(UCR_FAKE_HW)
         set_tests_properties(acc_hw_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
     set_tests_properties(acc_hw_tof_boundary PROPERTIES LABELS "regression;threads")
-    add_test(NAME acc_hwtrace_sh COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_hwtrace.sh
-        $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun>)
-    set_tests_properties(acc_hwtrace_sh PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
-    # ASan nền 27/10: acc_hwtrace_sh mất 50,24 s.
-    set_property(TEST acc_hwtrace_sh APPEND PROPERTY LABELS slow)
+    set(ACC_TRACE_SCENARIOS stop_trim_pos stop_trim_neg stop_trim_neg_invert stop_missing stop_range
+        main_auto_TERM main_auto_INT main_manual_TERM main_odometry main_tof_min main_tof_max
+        calib_missing calib_zero calib_high calib_word calib_servo
+        reject_control_range reject_control_type reject_speed_type reject_trim_type
+        reject_tof_zero reject_tof_high reject_tof_large reject_tof_neg main_badargs
+        run_TERM run_INT kill_main fault_terminate fault_actuator fault_sensor wrapper_invalid)
+    foreach(kind text empty list map fraction)
+        list(APPEND ACC_TRACE_SCENARIOS stop_type_${kind})
+    endforeach()
+    foreach(kind short_no_default missing_no_default unknown_no_default short_default missing_default unknown_default
+            option_no_default option_default empty_no_default empty_default trailing_default trailing_no_default)
+        list(APPEND ACC_TRACE_SCENARIOS stop_args_${kind})
+    endforeach()
+    foreach(scenario ${ACC_TRACE_SCENARIOS})
+        add_test(NAME acc_trace_${scenario} COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_hwtrace.sh
+            $<TARGET_FILE:acc_recovery_main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun> ${scenario})
+        set_tests_properties(acc_trace_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
+    endforeach()
 
     # Hiệu chuẩn/an toàn: giao diện đã duyệt; không đăng ký các mục H/M01 và không có mã bỏ qua.
     find_package(PythonInterp 3.6 REQUIRED)

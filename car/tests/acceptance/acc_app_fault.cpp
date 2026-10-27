@@ -167,7 +167,7 @@ int main(int argc, char **argv) {
         // Chưa từng được gọi: điều kiện tiền đề không xảy ra => CHƯA KIỂM ĐƯỢC. Đã được gọi (và đã ném lỗi) mà App không tự dừng
         // và không Failed() thì là HỎNG (lỗi bị nuốt).
         if (calls->load() == 0) {
-            std::fprintf(stderr, "Bo dieu khien chua tung duoc goi: CHUA KIEM DUOC\n");
+            std::fprintf(stderr, "Bo dieu khien chua tung duoc goi: HONG: tien de khong dat\n");
             return 1;
         }
         ACC_CHECK(stopped_by_itself, "ngoai le trong luong tu lai phai lam App tu yeu cau dung (IsRunning()==false) trong <= 1.5 s");
@@ -177,25 +177,25 @@ int main(int argc, char **argv) {
         ACC_CHECK(all_rows([](double s, double a, double) { return s >= -1e-3 && s <= 12.5 + 1e-3 && a >= 0.0 && a <= 10.0; }),
                   "lenh +1000/+1000 khong duoc vuot (12.5, 10) o bat ky dong log nao");
         const bool reached = any_row([](double s, double a, double) { return Near(s, 12.5) && Near(a, 10.0); });
-        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: CHUA KIEM DUOC\n"); return 1; }
+        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: HONG: tien de khong dat\n"); return 1; }
         ACC_CHECK(reached, "lenh +1000/+1000 phai bi chan DUNG (12.5, 10) (khong phai 0 hay gia tri khac)");
     } else if (scenario == "clamp_neg") {
         ACC_CHECK(all_rows([](double s, double a, double) { return s <= 1e-3 && s >= -12.5 - 1e-3 && a <= 0.0 && a >= -10.0; }),
                   "lenh -1000/-1000 khong duoc vuot (-12.5, -10)");
         const bool reached = any_row([](double s, double a, double) { return Near(s, -12.5) && Near(a, -10.0); });
-        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: CHUA KIEM DUOC\n"); return 1; }
+        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: HONG: tien de khong dat\n"); return 1; }
         ACC_CHECK(reached, "lenh lui -1000/-1000 phai bi chan DUNG (-12.5, -10); ToF truoc xa nen khong duoc chan lui");
     } else if (scenario == "nan") {
         ACC_CHECK(all_rows([](double s, double a, double) { return std::isfinite(s) && std::isfinite(a) && std::fabs(s) <= 12.5 + 1e-3 && std::fabs(a) <= 10.0; }),
                   "toc do NaN tu bo dieu khien khong duoc lot ra log/phan cung duoi dang khong huu han hoac vuot gioi han");
     } else if (scenario == "pass") {
         const bool reached = any_row([](double s, double a, double) { return Near(s, 6.0) && Near(a, 4.0); });
-        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: CHUA KIEM DUOC\n"); return 1; }
+        if (!reached && !any_row([](double s, double, double) { return !Near(s,0.0); })) { std::fprintf(stderr, "Bo dieu khien khong duoc goi: HONG: tien de khong dat\n"); return 1; }
         ACC_CHECK(reached, "lenh (6, 4) trong gioi han phai di qua nguyen ven");
         ACC_CHECK(all_rows([](double s, double a, double) { return s >= -1e-3 && s <= 6.0 + 1e-3 && a >= 0.0 && a <= 4.0 + 1e-3; }), "khong dong log nao vuot lenh yeu cau (6, 4)");
     } else if (scenario == "imgloss") {
         const bool moved = any_row([](double s, double a, double age) { return Near(s, 10.0) && Near(a, 5.0) && age < 500.0; });
-        if (!moved) { std::fprintf(stderr, "Bo dieu khien khong duoc goi hoac khong co dong khi con anh: CHUA KIEM DUOC\n"); return 1; }
+        if (!moved) { std::fprintf(stderr, "Bo dieu khien khong duoc goi hoac khong co dong khi con anh: HONG: tien de khong dat\n"); return 1; }
         const bool saw_loss = any_row([](double, double, double age) { return age > 600.0; });
         ACC_CHECK(saw_loss, "trong cua so 4.5 s, log phai co dong voi image_age_ms > 600 sau khi nguon anh het");
         ACC_CHECK(all_rows([](double s, double a, double age) { return !(age > 600.0) || (Near(s,0.0) && a == 0.0); }),

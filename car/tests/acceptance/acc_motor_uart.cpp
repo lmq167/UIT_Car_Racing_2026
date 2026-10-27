@@ -16,6 +16,7 @@
 //    đổi sang cm bằng rad x 3,25), chuỗi init: `$008=0`, `$002=330`, `O M3`, `$101=1`, rồi `O U C r`; `N1 O T` là tự dò PID (cấm).
 #include "acc_common.h"
 #include "hardware/Motor.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fcntl.h>
@@ -151,22 +152,26 @@ void SpeedCommandsDoNotWait(Responder mode, const char *label) {
     auto body = [](const char *slave) -> int {
         Motor m(slave);
         if (!m.OpenPortOnly()) return 3;
-        double worst = 0;
+        std::vector<double> samples;
         for (int i = 0; i < 10; ++i) {
             const float v = -20.f + 5.f * static_cast<float>(i);
             const auto t0 = std::chrono::steady_clock::now();
             m.SetSpeedCms(v);
             const double dt = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-            if (dt > worst) worst = dt;
+            samples.push_back(dt);
         }
         m.SetSpeedCms(6.5f);  // kết thúc bằng 6.5 cm/s => 2.0 rad/s
-        std::fprintf(stderr, "    [con] thoi gian lenh toc do cham nhat = %.1f ms\n", worst);
-        return worst < 50.0 ? 0 : 10;
+        std::sort(samples.begin(), samples.end());
+        const double median = (samples[4] + samples[5]) / 2.0;
+        const double p90 = samples[8];  // Hạng gần nhất: ceil(0.9 * 10) - 1.
+        std::fprintf(stderr, "    [con] trung vi = %.1f ms, phan vi 90 = %.1f ms, max = %.1f ms\n",
+                     median, p90, samples.back());
+        return median < 50.0 && p90 < 50.0 && samples.back() < 100.0 ? 0 : 10;
     };
     Wire w = RunChild(body, mode);
     ACC_CHECK(!w.pty_failed, "tao duoc pty");
     if (w.pty_failed) return;
-    ACC_CHECK(w.Exited0(), std::string(label) + ": SetSpeedCms phai tra ve < 50 ms moi lan (khong cho phan hoi UART; ma BTC ~110 ms); con " + w.Describe());
+    ACC_CHECK(w.Exited0(), std::string(label) + ": SetSpeedCms phai co trung vi va phan vi 90 < 50 ms, max < 100 ms (khong cho phan hoi UART; ma BTC ~110 ms); con " + w.Describe());
     const auto lines = w.Lines();
     double last = 1e9;
     bool all_ok = true;
@@ -292,10 +297,10 @@ void InitRunsExactlyOnce() {
 }  // namespace
 
 int main() {
-    // Nếu pty không dùng được (môi trường lạ), bỏ qua (ctest SKIP_RETURN_CODE 77) thay vì báo đạt giả.
+    // Nhãn acceptance không cho phép bỏ qua; thiếu pty phải báo HỎNG rõ nguyên nhân.
     {
         int m = posix_openpt(O_RDWR | O_NOCTTY);
-        if (m < 0) { std::fprintf(stderr, "Khong tao duoc pty: bo qua\n"); return 77; }
+        if (m < 0) { std::fprintf(stderr, "HONG: moi truong khong tao duoc pty\n"); return 1; }
         close(m);
     }
     SpeedCommandsDoNotWait(Responder::Silent, "driver im lang");

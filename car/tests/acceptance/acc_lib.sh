@@ -13,14 +13,62 @@ ACC_TMP_PARENT=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)
 T=$(mktemp -d "$ACC_TMP_PARENT/ucr-acc.XXXXXX") || exit 1
 # Không nối vết vào tệp dùng chung được kế thừa từ môi trường chạy CTest.
 export UCR_FAKE_HW_TRACE="$T/trace.csv"
+mkdir -p "$T/processes"
+export ACC_PROCESS_DIR="$T/processes"
+
+# Trình bao được phép bật job control và tạo nhóm con; ghi nhóm ngay trong main/stop giả trước exec.
+acc_track_group() {
+    local pid=$1 pgid
+    pgid=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]')
+    if [[ -z $pgid ]]; then
+        # ps của Git Bash không có -o; đọc đúng cột PGID theo tiêu đề.
+        pgid=$(ps -l -p "$pid" 2>/dev/null | awk 'NR==1{for(i=1;i<=NF;i++)if($i=="PGID")g=i} NR==2 && g{print $g}')
+    fi
+    [[ $pgid =~ ^[1-9][0-9]*$ ]] || { echo "[HONG] Khong doc duoc PGID cua $pid" >&2; return 1; }
+    printf '%s\n' "$pgid" > "$ACC_PROCESS_DIR/$pid"
+}
+export -f acc_track_group
+
+# Job control tạo nhóm riêng cho từng lệnh nền; lưu ngay khi khởi chạy, kể cả cha chết trước con.
+acc_start() {
+    set -m
+    "$@" &
+    ACC_PID=$!
+    # Sổ nhóm dùng chung với cả command substitution (lệnh trong $(...)).
+    printf '%s\n' "$ACC_PID" > "$T/processes/$ACC_PID" || {
+        kill -KILL -- "-$ACC_PID" 2>/dev/null || :
+        wait "$ACC_PID" 2>/dev/null || :
+        return 1
+    }
+}
+
+acc_reap() {
+    local pid=$1 pgid
+    [[ -f $T/processes/$pid ]] || return 0
+    pgid=$(cat "$T/processes/$pid")
+    kill -KILL -- "-$pgid" 2>/dev/null || :
+    wait "$pid" 2>/dev/null || :
+    rm -f -- "$T/processes/$pid"
+}
+
+acc_run() {
+    acc_start "$@" || return 1
+    local pid=$ACC_PID rc
+    wait "$pid"; rc=$?
+    acc_reap "$pid"
+    return "$rc"
+}
 
 acc_cleanup() {
-    # Dọn tiến trình nền còn sót rồi xoá thư mục tạm của chính test (đã xác định tuyệt đối).
+    trap '' INT TERM
+    # Chỉ giết các nhóm do chính ca tạo; thu hồi con trực tiếp trước khi xoá dữ liệu.
     local p
-    for p in $(jobs -p 2>/dev/null); do kill -KILL "$p" 2>/dev/null || :; done
+    for p in "$T/processes/"*; do [[ -f $p ]] && acc_reap "${p##*/}"; done
     case "$T" in "$ACC_TMP_PARENT"/ucr-acc.*) rm -r -- "$T" 2>/dev/null || : ;; esac
 }
 trap acc_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # check "mô tả" lệnh-kiểm-tra...   (đạt khi lệnh trả 0)
 check() {
@@ -43,17 +91,51 @@ acc_finish() {
 
 # Chờ file xuất hiện (tối đa $2 giây, mặc định 10).
 wait_file() {
-    local f=$1 n=$(( ${2:-10} * 20 )) i
-    for ((i = 0; i < n; ++i)); do [[ -e $f ]] && return 0; sleep 0.05; done
+    local f=$1 deadline=$(( $(now_ms) + ${2:-10} * 1000 ))
+    while [[ $(now_ms) -lt $deadline ]]; do [[ -e $f ]] && return 0; sleep 0.05; done
     return 1
 }
 # Chờ tiến trình $1 kết thúc, tối đa $2 giây; trả 0 nếu đã kết thúc.
 wait_gone() {
-    local p=$1 n=$(( ${2:-10} * 20 )) i
-    for ((i = 0; i < n; ++i)); do kill -0 "$p" 2>/dev/null || return 0; sleep 0.05; done
+    local p=$1 deadline=$(( $(now_ms) + ${2:-10} * 1000 ))
+    while [[ $(now_ms) -lt $deadline ]]; do kill -0 "$p" 2>/dev/null || return 0; sleep 0.05; done
     return 1
 }
 now_ms() { echo $(( $(date +%s%N) / 1000000 )); }
+
+trace_lines() { if [[ -f $1 ]]; then wc -l < "$1" | tr -d ' '; else echo 0; fi; }
+trace_moving() {
+    [[ -f $1 ]] || return 1
+    awk -F, 'NF==3 && $2=="motor_speed" && $3 ~ /^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$/ &&
+        ($3+0>0.001 || $3+0< -0.001){n++} END{exit !(n>=5)}' "$1"
+}
+wait_moving() {
+    local trace=$1 pid=$2 logdir=${3:-} csv deadline=$(( $(now_ms) + 10000 ))
+    while [[ $(now_ms) -lt $deadline ]]; do
+        kill -0 "$pid" 2>/dev/null || return 1
+        if trace_moving "$trace"; then
+            [[ -n $logdir ]] || return 0
+            csv=$(find_csv "$logdir" _auto)
+            if [[ -n $csv ]] && [[ $(csv_rows "$csv") -ge 5 ]]; then return 0; fi
+        fi
+        sleep 0.05
+    done
+    return 1
+}
+# docs/ucr_car.md mục Luồng/an toàn không có hạn ms cho INT/TERM: dùng 2 chu kỳ theo yêu cầu T09e.
+# Dung sai không viết cứng: acc_sigrun đo khoảng quan sát, quá một chu kỳ thì HỎNG phép đo.
+signal_timing_config() {
+    export ACC_CONTROL_PERIOD_MS
+    ACC_CONTROL_PERIOD_MS=$(awk '$1=="control_hz:" {print 1000/$2}' "$1")
+    export ACC_STOP_BUDGET_MS
+    ACC_STOP_BUDGET_MS=$(awk -v period="$ACC_CONTROL_PERIOD_MS" 'BEGIN{print 2*period}')
+}
+trace_tail() {
+    [[ -f $1 ]] || return 1
+    awk -F, -v trim="$2" '$2=="motor_speed"{s=$3; ns++} $2=="servo_angle"{a=$3; na++}
+        END{d=a-trim; if(d<0)d=-d; num="^-?[0-9]+(\\.[0-9]+)?([eE][-+]?[0-9]+)?$";
+            exit !(ns && na && s~num && a~num && s+0<=0.001 && s+0>=-0.001 && d<=0.001)}' "$1"
+}
 
 # mkcfg <file> <log_dir> [khoá=giá-trị-YAML ...]
 # Lấy config.yaml đang ship làm gốc (đã hợp lệ), tắt cửa sổ/OLED, đưa log_dir và đường dẫn hiệu chuẩn về tuyệt đối,
@@ -88,10 +170,23 @@ find_csv() { ls -d "$1"/*"$2"/log.csv 2>/dev/null | tail -n 1; }
 sigrun() {
     local sig=$1 w=$2 out=$3; shift 3
     local res
-    res=$("$ACC_SIGRUN" "$sig" "$w" 10000 "$out" -- "$@")
+    local result="$T/sigrun_result"
+    acc_start "$ACC_SIGRUN" "$sig" "$w" 10000 "$out" -- "$@" >"$result" || return 1
+    local helper=$ACC_PID rc
+    wait "$helper"; rc=$?
+    acc_reap "$helper"
+    res=$(cat "$result")
     ALIVE=$(sed -n 's/^alive=//p' <<<"$res")
     RES=$(sed -n 's/^result=//p' <<<"$res")
     STOP_MS=$(sed -n 's/^elapsed_ms=//p' <<<"$res")
+    READY=$(sed -n 's/^ready=//p' <<<"$res")
+    if [[ -n ${ACC_SIGNAL_TRACE:-} ]]; then
+        check 'Do dung theo han va dung sai da in [DO_DUNG]' grep -qx 'timing_ok=1' <<<"$res"
+    fi
+    check 'Bo gui tin hieu chay thanh cong' test "$rc" -eq 0
+    if [[ -n ${ACC_READY_FILE:-} ]]; then
+        check "Tien de san sang phai xay ra trong <=10 s (ready=$READY)" test "$READY" = 1
+    fi
     if [[ $RES == hung ]]; then HUNG=1; else HUNG=0; fi
 }
 # Thoát chủ động (không bị tín hiệu giết) với mã 0 hoặc 128+tín hiệu (quy ước shell cho "đã xử lý tín hiệu và dừng").
