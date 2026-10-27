@@ -6,6 +6,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 namespace app {
@@ -71,14 +72,15 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
     }
     if(now-printed_>=std::chrono::seconds(1)) {
         printed_=now;
-        std::cout<<"t="<<elapsed<<" encoder="<<o.odom_cm<<" cm; v="<<o.meas_speed
+        std::ostringstream line; // một lần ghi, không chen vào dòng AN_TOAN_CHOT của luồng chấp hành
+        line<<"t="<<elapsed<<" encoder="<<o.odom_cm<<" cm; v="<<o.meas_speed
             <<" yaw_rel="<<o.yaw_rel_deg<<" pitch="<<o.pitch_deg<<" Euler="<<o.imu.eulerDeg.x<<'/'
             <<o.imu.eulerDeg.y<<'/'<<o.imu.eulerDeg.z<<" FPS="<<s.fps<<" Actuator_ms="<<s.actuator_ms
             <<" IMU calib="<<int(o.imu.calibration.system)<<'/'<<int(o.imu.calibration.gyroscope)<<'/'
             <<int(o.imu.calibration.accelerometer)<<'/'<<int(o.imu.calibration.magnetometer)<<'\n';
-        for(int i=0;i<4;++i) std::cout<<"slot "<<i<<' '<<c_.tof_names[i]<<'='<<o.tof[i].distanceMm
+        for(int i=0;i<4;++i) line<<"slot "<<i<<' '<<c_.tof_names[i]<<'='<<o.tof[i].distanceMm
             <<" valid="<<o.tof[i].valid<<" tuổi_ms="<<std::chrono::duration<double,std::milli>(now-o.tof[i].updatedAt).count()<<"; ";
-        std::cout<<std::endl;
+        line<<'\n'; std::cout<<line.str()<<std::flush;
     }
     if(step_=="smoke") {
         if(active_ && CalibrationLimitReached(c_,o,motion_limits_,now)) {
@@ -188,7 +190,9 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
     if(active_ && (CalibrationLimitReached(c_,o,motion_limits_,now) ||
         s.state=="PHANH_TOF" || s.state=="PHANH_TOF_SAU")) {
         CancelMotion();
-        std::cout<<"Dừng lượt: quãng đường="<<distance<<" yaw="<<yaw<<" bán kính cm="<<(yaw>0 ? distance/(yaw*3.141592653589793/180) : 0)<<'\n';
+        std::ostringstream stop_line;
+        stop_line<<"Dừng lượt: quãng đường="<<distance<<" yaw="<<yaw<<" bán kính cm="<<(yaw>0 ? distance/(yaw*3.141592653589793/180) : 0)<<'\n';
+        std::cout<<stop_line.str();
     }
     if(state_.empty()) state_="HIEU_CHUAN_"+step_;
     common::ControlCommand cmd{active_ ? speed_ : 0,angle_};

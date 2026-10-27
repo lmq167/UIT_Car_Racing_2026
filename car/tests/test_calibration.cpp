@@ -15,6 +15,15 @@ int main() {
     const auto base=common::Clock::now();
     auto at=[&](int ms){return base+std::chrono::milliseconds(ms);};
     auto frame=[&](int ms){o.frame_id++; o.captured_at=at(ms);};
+    Check(!app::ImageGapExceeded(c,o,at(5000)),"khung đầu tiên không tính khoảng mất ảnh");
+    frame(0);
+    Check(!app::ImageGapExceeded(c,o,at(c.image_timeout_ms-1)),"khoảng ảnh dưới ngưỡng không chốt");
+    Check(!app::ImageGapExceeded(c,o,at(c.image_timeout_ms)),"khoảng ảnh đúng ngưỡng không chốt");
+    Check(app::ImageGapExceeded(c,o,at(c.image_timeout_ms)+std::chrono::nanoseconds(1)),
+        "khoảng ảnh lớn hơn ngưỡng phải chốt, không làm tròn mili giây");
+    Check(app::ImageGapExceeded(c,o,at(550)),"ghi nhận khoảng mất 550 ms dù chưa lấy mẫu ảnh cũ");
+    frame(550);
+    Check(app::FreshImage(c,o,at(560)),"khung đã về có thể mới dù vừa có khoảng mất quá ngưỡng");
     for(auto &t:o.tof) { t.valid=true; t.distanceMm=2000; t.updatedAt=base; }
     frame(0);
     o.tof[c.RearSlot()].distanceMm=1;
@@ -109,6 +118,13 @@ int main() {
             cmd=cal.Tick(s,-1,start);
             Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0 && !cmd.position_control && !cmd.calib_limits.enabled,
                 "huỷ xoá motor, góc, chế độ vị trí và giới hạn cũ");
+            cmd=cal.Tick(s,-1,start+std::chrono::milliseconds(1));
+            Check(cmd.speedCmPerSec==0 && !cmd.calib_limits.enabled,
+                "UI bỏ lỡ trạng thái phanh: đã huỷ thì ảnh mới và trạng thái bình thường không khôi phục lượt");
+            cmd=cal.Tick(s,'y',start+std::chrono::milliseconds(2));
+            Check(cmd.speedCmPerSec>0 && cmd.calib_limits.enabled,
+                "sau huỷ cần y mới để bắt đầu lượt calib");
+            cal.CancelMotion();
             cal.Tick(s,'d',start); cal.Tick(s,'y',start);
             s.observation.odom_at=s.observation.captured_at=start+std::chrono::seconds(2);
             cmd=cal.Tick(s,'y',start+std::chrono::seconds(2));

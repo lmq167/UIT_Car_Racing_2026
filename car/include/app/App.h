@@ -45,6 +45,7 @@ private:
     bool smoke_drop_=false;
     double calib_drop_after_=0;
     std::atomic<bool> drop_camera_{false};
+    std::atomic<bool> image_gap_seen_{false};
     std::atomic<bool> cancel_held_command_{false};
     std::unique_ptr<IController> controller_;
     std::atomic<bool> running_{false}, failed_{false};

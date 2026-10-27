@@ -1,4 +1,5 @@
 #include "app/App.h"
+#include <sstream>
 #include "app/Safety.h"
 #include "common/Smoke.h"
 #ifdef UCR_FAKE_HW
@@ -102,7 +103,9 @@ void App::CameraThread() {
                     cv::Point(frame.cols/20,frame.rows/10),cv::FONT_HERSHEY_SIMPLEX,0.6,cv::Scalar(0,255,255),1);
             }
             std::lock_guard<std::mutex> lock(shared_.mutex);
-            auto &o=shared_.value.observation; o.frame=std::move(frame); o.captured_at=time; ++o.frame_id;
+            auto &o=shared_.value.observation;
+            if(ImageGapExceeded(c_,o,time)) image_gap_seen_=true;
+            o.frame=std::move(frame); o.captured_at=time; ++o.frame_id;
         }
         Sleep(c_.camera_hz);
     }
@@ -150,16 +153,40 @@ void App::ActuatorThread() {
 #endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
         std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
+        const bool held_mode=mode_=="calib" || mode_=="collect" || mode_=="manual";
+        const char *latch_reason=nullptr;
+        const auto cancel_held=[&](const char *reason) {
+            bool had_command=false;
+            {
+                std::lock_guard<std::mutex> lock(shared_.mutex);
+                const auto &requested=shared_.value.requested;
+                had_command=requested.speedCmPerSec!=0 || requested.steeringDeg!=0 ||
+                    requested.position_control || requested.calib_limits.enabled ||
+                    previous.speedCmPerSec!=0 || previous.steeringDeg!=0 || previous.position_control;
+                shared_.value.requested={}; cancel_held_command_=true;
+            }
+            cmd={};
+            // Lệnh đã xoá thì những vòng còn nguy hiểm không tạo thêm lần chốt.
+            if(had_command) latch_reason=reason;
+        };
+        const bool image_gap=held_mode && image_gap_seen_.exchange(false);
         const bool calib_limit=(mode_=="calib" || mode_=="smoke") && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
-        if(((mode_=="calib" || mode_=="collect" || mode_=="manual") && !FreshImage(c_,s.observation,now)) || calib_limit) {
+        if((held_mode && (!FreshImage(c_,s.observation,now) || image_gap)) || calib_limit) {
             // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
-            std::lock_guard<std::mutex> lock(shared_.mutex);
-            shared_.value.requested={}; cancel_held_command_=true; cmd={};
+            if(held_mode) cancel_held(calib_limit ? "gioi_han_calib" : "mat_anh");
+            else {
+                std::lock_guard<std::mutex> lock(shared_.mutex);
+                shared_.value.requested={}; cancel_held_command_=true; cmd={};
+            }
             if(calib_limit) state="DUNG_GIOI_HAN_CALIB";
+            else state="MAT_ANH";
         }
         cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
         if(mode_=="auto") cmd=recovery.Filter(c_,s.observation,cmd,now,state);
         cmd=SafeCommand(c_,s.observation,cmd,now,state,mode_=="calib" && step_=="position");
+        if(held_mode && s.requested.speedCmPerSec!=0 && cmd.speedCmPerSec==0 &&
+            (state=="PHANH_TOF" || state=="PHANH_TOF_SAU"))
+            cancel_held(state=="PHANH_TOF_SAU" ? "phanh_tof_sau" : "phanh_tof");
         if(logger_->Failed()) throw std::runtime_error("Loi luong ghi anh");
         if(!running_) { backend_.Stop(); break; }
         const bool send_motor=cmd.speedCmPerSec!=previous.speedCmPerSec || cmd.position_control!=previous.position_control ||
@@ -168,6 +195,8 @@ void App::ActuatorThread() {
             backend_.Apply(cmd,send_motor); previous=cmd;
             if(send_motor) sent=now;
         }
+        // Gửi lệnh dừng trước khi ghi thông báo để đầu ra chậm không trì hoãn phanh.
+        if(latch_reason) std::cout<<std::string("AN_TOAN_CHOT: ")+latch_reason+'\n'<<std::flush;
         s.applied=cmd; s.state=state; s.sampled_at=now;
         s.actuator_ms=std::chrono::duration<double,std::milli>(now-previous_tick).count();
         { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.applied=cmd; shared_.value.state=state;
@@ -195,7 +224,8 @@ void App::AutonomyThread() {
         if(elapsed*1000>=c_.fps_report_ms) {
             const double fps=count/elapsed; count=0; started=now;
             { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.fps=fps; }
-            std::cout << "FPS: " << fps << '\n';
+            // Một lần ghi, để không chen vào giữa dòng AN_TOAN_CHOT của luồng chấp hành.
+            std::ostringstream fps_line; fps_line << "FPS: " << fps << '\n'; std::cout << fps_line.str();
         }
         { std::lock_guard<std::mutex> lock(shared_.mutex); s=actuator_snapshot_; }
         if(s.sampled_at!=common::Clock::time_point{}) logger_->Record(s);

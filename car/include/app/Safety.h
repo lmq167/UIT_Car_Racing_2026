@@ -7,6 +7,10 @@ namespace app {
 inline bool FreshImage(const common::Config &c,const common::Observation &o,common::Clock::time_point now) {
     return o.frame_id && now-o.captured_at<std::chrono::milliseconds(c.image_timeout_ms);
 }
+inline bool ImageGapExceeded(const common::Config &c,const common::Observation &previous,
+        common::Clock::time_point captured_at) {
+    return previous.frame_id && captured_at-previous.captured_at>std::chrono::milliseconds(c.image_timeout_ms);
+}
 inline bool CalibrationLimitReached(const common::Config &c,const common::Observation &o,
         const common::CalibrationLimits &limits,common::Clock::time_point now) {
     if(!limits.enabled) return false;
