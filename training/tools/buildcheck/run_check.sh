@@ -13,16 +13,33 @@ container_seconds=${UCR_CONTAINER_TIMEOUT:-$((build_seconds + test_seconds + 60)
 kind=${UCR_NATIVE:-container}
 profile=${UCR_PROFILE:-full}
 [[ $profile == quick || $profile == full ]] || { echo 'Chế độ không hợp lệ.' >&2; exit 2; }
-[[ $profile != quick || $kind == asan ]] || { echo 'Quick chỉ chạy ASan/UBSan.' >&2; exit 2; }
+[[ $profile != quick || $kind == asan || $kind == pycompile ]] || { echo 'Quick chỉ chạy ASan/UBSan và py_compile.' >&2; exit 2; }
 jobs=${UCR_JOBS:-4}
 [[ $jobs =~ ^[1-9][0-9]{0,3}$ ]] || { echo 'Số job không hợp lệ.' >&2; exit 2; }
 (( jobs <= $(nproc) )) || { echo 'Số job vượt số nhân CPU.' >&2; exit 2; }
-if [[ $kind == container && ${UCR_IN_CONTAINER:-0} != 1 ]]; then
+if [[ ( $kind == container || $kind == pycompile ) && ${UCR_IN_CONTAINER:-0} != 1 ]]; then
     image=${2:-ucr-jetson-buildcheck:opencv4.1.1}
     name="ucr-buildcheck-$$-$(date +%s)"
     cleanup() { timeout -k 2s 15s docker rm -f "$name" >/dev/null 2>&1 || true; }
     trap cleanup EXIT
     trap 'exit 3' HUP INT TERM
+    if [[ $kind == pycompile ]]; then
+        echo 'UCR_STEP py_compile (container)'
+        rc=0
+        timeout -k 2s 30s docker run --pull=never --rm --name "$name" \
+            --user "$(id -u):$(id -g)" -v "$src:/src:ro" "$image" bash -c '
+                set -euo pipefail
+                tmp=$(mktemp -d /tmp/ucr-pycompile.XXXXXX)
+                trap '\''rm -rf -- "$tmp"'\'' EXIT
+                mkdir "$tmp/tests"
+                cd /src
+                # py_compile vẫn ghi .pyc dù đặt PYTHONDONTWRITEBYTECODE; chỉ biên dịch bản sao.
+                find tests -type f -name "*.py" -exec cp --parents -t "$tmp" -- {} +
+                cd "$tmp"
+                find tests -type f -name "*.py" -print0 | xargs -0 -r python3 -m py_compile
+            ' || rc=$?
+        case "$rc" in 0) echo UCR_PYCOMPILE_OK; exit 0 ;; 123) exit 1 ;; 124|137) exit 3 ;; *) exit 2 ;; esac
+    fi
     # Giữ build ngoài nguồn; chạy bằng UID/GID hiện tại để không tạo file của root.
     build=${UCR_CONTAINER_BUILD_DIR:-$HOME/ucr_build_container}
     mkdir -p "$build" || exit 2
