@@ -28,6 +28,8 @@ public:
     // Chỉ mở cổng và đặt định dạng UART, không gửi lệnh tới driver.
     bool OpenPortOnly();
     bool LastWriteOk() const { return lastWriteOk_; }
+    // Chuyển chế độ vận hành trong RAM, không lưu ROM, không khởi tạo lại.
+    void PositionControl(bool enabled);
 
     // Bật bản ghi UART gửi/nhận, kể cả phản hồi rỗng.
     void SetUartLogging(bool enabled) { _uartLogging = enabled; }

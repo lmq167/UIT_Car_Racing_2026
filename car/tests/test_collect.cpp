@@ -42,6 +42,9 @@ int main() {
     common::CollectRecorder recorder(c,dir,input,output);
     Check(Read(dir+"/session.json").find("Nguyễn \\\"An\\\"")!=std::string::npos,"thoát ký tự JSON");
 #ifdef UCR_FAKE_HW
+    const std::string trace=dir+"/trace.csv";
+    Check(setenv("UCR_FAKE_HW_TRACE",trace.c_str(),1)==0,"khong dat duoc tep vet rieng");
+    cleanup.names.push_back("trace.csv");
     int source_index=0;
     for(int value:{40,40,40,80,120}) {
         const auto name="input_0"+std::to_string(source_index++)+".jpg";

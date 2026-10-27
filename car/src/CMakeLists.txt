@@ -1,4 +1,5 @@
-add_library(app_core STATIC app/App.cpp app/Backend.cpp common/Config.cpp common/RunLogger.cpp common/CollectRecorder.cpp)
+add_library(app_core STATIC app/App.cpp app/Backend.cpp app/Calibration.cpp common/Config.cpp common/RunLogger.cpp common/CollectRecorder.cpp)
+target_compile_definitions(app_core PUBLIC UCR_SOURCE_ID="${UCR_SOURCE_ID}")
 target_include_directories(app_core PUBLIC ../include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(app_core PUBLIC Threads::Threads ${OpenCV_LIBS})
 if(UCR_FAKE_HW)

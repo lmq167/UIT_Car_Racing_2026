@@ -30,11 +30,12 @@ RunLogger::RunLogger(const Config &c,const std::string &source,const std::string
     }
     std::ifstream in(source,std::ios::binary); std::ofstream out(directory_+"/config.yaml",std::ios::binary);
     if(!in || !out) throw std::runtime_error("Khong sao chep duoc config");
-    out << in.rdbuf(); out.close(); if(!out) throw std::runtime_error("Loi ghi ban sao config");
+    if(c.loaded_text.empty()) out << in.rdbuf(); else out << c.loaded_text;
+    out.close(); if(!out) throw std::runtime_error("Loi ghi ban sao config");
     csv_.open(directory_+"/log.csv");
-    csv_ << "t,frame_id,image_age_ms,cmd_speed,cmd_steer,meas_speed,odom_cm,yaw_rel,pitch,roll,tof0,tof1,tof2,tof3,state,fps\n";
+    csv_ << "t,frame_id,image_age_ms,cmd_speed,cmd_steer,meas_speed,odom_cm,yaw_rel,pitch,roll,tof0,tof1,tof2,tof3,state,fps,actuator_ms,marker,euler_x,euler_y,euler_z,tof0_age_ms,tof1_age_ms,tof2_age_ms,tof3_age_ms\n";
     if(!csv_) throw std::runtime_error("Khong mo duoc CSV");
-    std::cout << "Log: " << directory_ << '\n';
+    std::cout << "Log: " << directory_ << std::endl;
     writer_=std::thread(&RunLogger::ImageThread,this);
 }
 RunLogger::~RunLogger() { Close(); }
@@ -44,13 +45,17 @@ void RunLogger::Close() {
     if(csv_.is_open()) { csv_.flush(); csv_.close(); }
 }
 void RunLogger::Record(const Snapshot &s) {
-    const auto &o=s.observation; auto now=Clock::now();
+    const auto &o=s.observation;
+    const auto now=s.sampled_at==Clock::time_point{} ? Clock::now() : s.sampled_at;
     const double age=o.frame_id ? std::chrono::duration<double,std::milli>(now-o.captured_at).count() : -1;
     csv_ << std::chrono::duration<double>(now-started_).count() << ',' << o.frame_id << ',' << age << ','
          << s.applied.speedCmPerSec << ',' << s.applied.steeringDeg << ',' << o.meas_speed << ',' << o.odom_cm << ','
          << o.yaw_rel_deg << ',' << o.pitch_deg << ',' << o.roll_deg;
     for(const auto &t:o.tof) csv_ << ',' << (t.valid&&!t.timedOut ? t.distanceMm : -1);
-    csv_ << ',' << s.state << ',' << s.fps << '\n'; csv_.flush();
+    csv_ << ',' << s.state << ',' << s.fps << ',' << s.actuator_ms << ',' << s.applied.marker
+         << ',' << o.imu.eulerDeg.x << ',' << o.imu.eulerDeg.y << ',' << o.imu.eulerDeg.z;
+    for(const auto &t:o.tof) csv_ << ',' << std::chrono::duration<double,std::milli>(now-t.updatedAt).count();
+    csv_ << '\n'; csv_.flush();
     if(!csv_) throw std::runtime_error("Loi ghi CSV");
     if(!collect_ && o.frame_id && o.frame_id!=last_saved_ && o.frame_id%c_.image_every_n==0 && !o.frame.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -64,7 +69,8 @@ void RunLogger::ImageThread() {
         for(;;) {
             std::pair<std::uint64_t,cv::Mat> item;
             { std::unique_lock<std::mutex> lock(mutex_); cv_.wait(lock,[this]{return done_||!queue_.empty();});
-              if(queue_.empty()&&done_) return; item=std::move(queue_.front()); queue_.pop_front(); }
+              if(queue_.empty()&&done_) return;
+              item=std::move(queue_.front()); queue_.pop_front(); }
             if(!cv::imwrite(directory_+"/frame_"+std::to_string(item.first)+".jpg",item.second,
                     {cv::IMWRITE_JPEG_QUALITY,c_.jpeg_quality})) throw std::runtime_error("Loi ghi JPEG");
         }

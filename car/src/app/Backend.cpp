@@ -17,7 +17,9 @@ void Backend::AdvanceFake() {
 }
 #endif
 namespace {
+#ifndef UCR_FAKE_HW
 double Axis(const BNO055::Vector3 &v, int axis) { return axis==0 ? v.x : axis==1 ? v.y : v.z; }
+#endif
 void Check(bool ok, const char *message) { if (!ok) throw std::runtime_error(message); }
 }
 Backend::Backend(const common::Config &c) : c_(c)
@@ -89,6 +91,7 @@ bool Backend::Frame(cv::Mat &frame) {
 bool Backend::Sensors(common::Observation &o, double dt) {
     std::lock_guard<std::mutex> lock(i2c_mutex_);
 #ifdef UCR_FAKE_HW
+    (void)dt;
     o.imu_valid=true;
     std::array<int,4> distances{{2000,2000,2000,2000}};
     const auto now=fake::Millis();
@@ -123,7 +126,17 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
 #ifndef UCR_FAKE_HW
     if(send_motor) { std::lock_guard<std::mutex> lock(motor_mutex_);
       if(stopping_) return;
-      motor_.SetSpeedCms(c.speedCmPerSec); Check(motor_.LastWriteOk(),"Loi gui motor"); }
+      if(c.position_control && c.speedCmPerSec>0) {
+          if(!position_active_) {
+              motor_.PositionControl(true); Check(motor_.LastWriteOk(),"Lỗi chuyển chế độ vị trí");
+              position_active_=true;
+              motor_.SetSpeedPositionCms(c.position_cm,c.speedCmPerSec);
+          }
+      } else {
+          if(position_active_) { motor_.SetSpeedCms(0); motor_.PositionControl(false); position_active_=false; }
+          motor_.SetSpeedCms(c.speedCmPerSec);
+      }
+      Check(motor_.LastWriteOk(),"Loi gui motor"); }
     { std::lock_guard<std::mutex> lock(i2c_mutex_);
       if(stopping_) return;
       Check(servo_.SetAngle(c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg)),"Loi gui servo"); }
@@ -131,7 +144,11 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
     std::lock_guard<std::mutex> lock(motor_mutex_);
     if(stopping_) return;
     AdvanceFake();
-    if(send_motor) { fake_speed_=c.speedCmPerSec; fake::TraceNumber("motor_speed",fake_speed_); }
+    if(send_motor) {
+        if(c.position_control && c.speedCmPerSec>0 && !position_active_) fake::TraceNumber("motor_position",c.position_cm);
+        position_active_=c.position_control && c.speedCmPerSec>0;
+        fake_speed_=c.speedCmPerSec; fake::TraceNumber("motor_speed",fake_speed_);
+    }
     const int angle=c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg);
     fake::TraceNumber("servo_angle",std::max(-60,std::min(60,angle)));
 #endif
@@ -144,7 +161,10 @@ void Backend::Stop() noexcept {
           if(servo_ready_) fake::TraceNumber("servo_angle",c_.servo_trim_deg); } catch(...) {}
 #endif
 #ifndef UCR_FAKE_HW
-    try { std::lock_guard<std::mutex> lock(motor_mutex_); if(motor_ready_) motor_.SetSpeedCms(0); } catch(...) {}
+    try { std::lock_guard<std::mutex> lock(motor_mutex_); if(motor_ready_) {
+        motor_.SetSpeedCms(0);
+        if(position_active_) { motor_.PositionControl(false); position_active_=false; motor_.SetSpeedCms(0); }
+    } } catch(...) {}
     try { std::lock_guard<std::mutex> lock(i2c_mutex_); if(servo_ready_) servo_.SetAngle(c_.servo_trim_deg); } catch(...) {}
 #endif
 }
@@ -152,8 +172,14 @@ void Backend::Render(const common::Snapshot &s, const std::string &mode) {
 #ifndef UCR_FAKE_HW
     std::lock_guard<std::mutex> lock(i2c_mutex_);
     if(!oled_ready_) return;
-    oled_.clear(); oled_.drawString(0,0,mode+" "+s.state);
-    oled_.drawString(0,15,"FPS "+std::to_string(static_cast<int>(s.fps)));
+    oled_.clear();
+    if(s.state=="DUNG_CHO_ANH_ON_DINH" || s.state=="MAT_ANH") {
+        oled_.drawString(0,0,s.state);
+        oled_.drawString(0,15,s.state=="MAT_ANH" ? "CHO ANH MOI" : "CHO ANH ON DINH");
+    } else {
+        oled_.drawString(0,0,mode+" "+s.state);
+        oled_.drawString(0,15,"FPS "+std::to_string(static_cast<int>(s.fps)));
+    }
     oled_.drawString(0,30,"cm/s "+std::to_string(s.observation.meas_speed));
     oled_.drawString(0,45,"ToF "+std::to_string(s.observation.tof[c_.FrontSlot()].distanceMm)); oled_.display();
 #else

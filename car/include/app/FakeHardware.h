@@ -1,12 +1,14 @@
 #pragma once
 #ifdef UCR_FAKE_HW
 #include "common/Types.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
 #include <exception>
 #include <fstream>
 #include <locale>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
@@ -32,7 +34,8 @@ inline void Trace(const char *kind,const std::string &value) {
     if(!out) throw std::runtime_error("Không ghi được vết phần cứng giả: "+path);
 }
 template<class T> inline void TraceNumber(const char *kind,T value) {
-    std::ostringstream out; out.imbue(std::locale::classic()); out.precision(9); out << value;
+    // Giữ nguyên giá trị cả khi công cụ đọc vết dùng double cho lệnh float.
+    std::ostringstream out; out.imbue(std::locale::classic()); out.precision(std::numeric_limits<double>::max_digits10); out << value;
     Trace(kind,out.str());
 }
 inline long long Time(const std::string &text) {
@@ -82,6 +85,40 @@ inline bool CameraGap() {
     const auto now=Millis();
     for(const auto &gap:gaps) if(now>=gap.first && now<gap.second) return true;
     return false;
+}
+inline std::vector<std::pair<long long,int>> ParseKeys(const std::string &text) {
+    std::vector<std::pair<long long,int>> result;
+    try {
+        std::size_t begin=0;
+        while(begin<text.size()) {
+            const auto colon=text.find(':',begin);
+            if(colon==std::string::npos || colon+1>=text.size())
+                throw std::runtime_error("thiếu mốc ms hoặc phím");
+            const auto ms=Time(text.substr(begin,colon-begin));
+            const auto key=static_cast<unsigned char>(text[colon+1]);
+            if(key>127) throw std::runtime_error("phím phải là đúng một ký tự ASCII");
+            result.emplace_back(ms,key);
+            begin=colon+2;
+            if(begin==text.size()) break;
+            if(text[begin]!=',' || ++begin==text.size())
+                throw std::runtime_error("cần dấu phẩy giữa các mục, không để mục rỗng");
+        }
+    } catch(const std::exception &e) {
+        throw std::runtime_error(std::string("UCR_FAKE_KEYS không hợp lệ; cần <ms>:<phím>[,<ms>:<phím>...], ")+
+            "ms là số nguyên trong [0, 9223372036854775807], phím là một ký tự ASCII: "+e.what());
+    }
+    std::stable_sort(result.begin(),result.end(),[](const auto &a,const auto &b) { return a.first<b.first; });
+    return result;
+}
+inline const std::vector<std::pair<long long,int>> &KeyScript() {
+    static const auto keys=ParseKeys(Env("UCR_FAKE_KEYS"));
+    return keys;
+}
+inline int NextKey() {
+    const auto &keys=KeyScript();
+    static std::size_t next=0;
+    if(next==keys.size() || Millis()<keys[next].first) return -1;
+    return keys[next++].second;
 }
 inline void Fault(const char *thread) {
     static const auto spec=[] {

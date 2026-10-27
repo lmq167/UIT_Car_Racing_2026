@@ -213,6 +213,11 @@ void Motor::SetSpeedCms(float Cms)
     SendCommand(cmd.c_str(), false);
 }
 
+void Motor::PositionControl(bool enabled)
+{
+    SendCommand(enabled ? "N1 O M4\n" : "N1 O M3\n", false);
+}
+
 void Motor::SetSpeedPositionRad(float Position, float Rad)
 {
     const std::string cmd =
@@ -225,7 +230,7 @@ void Motor::SetSpeedPositionCms(float PositionCm, float Cms)
     const std::string cmd =
         "N1 p" + std::to_string((PositionCm * 2.0f) / D) +
         " v" + std::to_string((Cms * 2.0f) / D) + "\n";
-    SendCommand(cmd.c_str());
+    SendCommand(cmd.c_str(), false);
 }
 
 bool Motor::GetStatus(char *buffer, std::size_t bufferSize)

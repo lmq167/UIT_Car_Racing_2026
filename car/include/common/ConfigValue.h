@@ -60,13 +60,10 @@ inline void ReadConfigValue(const char *name,const cv::FileNode &node,std::vecto
     value=std::move(parsed);
 }
 inline void ReadConfigFlag(const char *name,const cv::FileNode &node,int &value) {
-    if(node.isString()) {
-        const auto text=static_cast<std::string>(node);
-        if(text!="true" && text!="false") BadConfigType(name,node);
-        value=text=="true";
-    } else {
-        ReadConfigValue(name,node,value);
-        if(value!=0 && value!=1) BadConfigType(name,node);
-    }
+    if(!node.isInt()) BadConfigType(name,node);
+    const int parsed=static_cast<int>(node);
+    if(parsed!=0 && parsed!=1)
+        throw std::runtime_error(std::string(name)+" = "+ConfigValueText(node)+" ngoài khoảng hợp lệ {0, 1} (số nguyên)");
+    value=parsed;
 }
 }

@@ -28,6 +28,7 @@ private:
     cv::VideoCapture camera_;
     std::mutex motor_mutex_, i2c_mutex_;
     bool motor_ready_=false, servo_ready_=false, oled_ready_=false;
+    bool position_active_=false;
     double yaw_=0, bias_=0;
     std::atomic<bool> stopping_{false};
 #ifdef UCR_FAKE_HW

@@ -1,9 +1,11 @@
 #include "app/App.h"
 #include "app/Safety.h"
+#include "common/Smoke.h"
 #ifdef UCR_FAKE_HW
 #include "app/FakeHardware.h"
 #endif
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -12,18 +14,36 @@
 #include <numeric>
 #include <stdexcept>
 #include <utility>
+#include <poll.h>
+#include <unistd.h>
 namespace app {
 namespace {
 void Sleep(int hz) { std::this_thread::sleep_for(std::chrono::microseconds(1000000/hz)); }
 }
-App::App(common::Config c,std::string mode,std::string path):c_(std::move(c)),mode_(std::move(mode)),
-    config_path_(std::move(path)),backend_(c_),controller_(new StopController) {}
+App::App(common::Config c,std::string mode,std::string path,std::string step,std::string kill_file,bool smoke_drop,double calib_drop_after):c_(std::move(c)),mode_(std::move(mode)),
+    config_path_(std::move(path)),backend_(c_),step_(std::move(step)),kill_file_(std::move(kill_file)),smoke_drop_(smoke_drop),calib_drop_after_(calib_drop_after),controller_(new StopController) {}
 App::~App() { RequestStop(); Wait(); }
+void App::CheckAutoSmoke() const {
+    if(mode_!="auto") return;
+    if(!c_.tof_mapping_confirmed || !common::SmokePassed(c_,config_path_))
+        throw std::runtime_error("Chưa có smoke ĐẠT khớp mã nguồn/cấu hình; chạy scripts/smoke_test.sh --smoke-drop-camera trước auto");
+}
 void App::Init() {
+#ifdef UCR_FAKE_HW
+    // Kiểm hết kịch bản trước cả tạo log và khởi tạo thiết bị.
+    (void)fake::KeyScript();
+#endif
+    CheckAutoSmoke();
     logger_.reset(new common::RunLogger(c_,config_path_,mode_));
+    if(mode_=="calib" || mode_=="smoke") calibration_.reset(new Calibration(c_,mode_=="smoke" ? "smoke" : step_,
+        logger_->Directory(),config_path_,kill_file_,smoke_drop_));
     if(mode_=="collect") {
         const char *display=std::getenv("DISPLAY"), *wayland=std::getenv("WAYLAND_DISPLAY");
-        if(!c_.enable_display || !((display&&*display)||(wayland&&*wayland)))
+        bool keyboard_available=c_.enable_display && ((display&&*display)||(wayland&&*wayland));
+#ifdef UCR_FAKE_HW
+        keyboard_available=keyboard_available || !fake::KeyScript().empty();
+#endif
+        if(!keyboard_available)
             throw std::runtime_error("Thu ảnh cần cửa sổ nhận bàn phím; bật enable_display và mở phiên màn hình trước khi chạy");
         collector_.reset(new common::CollectRecorder(c_,logger_->Directory(),std::cin,std::cout));
     }
@@ -42,6 +62,7 @@ void App::Launch(std::function<void()> work) {
     });
 }
 void App::Start() {
+    CheckAutoSmoke();
     started_=true;
     running_=true;
     try {
@@ -63,10 +84,22 @@ void App::Wait() {
 }
 common::Snapshot App::Snapshot() { std::lock_guard<std::mutex> lock(shared_.mutex); return shared_.value; }
 void App::CameraThread() {
+    auto moving_at=common::Clock::time_point{};
     while(running_) {
+        if(calib_drop_after_>0 && !drop_camera_) {
+            if(moving_at==common::Clock::time_point{} && Snapshot().applied.speedCmPerSec>0) moving_at=common::Clock::now();
+            if(moving_at!=common::Clock::time_point{} && common::Clock::now()-moving_at>=std::chrono::duration<double>(calib_drop_after_)) {
+                drop_camera_=true; std::cout<<"Đã ngắt khung ảnh hiệu chuẩn; đánh dấu vị trí bánh lúc này.\n";
+            }
+        }
         cv::Mat frame;
-        if(backend_.Frame(frame)) {
+        if(!drop_camera_ && backend_.Frame(frame)) {
             const auto time=common::Clock::now();
+            if(mode_=="calib" && step_=="latency") {
+                const auto s=Snapshot();
+                cv::putText(frame,"M="+std::to_string(s.applied.marker)+" A="+std::to_string(s.applied.steeringDeg),
+                    cv::Point(frame.cols/20,frame.rows/10),cv::FONT_HERSHEY_SIMPLEX,0.6,cv::Scalar(0,255,255),1);
+            }
             std::lock_guard<std::mutex> lock(shared_.mutex);
             auto &o=shared_.value.observation; o.frame=std::move(frame); o.captured_at=time; ++o.frame_id;
         }
@@ -109,22 +142,38 @@ void App::OdometryThread() {
 }
 void App::ActuatorThread() {
     common::ControlCommand previous; auto sent=common::Clock::time_point{};
+    CameraRecovery recovery; auto previous_tick=common::Clock::now();
     while(running_) {
 #ifdef UCR_FAKE_HW
         fake::Fault("actuator_throw");
 #endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
-        std::string state=mode_=="auto" ? "DUNG" : "LAI_TAY";
+        if((mode_=="calib" || mode_=="collect") && !FreshImage(c_,s.observation,now)) {
+            // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
+            std::lock_guard<std::mutex> lock(shared_.mutex);
+            shared_.value.requested={}; cancel_held_command_=true; cmd={};
+        }
+        std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
+        cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
+        if(mode_=="auto") cmd=recovery.Filter(c_,s.observation,cmd,now,state);
         cmd=SafeCommand(c_,s.observation,cmd,now,state);
         if(logger_->Failed()) throw std::runtime_error("Loi luong ghi anh");
         if(!running_) { backend_.Stop(); break; }
-        const bool send_motor=cmd.speedCmPerSec!=previous.speedCmPerSec ||
+        const bool send_motor=cmd.speedCmPerSec!=previous.speedCmPerSec || cmd.position_control!=previous.position_control ||
             now-sent>=std::chrono::milliseconds(c_.motor_keepalive_ms);
-        if(send_motor || cmd.steeringDeg!=previous.steeringDeg) {
+        if(send_motor || cmd.steeringDeg!=previous.steeringDeg || cmd.marker!=previous.marker) {
+            const bool mark=cmd.marker && cmd.marker!=previous.marker;
             backend_.Apply(cmd,send_motor); previous=cmd;
+            if(mark) { s.applied=cmd; s.state="DANH_DAU_"+std::to_string(cmd.marker); backend_.Render(s,mode_); }
             if(send_motor) sent=now;
         }
-        { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.applied=cmd; shared_.value.state=state; }
+        s.applied=cmd; s.state=state; s.sampled_at=now;
+        s.actuator_ms=std::chrono::duration<double,std::milli>(now-previous_tick).count();
+        { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.applied=cmd; shared_.value.state=state;
+          shared_.value.actuator_ms=s.actuator_ms;
+          // Ghi cùng ảnh/thời điểm đã xét an toàn, không ghép với ảnh của vòng sau.
+          actuator_snapshot_=s; }
+        previous_tick=now;
         Sleep(c_.control_hz);
     }
     backend_.Stop();
@@ -147,42 +196,80 @@ void App::AutonomyThread() {
             { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.fps=fps; }
             std::cout << "FPS: " << fps << '\n';
         }
-        logger_->Record(Snapshot()); Sleep(c_.control_hz);
+        { std::lock_guard<std::mutex> lock(shared_.mutex); s=actuator_snapshot_; }
+        if(s.sampled_at!=common::Clock::time_point{}) logger_->Record(s);
+        Sleep(c_.control_hz);
     }
 }
 void App::UIThread() {
     const char *display=std::getenv("DISPLAY"), *wayland=std::getenv("WAYLAND_DISPLAY");
     const bool show=c_.enable_display && ((display&&*display)||(wayland&&*wayland));
-    if(mode_=="manual"&&!show) std::cerr << "Khong co cua so ban phim; xe giu dung, Ctrl+C de thoat\n";
+    bool keyboard_available=show;
+#ifdef UCR_FAKE_HW
+    keyboard_available=keyboard_available || !fake::KeyScript().empty();
+#endif
+    if(mode_=="manual"&&!keyboard_available) std::cerr << "Khong co cua so ban phim; xe giu dung, Ctrl+C de thoat\n";
     auto rendered=common::Clock::time_point{};
+    bool terminal_open=true;
     while(running_) {
         auto s=Snapshot(); const auto now=common::Clock::now();
         if(now-rendered>=std::chrono::duration<double>(1.0/c_.ui_hz)) { backend_.Render(s,mode_); rendered=now; }
+        int key=-1;
         if(show) {
             if(!s.observation.frame.empty()) cv::imshow("UCR",collector_ ? collector_->View(s) : s.observation.frame);
             const int raw_key=cv::waitKey(1);
-            const int key=raw_key<0 ? -1 : raw_key&255;
-            if(collector_) {
-                auto cmd=s.requested;
-                if(collector_->Key(key,cmd)) { RequestStop(); break; }
-                { std::lock_guard<std::mutex> lock(shared_.mutex); shared_.value.requested=cmd; }
-                collector_->Capture(s);
-            } else if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
-            if(mode_=="manual") {
-                std::lock_guard<std::mutex> lock(shared_.mutex); auto &cmd=shared_.value.requested;
-                switch(key) {
-                    case 'w': case 'W': cmd.speedCmPerSec+=c_.keyboard_speed_step_cms; break;
-                    case 's': case 'S': cmd.speedCmPerSec-=c_.keyboard_speed_step_cms; break;
-                    case 'a': case 'A': cmd.steeringDeg-=c_.keyboard_steering_step_deg; break;
-                    case 'd': case 'D': cmd.steeringDeg+=c_.keyboard_steering_step_deg; break;
-                    case 'c': case 'C': cmd.steeringDeg=0; break;
-                    case ' ': case 'x': case 'X': cmd={}; break;
-                }
-                cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
-                cmd.steeringDeg=std::clamp(cmd.steeringDeg,-c_.max_steering_deg,c_.max_steering_deg);
+            key=raw_key<0 ? -1 : raw_key&255;
+        }
+#ifdef UCR_FAKE_HW
+        if(mode_=="collect" || mode_=="calib" || mode_=="manual") {
+            const int injected=fake::NextKey();
+            if(injected>=0) key=injected;
+        }
+#endif
+        if(collector_) {
+            auto cmd=s.requested;
+            if(cancel_held_command_.exchange(false)) cmd={};
+            if(collector_->Key(key,cmd)) { RequestStop(); break; }
+            { std::lock_guard<std::mutex> lock(shared_.mutex);
+              shared_.value.requested=cancel_held_command_ || !FreshImage(c_,shared_.value.observation,common::Clock::now())
+                  ? common::ControlCommand{} : cmd; }
+            collector_->Capture(s);
+        } else if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
+        if(mode_=="manual") {
+            std::lock_guard<std::mutex> lock(shared_.mutex); auto &cmd=shared_.value.requested;
+            switch(key) {
+                case 'w': case 'W': cmd.speedCmPerSec+=c_.keyboard_speed_step_cms; break;
+                case 's': case 'S': cmd.speedCmPerSec-=c_.keyboard_speed_step_cms; break;
+                case 'a': case 'A': cmd.steeringDeg-=c_.keyboard_steering_step_deg; break;
+                case 'd': case 'D': cmd.steeringDeg+=c_.keyboard_steering_step_deg; break;
+                case 'c': case 'C': cmd.steeringDeg=0; break;
+                case ' ': case 'x': case 'X': cmd={}; break;
+            }
+            cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
+            cmd.steeringDeg=std::clamp(cmd.steeringDeg,-c_.max_steering_deg,c_.max_steering_deg);
+        }
+        if(calibration_ && terminal_open && key<0) {
+            pollfd input{STDIN_FILENO,POLLIN,0};
+            if(::poll(&input,1,0)>0 && (input.revents&(POLLIN|POLLHUP))) {
+                char ch=0; const auto count=::read(STDIN_FILENO,&ch,1);
+                if(count==0) {
+                    terminal_open=false;
+                    // Mất đầu vào thì huỷ lượt đang lái; vẫn cho phép quan sát và nhận tín hiệu dừng.
+                    if(s.requested.speedCmPerSec!=0 || s.requested.steeringDeg!=0) key='x';
+                } else if(count>0 && ch!='\n' && ch!='\r') key=static_cast<unsigned char>(ch);
             }
         }
-        Sleep(collector_ ? std::max(20,c_.control_hz) : c_.ui_hz);
+        if(calibration_) {
+            if(mode_=="calib" && cancel_held_command_.exchange(false)) calibration_->CancelMotion();
+            const auto cmd=calibration_->Tick(s,key);
+            if(mode_=="smoke") drop_camera_=calibration_->DropCamera();
+            if(calibration_->Done()) { if(calibration_->Failed()) failed_=true; RequestStop(); break; }
+            std::lock_guard<std::mutex> lock(shared_.mutex);
+            shared_.value.requested=mode_=="calib" && (cancel_held_command_ ||
+                !FreshImage(c_,shared_.value.observation,common::Clock::now())) ? common::ControlCommand{} : cmd;
+            shared_.value.requested_state=calibration_->State();
+        }
+        Sleep((collector_ || calibration_) ? std::max(20,c_.control_hz) : c_.ui_hz);
     }
     if(show) cv::destroyAllWindows();
 }
