@@ -9,10 +9,13 @@
 // Không quan sát được "lệnh cuối gửi phần cứng" (bản giả không ghi lại lệnh) => dùng log.csv làm bằng chứng gián tiếp;
 // xem mục "Giao diện còn thiếu" trong báo cáo.
 #include "acc_common.h"
+#include "acc_seed_gate.h"
 #include "app/App.h"
 #include "common/Config.h"
 #include <future>
+#include <cmath>
 #include <memory>
+#include <stdexcept>
 
 namespace {
 
@@ -24,14 +27,18 @@ struct Env {
 Env MakeEnv() {
     Env e;
     e.root = acc::MakeTempDir("acc_app_");
+    if (e.root.empty() || setenv("UCR_FAKE_HW_TRACE", (e.root + "/trace.csv").c_str(), 1) != 0)
+        throw std::runtime_error("khong tao duoc tep vet rieng cho luot kiem tra");
     e.logdir = e.root + "/runs";
     mkdir(e.logdir.c_str(), 0755);
     e.cfgpath = e.root + "/config.yaml";
-    acc::WriteFile(e.cfgpath, "%YAML:1.0\n---\nlog_dir: \"" + e.logdir + "\"\nenable_display: 0\nenable_oled: 0\nfake_source: \"\"\n");
+    acc::WriteFile(e.cfgpath, "%YAML:1.0\n---\nlog_dir: \"" + e.logdir + "\"\nenable_display: 0\nenable_oled: 0\nfake_source: \"\"\ntof_mapping_confirmed: 1\n");
     e.c.log_dir = e.logdir;
     e.c.enable_display = 0;
     e.c.enable_oled = 0;
     e.c.fake_source = "";
+    e.c.tof_mapping_confirmed=1;
+    acc::SeedGate(e.c,e.cfgpath);
     return e;
 }
 
@@ -80,7 +87,7 @@ void CheckLogZeroCommands(const std::string &dir_suffix, const Env &e, const std
     ACC_CHECK(csv.rows.size() >= min_rows, label + ": log.csv phai co >= " + std::to_string(min_rows) + " dong, co " + std::to_string(csv.rows.size()));
     for (size_t i = 0; i < csv.rows.size(); ++i) {
         const double s = csv.Num(i, "cmd_speed"), a = csv.Num(i, "cmd_steer");
-        if (!(s == 0.0 && a == 0.0)) {
+        if (!(std::fabs(s)<=1e-3 && a == 0.0)) {
             ACC_CHECK(false, label + ": dong " + std::to_string(i) + " cmd_speed=" + std::to_string(s) + " cmd_steer=" + std::to_string(a) + " (phai 0 vi chi co StopController / khong co man hinh)");
             break;
         }

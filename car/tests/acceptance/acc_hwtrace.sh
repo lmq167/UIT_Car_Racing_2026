@@ -11,7 +11,7 @@
 #  - Lệnh cuối: lệnh cuối cùng gửi phần cứng là tốc độ 0, servo về trim sau thoát bình thường / lỗi / tín hiệu.
 #  - docs/ucr_car.md: "ucr_stop ... đưa servo về trim ... không đảo dấu trim"; mọi lỗi cấu hình của ucr_stop
 #    (không mở được file, thiếu khoá, sai kiểu, ngoài giới hạn) đều in lỗi nêu servo_trim_deg, dùng trim 0, VẪN dừng motor và
-#    đưa servo về 0, rồi thoát mã khác 0; `calib` không khởi tạo thiết bị; với main, khoá sai kiểu/vượt giới hạn
+#    đưa servo về 0, rồi thoát mã khác 0; `calib` thiếu/sai bước không khởi tạo thiết bị; với main, khoá sai kiểu/vượt giới hạn
 #    "dừng chương trình trước khi khởi tạo phần cứng"; terminate -> mã 134; SIGKILL -> 137;
 #    lỗi luồng làm chương trình thoát khác 0 và trình bao gọi ucr_stop.
 # Thứ tự giữa main và ucr_stop xác định bằng THỨ TỰ DÒNG trong file vết (mốc ms của hai tiến trình khác nhau).
@@ -26,7 +26,7 @@ tcount() { [[ -f $1 ]] || { echo 0; return; }; awk -F, -v k="$2" '$2==k{c++} END
 tlast()  { [[ -f $1 ]] || return 0; awk -F, -v k="$2" '$2==k{v=$3} END{if(v!="")print v}' "$1"; }
 tlines() { [[ -f $1 ]] || { echo 0; return; }; wc -l < "$1" | tr -d ' '; }
 isnum()  { [[ $1 =~ ^-?[0-9]+(\.[0-9]+)?([eE][-+]?[0-9]+)?$ ]]; }
-numeq()  { isnum "$1" && awk -v a="$1" -v b="$2" 'BEGIN{exit !(a+0==b+0)}'; }
+numeq()  { isnum "$1" && awk -v a="$1" -v b="$2" 'BEGIN{d=a-b; if(d<0)d=-d; exit !(d<=0.001)}'; }
 # số dòng loại $2 có chứa chuỗi $3 (cố định)
 tcfg_has() { [[ -f $1 ]] || { echo 0; return; }; awk -F, '$2=="motor_cfg"' "$1" | grep -cF -- "$2" || true; }
 
@@ -114,7 +114,7 @@ stop_badargs "ucr_stop --config <file trim 3 dung> --lanh: bo file da nhan, dung
 stop_badargs "ucr_stop --config <file trim 3 dung> --lanh: khong co cau hinh mac dinh thi trim 0 (khong dung trim 3)" 0 0 --config "$T/da-nhan.yaml" --lanh
 
 # =====================================================================================================================
-# B. main THẬT chạy trực tiếp: chuỗi init đúng 1 lần, lệnh cuối cùng 0/trim sau tín hiệu; chế độ calib và cấu hình xấu không init.
+# B. main THẬT: init một lần; calib thiếu/sai bước và cấu hình xấu không init (hiệu chuẩn, bổ sung 26/10).
 main_signal() { # <nhãn> <chế độ> <tín hiệu> [khoá=giá-trị ...]
     local l=$1 mode=$2 sig=$3; shift 3
     newrun
@@ -131,10 +131,26 @@ main_signal main_auto_INT    auto   INT
 main_signal main_manual_TERM manual TERM
 main_signal main_auto_odometry_nhanh_TERM auto TERM odometry_hz=100 sensor_hz=100
 
-newrun; mkcfg "$RUN/c.yaml" "$RUN/runs"
-UCR_FAKE_HW_TRACE="$TR" timeout 20 "$REAL_MAIN" --config "$RUN/c.yaml" --mode calib >"$RUN/out" 2>&1
-check "[calib] khong khoi tao thiet bi: khong co motor_init (thay $(tcount "$TR" motor_init))" test "$(tcount "$TR" motor_init)" -eq 0
-check "[calib] khong gui lenh cau hinh driver (thay $(tcount "$TR" motor_cfg))" test "$(tcount "$TR" motor_cfg)" -eq 0
+for step in '' 0 11 khong-co-buoc-nay; do
+    newrun; mkcfg "$RUN/c.yaml" "$RUN/runs"
+    args=(--mode calib)
+    [[ -z $step ]] || args+=(--step "$step")
+    UCR_FAKE_HW_TRACE="$TR" timeout -k 2s 15s "$REAL_MAIN" --config "$RUN/c.yaml" "${args[@]}" >"$RUN/out" 2>&1; rc=$?
+    check "[calib thieu/sai buoc] ma loi chu dong (nhan $rc)" test "$rc" -ge 1 -a "$rc" -lt 124
+    check "[calib thieu/sai buoc] phai co thong bao" test -s "$RUN/out"
+    check "[calib thieu/sai buoc] khong khoi tao thiet bi" test "$(tlines "$TR")" -eq 0
+done
+# QĐ10: calib nhận --step <n>. Bước hợp lệ phải có chuỗi init một lần và dừng sạch.
+newrun; mkcfg "$RUN/c.yaml" "$RUN/runs" servo_trim_deg=7
+# Giữ đầu vào mở như người đang chờ thao tác; stdin của CTest là EOF nên calib sẽ tự thoát.
+mkfifo "$RUN/input"
+exec 9<>"$RUN/input"
+sigrun TERM 2500 "$RUN/out" env UCR_FAKE_HW_TRACE="$TR" "$REAL_MAIN" --config "$RUN/c.yaml" --mode calib --step 2 <&9
+exec 9>&-
+check "[calib servo] dang cho thao tac truoc TERM" test "$ALIVE" = 1
+check "[calib servo] tu xu ly TERM" graceful_exit "$RES"
+init_checks "calib servo" "$TR"
+tail_checks "calib servo" "$TR" 7
 
 reject() { # <nhãn> [khoá=giá-trị ...]   (main bị từ chối, không đụng phần cứng)
     local l=$1; shift

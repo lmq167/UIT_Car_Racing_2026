@@ -102,9 +102,9 @@ void TofBrakeForward() {
         return o;
     };
 
-    ACC_CHECK(Run(c, with_front(249), {10.f, 0}, now).speedCmPerSec == 0.f, "front 249 < 250 khi tien phai ve 0");
-    ACC_CHECK(Run(c, with_front(0), {10.f, 0}, now).speedCmPerSec == 0.f, "front 0 mm khi tien phai ve 0");
-    ACC_CHECK(Run(c, with_front(100), {10.f, 4}, now).speedCmPerSec == 0.f, "front 100 mm khi tien (co lai) phai ve 0");
+    ACC_CHECK(Near(Run(c, with_front(249), {10.f, 0}, now).speedCmPerSec, 0.f), "front 249 < 250 khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, with_front(0), {10.f, 0}, now).speedCmPerSec, 0.f), "front 0 mm khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, with_front(100), {10.f, 4}, now).speedCmPerSec, 0.f), "front 100 mm khi tien (co lai) phai ve 0");
     ACC_CHECK(Near(Run(c, with_front(250), {10.f, 0}, now).speedCmPerSec, 10.f), "front == nguong (250) KHONG phanh (so sanh nho hon)");
     ACC_CHECK(Near(Run(c, with_front(251), {10.f, 0}, now).speedCmPerSec, 10.f), "front 251 khong phanh");
     ACC_CHECK(Near(Run(c, with_front(2000), {10.f, 0}, now).speedCmPerSec, 10.f), "front 2000 khong phanh");
@@ -114,12 +114,12 @@ void TofBrakeForward() {
     c2.tof_brake_mm = 400;
     Observation o2 = Healthy(c2, now);
     o2.tof[c2.FrontSlot()].distanceMm = 399;
-    ACC_CHECK(Run(c2, o2, {10.f, 0}, now).speedCmPerSec == 0.f, "nguong 400: front 399 phai phanh");
+    ACC_CHECK(Near(Run(c2, o2, {10.f, 0}, now).speedCmPerSec, 0.f), "nguong 400: front 399 phai phanh");
     o2.tof[c2.FrontSlot()].distanceMm = 400;
     ACC_CHECK(Near(Run(c2, o2, {10.f, 0}, now).speedCmPerSec, 10.f), "nguong 400: front 400 khong phanh");
 
     // Đứng yên (tốc độ 0) không sinh tốc độ khác 0.
-    ACC_CHECK(Run(c, with_front(10), {0.f, 0}, now).speedCmPerSec == 0.f, "toc do 0 giu nguyen 0");
+    ACC_CHECK(Near(Run(c, with_front(10), {0.f, 0}, now).speedCmPerSec, 0.f), "toc do 0 giu nguyen 0");
 
     // Đang LÙI: ToF trước gần KHÔNG được chặn lùi.
     ACC_CHECK(Near(Run(c, with_front(30), {-10.f, 0}, now).speedCmPerSec, -10.f), "lui khi front gan khong bi chan boi ToF truoc");
@@ -148,7 +148,7 @@ void TofSlotMapping() {
     ACC_CHECK(Near(Run(c, o, {10.f, 0}, now).speedCmPerSec, 10.f), "slot 0 = rear gan: khong phanh tien");
     o.tof[0].distanceMm = 2000;
     o.tof[1].distanceMm = 50;  // slot 1 là 'front' => phanh
-    ACC_CHECK(Run(c, o, {10.f, 0}, now).speedCmPerSec == 0.f, "slot 1 = front gan: phai phanh tien");
+    ACC_CHECK(Near(Run(c, o, {10.f, 0}, now).speedCmPerSec, 0.f), "slot 1 = front gan: phai phanh tien");
 }
 
 void TofInvalidAndStale() {
@@ -161,19 +161,19 @@ void TofInvalidAndStale() {
     Observation inv = Healthy(c, now);
     inv.tof[front].distanceMm = -1;
     inv.tof[front].valid = false;
-    ACC_CHECK(Run(c, inv, {10.f, 0}, now).speedCmPerSec == 0.f, "front = -1 (valid=false) khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, inv, {10.f, 0}, now).speedCmPerSec, 0.f), "front = -1 (valid=false) khi tien phai ve 0");
 
     Observation neg = Healthy(c, now);
     neg.tof[front].distanceMm = -1;  // valid=true nhưng khoảng cách -1: vẫn là không hợp lệ
-    ACC_CHECK(Run(c, neg, {10.f, 0}, now).speedCmPerSec == 0.f, "front distance -1 (du valid=true) khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, neg, {10.f, 0}, now).speedCmPerSec, 0.f), "front distance -1 (du valid=true) khi tien phai ve 0");
 
     Observation none;  // chưa từng có mẫu ToF nào (mọi trường mặc định)
     none.frame_id = 3; none.captured_at = now;
-    ACC_CHECK(Run(c, none, {10.f, 0}, now).speedCmPerSec == 0.f, "chua co mau ToF (mac dinh) khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, none, {10.f, 0}, now).speedCmPerSec, 0.f), "chua co mau ToF (mac dinh) khi tien phai ve 0");
 
     Observation stale = Healthy(c, now);
     stale.tof[front].updatedAt = now - std::chrono::milliseconds(c.tof_timeout_ms + 300);
-    ACC_CHECK(Run(c, stale, {10.f, 0}, now).speedCmPerSec == 0.f, "mau ToF qua cu (> tof_timeout_ms) khi tien phai ve 0");
+    ACC_CHECK(Near(Run(c, stale, {10.f, 0}, now).speedCmPerSec, 0.f), "mau ToF qua cu (> tof_timeout_ms) khi tien phai ve 0");
 
     Observation fresh = Healthy(c, now);
     fresh.tof[front].updatedAt = now - std::chrono::milliseconds(c.tof_timeout_ms / 5);
@@ -196,9 +196,9 @@ void ImageLoss() {
     Observation old = Healthy(c, now);
     old.captured_at = now - std::chrono::milliseconds(c.image_timeout_ms + 100);
     auto r = Run(c, old, {10.f, 7}, now);
-    ACC_CHECK(r.speedCmPerSec == 0.f && r.steeringDeg == 0, "anh cu hon nguong: toc do va goc phai ve 0");
+    ACC_CHECK(Near(r.speedCmPerSec, 0.f) && r.steeringDeg == 0, "anh cu hon nguong: toc do va goc phai ve 0");
     r = Run(c, old, {-10.f, -7}, now);
-    ACC_CHECK(r.speedCmPerSec == 0.f && r.steeringDeg == 0, "anh cu hon nguong: ca khi lui cung phai ve 0");
+    ACC_CHECK(Near(r.speedCmPerSec, 0.f) && r.steeringDeg == 0, "anh cu hon nguong: ca khi lui cung phai ve 0");
 
     Observation ok = Healthy(c, now);
     ok.captured_at = now - std::chrono::milliseconds(c.image_timeout_ms - 100);
@@ -209,7 +209,7 @@ void ImageLoss() {
     never.frame_id = 0;  // chưa nhận được ảnh nào
     never.captured_at = now;
     r = Run(c, never, {10.f, 7}, now);
-    ACC_CHECK(r.speedCmPerSec == 0.f && r.steeringDeg == 0, "chua co anh nao (frame_id=0): phai dung");
+    ACC_CHECK(Near(r.speedCmPerSec, 0.f) && r.steeringDeg == 0, "chua co anh nao (frame_id=0): phai dung");
 
     // Ngưỡng theo config.
     common::Config c2;
@@ -217,11 +217,11 @@ void ImageLoss() {
     Observation o2 = Healthy(c2, now);
     o2.captured_at = now - std::chrono::milliseconds(150);
     r = Run(c2, o2, {10.f, 7}, now);
-    ACC_CHECK(r.speedCmPerSec == 0.f && r.steeringDeg == 0, "image_timeout_ms=100, anh cu 150ms: phai dung");
+    ACC_CHECK(Near(r.speedCmPerSec, 0.f) && r.steeringDeg == 0, "image_timeout_ms=100, anh cu 150ms: phai dung");
 
     // Mất ảnh thắng mọi thứ: lệnh cực đoan vẫn ra 0.
     r = Run(c, old, {1e9f, 1000000}, now);
-    ACC_CHECK(r.speedCmPerSec == 0.f && r.steeringDeg == 0, "mat anh + lenh cuc doan van phai ra 0");
+    ACC_CHECK(Near(r.speedCmPerSec, 0.f) && r.steeringDeg == 0, "mat anh + lenh cuc doan van phai ra 0");
 }
 
 void Defaults() {

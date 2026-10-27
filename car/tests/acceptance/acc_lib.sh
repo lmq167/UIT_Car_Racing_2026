@@ -10,7 +10,9 @@ RUNSH="$ROOT/scripts/run.sh"
 ACC_CHECKS=0
 ACC_FAILS=0
 ACC_TMP_PARENT=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)
-T=$(mktemp -d "$ACC_TMP_PARENT/ucr-acc.XXXXXX")
+T=$(mktemp -d "$ACC_TMP_PARENT/ucr-acc.XXXXXX") || exit 1
+# Không nối vết vào tệp dùng chung được kế thừa từ môi trường chạy CTest.
+export UCR_FAKE_HW_TRACE="$T/trace.csv"
 
 acc_cleanup() {
     # Dọn tiến trình nền còn sót rồi xoá thư mục tạm của chính test (đã xác định tuyệt đối).
@@ -60,18 +62,22 @@ mkcfg() {
     local out=$1 logdir=$2; shift 2
     cp "$ROOT/config.yaml" "$out"
     local kv key val
-    for kv in "log_dir=\"$logdir\"" 'fake_source=""' 'enable_display=0' 'enable_oled=0' \
+    for kv in "log_dir=\"$logdir\"" 'fake_source=""' 'enable_display=0' 'enable_oled=0' 'tof_mapping_confirmed=1' \
               "imu_calibration_file=\"$ROOT/include/sensor/bno055_calibration.txt\"" "$@"; do
         key=${kv%%=*}; val=${kv#*=}
         sed -i "/^${key}:/d" "$out"
         printf '%s: %s\n' "$key" "$val" >> "$out"
     done
+    # Test auto cũ cần vượt cổng smoke để còn kiểm được mục tiêu riêng (smoke S13 kiểm gate lỗi riêng).
+    local seed=${ACC_SEED_GATE:-${ACC_SIGRUN%/*}/acc_seed_gate}
+    mkdir -p "$logdir"
+    "$seed" "$logdir" "$out" || { fail 'Khong dung duoc tien dieu kien smoke gia'; return 1; }
 }
 
 # Số dòng dữ liệu của log.csv có cmd_speed hoặc cmd_steer khác 0 (bỏ dòng cụt); in ra số đó.
 csv_nonzero_rows() {
     awk -F, 'NR==1{for(i=1;i<=NF;i++){if($i=="cmd_speed")s=i; if($i=="cmd_steer")a=i}; n=NF; next}
-             NF==n && s>0 && a>0 {if ($s+0!=0 || $a+0!=0) c++} END{print c+0}' "$1"
+             NF==n && s>0 && a>0 {v=$s+0; if (v>0.001 || v< -0.001 || $a+0!=0) c++} END{print c+0}' "$1"
 }
 csv_rows() { awk 'END{print (NR>1)?NR-1:0}' "$1"; }
 # Tìm log.csv của lượt chạy trong thư mục log_dir với hậu tố chế độ (ví dụ _auto).

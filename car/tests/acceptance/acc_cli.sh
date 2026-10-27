@@ -40,7 +40,7 @@ unknown_case() {   # unknown_case "mô tả" tên-tham-số-lạ args...
     check "$desc: phai bao 'tham so khong biet' (yeu cau thong bao tham so); nhan: $out" does_match "$UNKNOWN_RE" "$out"
     check "$desc: phai neu dung ten tham so '$name'; nhan: $out" grep -qF -- "$name" <<<"$out"
     check "$desc: KHONG duoc bao nham 'thieu gia tri'; nhan: $out" not_match "$MISSING_RE" "$out"
-    check "$desc: khong duoc tao thu muc chay (chua khoi tao gi)" test -z "$(ls -A "$T/u/runs")"
+    check "$desc: khong duoc tao du lieu chay ngoai gate gia co san" test -z "$(find "$T/u/runs" -mindepth 1 -maxdepth 1 ! -name smoke_gate.json -print)"
 }
 unknown_case "tham so la dung mot minh" "--bogus-flag" --bogus-flag
 unknown_case "tham so la o cuoi sau mode+config" "--bogus-flag" --config "$T/u/ok.yaml" --mode auto --bogus-flag
@@ -68,7 +68,7 @@ check "file config khong ton tai: phai co thong bao" test -n "$out"
 printf 'day khong phai yaml {{{ [[[ \n::::\n' > "$T/u/hong.yaml"
 out=$(cd "$T/u" && timeout 10 "$MAIN" --config "$T/u/hong.yaml" --mode auto 2>&1); rc=$?
 check "file config hong: ma thoat phai khac 0 va sach, nhan $rc" clean_nonzero "$rc"
-check "khong tao thu muc chay khi config loi" test -z "$(ls -A "$T/u/runs")"
+check "khong tao du lieu chay khi config loi (tru gate gia co san)" test -z "$(find "$T/u/runs" -mindepth 1 -maxdepth 1 ! -name smoke_gate.json -print)"
 
 # ---------------------------------------------------------------------------------------------------------------
 # Ca 8: khoá vượt giới hạn an toàn => từ chối chạy
@@ -80,7 +80,7 @@ reject_case() {   # reject_case "tên" khoá=giá-trị...
     out=$(cd "$d" && timeout 10 "$MAIN" --config "$d/c.yaml" --mode auto 2>&1); rc=$?
     check "tu choi [$name] ($*): ma thoat phai khac 0 va sach (1..127), nhan $rc" clean_nonzero "$rc"
     check "tu choi [$name]: phai co thong bao ly do" test -n "$out"
-    check "tu choi [$name]: khong duoc tao thu muc chay (chua khoi tao thiet bi)" test -z "$(ls -A "$d/runs")"
+    check "tu choi [$name]: khong duoc tao du lieu chay ngoai gate gia co san" test -z "$(find "$d/runs" -mindepth 1 -maxdepth 1 ! -name smoke_gate.json -print)"
 }
 reject_case "control_hz thap 9"        control_hz=9
 reject_case "control_hz thap 5"        control_hz=5
@@ -115,9 +115,9 @@ reject_case "tof_names ten la"         'tof_names=[front, rear, left, middle]'
 # ---------------------------------------------------------------------------------------------------------------
 # Chạy được ở biên hợp lệ + tắt bằng SIGINT / SIGTERM trực tiếp + cảnh báo khoá thiếu
 run_and_signal() {   # run_and_signal <nhãn> <tín-hiệu> <file-config> -> đặt RES, ALIVE, STOP_MS, HUNG, OUTFILE
-    local label=$1 sig=$2 cfg=$3
+    local label=$1 sig=$2 cfg=$3 mode=${4:-auto}
     OUTFILE="$T/out_$label.txt"
-    sigrun "$sig" 2500 "$OUTFILE" "$MAIN" --config "$cfg" --mode auto
+    sigrun "$sig" 2500 "$OUTFILE" "$MAIN" --config "$cfg" --mode "$mode"
 }
 
 accept_case() {   # accept_case <nhãn> <tín-hiệu> khoá=giá-trị...
@@ -144,11 +144,33 @@ accept_case trim_am_term    TERM servo_trim_deg=-40 max_steering_deg=20
 # Thiếu khoá: chạy với mặc định và in cảnh báo
 mkdir -p "$T/m/runs"
 printf '%%YAML:1.0\n---\nlog_dir: "%s"\nfake_source: ""\nenable_display: 0\nenable_oled: 0\n' "$T/m/runs" > "$T/m/c.yaml"
-run_and_signal missing INT "$T/m/c.yaml"
+# Hiệu chuẩn/an toàn: ánh xạ thiếu phải mặc định false và chặn auto; kiểm mặc định ở manual, không đi vòng cổng smoke.
+run_and_signal missing INT "$T/m/c.yaml" manual
 check "thieu khoa: van phai chay voi mac dinh (con song sau 2.5 s); dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
 check "thieu khoa: phai in canh bao/ghi chu dung mac dinh; dau ra: $(head -c 600 "$OUTFILE")" \
       grep -qiE 'c(a|ả)nh b(a|á)o|warn|m(a|ặ)c (d|đ)(i|ị)nh|default|thi(e|ế)u' "$OUTFILE"
 check "thieu khoa: thoat chu dong sau INT, nhan $RES" graceful_exit "$RES"
+
+# Cấu hình D: auto vẫn kiểm tín hiệu với khóa thiếu; chỉ xác nhận ánh xạ và cấp gate giả khớp config.
+mkdir -p "$T/m_auto/runs"
+printf '%%YAML:1.0\n---\nlog_dir: "%s"\nfake_source: ""\nenable_display: 0\nenable_oled: 0\ntof_mapping_confirmed: 1\n' "$T/m_auto/runs" > "$T/m_auto/c.yaml"
+seed=${ACC_SEED_GATE:-${ACC_SIGRUN%/*}/acc_seed_gate}
+if "$seed" "$T/m_auto/runs" "$T/m_auto/c.yaml"; then
+    run_and_signal missing_auto INT "$T/m_auto/c.yaml" auto
+    check "[thieu khoa auto] con song truoc SIGINT; dau ra: $(head -c 400 "$OUTFILE")" test "$ALIVE" = 1
+    check "[thieu khoa auto] canh bao mac dinh" grep -qiE 'c(a|ả)nh b(a|á)o|warn|m(a|ặ)c (d|đ)(i|ị)nh|default|thi(e|ế)u' "$OUTFILE"
+    check "[thieu khoa auto] thoat chu dong sau INT, nhan $RES" graceful_exit "$RES"
+    check "[thieu khoa auto] khong treo" test "$HUNG" = 0
+    check "[thieu khoa auto] dung trong <= 4000 ms" test "$STOP_MS" -le 4000
+    csv=$(find_csv "$T/m_auto/runs" _auto)
+    check "[thieu khoa auto] phai co log.csv" test -n "$csv"
+    if [[ -n $csv ]]; then
+        check "[thieu khoa auto] log co du lieu" test "$(csv_rows "$csv")" -ge 5
+        check "[thieu khoa auto] StopController giu lenh 0" test "$(csv_nonzero_rows "$csv")" -eq 0
+    fi
+else
+    fail '[thieu khoa auto] khong dung duoc mau smoke gia'
+fi
 
 # ---------------------------------------------------------------------------------------------------------------
 # Ca 3: mất ảnh đầu-cuối bằng chương trình thật (camera giả hết ảnh): chương trình phải còn chạy, không crash và tắt sạch.

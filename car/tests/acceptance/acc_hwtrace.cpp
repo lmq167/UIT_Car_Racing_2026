@@ -42,6 +42,7 @@
 #include <opencv2/core.hpp>
 #include "acc_common.h"
 #include "acc_trace.h"
+#include "acc_seed_gate.h"
 #include "app/App.h"
 #include "app/Backend.h"
 #include "app/IController.h"
@@ -86,7 +87,7 @@ Ctx Prepare() {
     mkdir(x.logdir.c_str(), 0755);
     x.trace = x.root + "/trace.csv";
     x.cfg = x.root + "/config.yaml";
-    acc::WriteFile(x.cfg, "%YAML:1.0\n---\nlog_dir: \"" + x.logdir + "\"\nenable_display: 0\nenable_oled: 0\n");
+    acc::WriteFile(x.cfg, "%YAML:1.0\n---\nlog_dir: \"" + x.logdir + "\"\nenable_display: 0\nenable_oled: 0\ntof_mapping_confirmed: 1\n");
     setenv("UCR_FAKE_HW_TRACE", x.trace.c_str(), 1);
     x.c.log_dir = x.logdir;
     x.c.enable_display = 0;
@@ -108,6 +109,7 @@ struct Outcome {
 // Chạy App ở chế độ mode trong run_ms (hoặc đến khi App tự dừng), rồi RequestStop + Wait (trừ khi destroy_only).
 Outcome RunApp(Ctx &x, const std::string &mode, std::unique_ptr<app::IController> ctl, long long run_ms, bool destroy_only = false) {
     Outcome o;
+    if(mode=="auto") { x.c.tof_mapping_confirmed=1; acc::SeedGate(x.c,x.cfg); }
     auto fut = std::async(std::launch::async, [&] {
         auto a = std::make_unique<app::App>(x.c, mode, x.cfg);
         a->Init();
@@ -436,7 +438,7 @@ int TofScenario(const std::string &name) {
 
     // Lần đầu về 0 sau khi chạy: z.
     auto first_zero_after = [&](long long since) -> const TraceLine * {
-        for (const auto &l : ms) if (l.ms >= since && std::fabs(l.num) < 1e-3) return &l;
+        for (const auto &l : ms) if (l.ms >= since && std::fabs(l.num) <= 1e-3) return &l;
         return nullptr;
     };
     auto no_zero_between = [&](long long a, long long b, const std::string &why) {
