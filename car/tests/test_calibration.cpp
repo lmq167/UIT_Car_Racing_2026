@@ -3,6 +3,7 @@
 #include "common/Smoke.h"
 #include <cmath>
 #include <fstream>
+#include <limits>
 #include <stdexcept>
 #include <cstdio>
 #include <unistd.h>
@@ -60,6 +61,62 @@ int main() {
     c.log_dir=folder; c.tof_mapping_confirmed=1;
     const std::string cfg=c.log_dir+"/config.yaml", marker=c.log_dir+"/kill.ready";
     { std::ofstream out(cfg); out<<"%YAML:1.0\n---\nservo_trim_deg: 0\n"; }
+    {
+        common::Config bounded=c; bounded.calib_max_duration_s=2;
+        common::Snapshot s;
+        auto &obs=s.observation;
+        const auto start=common::Clock::now();
+        obs.frame_id=1; obs.captured_at=obs.odom_at=start; obs.odom_valid=true;
+        obs.odom_cm=17; obs.yaw_rel_deg=30;
+        for(const char *step:{"motor","radius","position","servo"}) {
+            app::Calibration cal(bounded,step,c.log_dir,cfg,"",false);
+            auto cmd=cal.Tick(s,'d',start);
+            Check(cmd.steeringDeg==bounded.calib_servo_step_deg,"đặt góc trước lượt");
+            cmd=cal.Tick(s,'y',start);
+            const auto limits=cmd.calib_limits;
+            const double distance=std::string(step)=="position" ? bounded.calib_position_cm : bounded.calib_distance_cm;
+            Check(limits.enabled && limits.deadline==start+std::chrono::seconds(2) &&
+                limits.start_odom_cm==17 && limits.max_distance_cm==distance &&
+                limits.limit_yaw==(std::string(step)=="radius") && limits.start_yaw_deg==30,
+                "lệnh giữ mang đủ mốc lượt, hạn tuyệt đối và giới hạn riêng từng bước");
+            auto current=obs;
+            Check(!app::CalibrationLimitReached(bounded,current,limits,start),"đầu lượt hợp lệ");
+            current.odom_at=start+std::chrono::seconds(2);
+            Check(app::CalibrationLimitReached(bounded,current,limits,current.odom_at),"chạm hạn dù encoder mới");
+            current=obs; current.odom_cm=17+distance;
+            Check(app::CalibrationLimitReached(bounded,current,limits,start),"đủ quãng tiến, kể cả bán kính");
+            current.odom_cm=17-distance;
+            Check(app::CalibrationLimitReached(bounded,current,limits,start),"đủ quãng theo độ lớn encoder");
+            current=obs; current.odom_valid=false;
+            Check(app::CalibrationLimitReached(bounded,current,limits,start),"encoder lỗi dừng độc lập UI");
+            current=obs; current.odom_cm=std::numeric_limits<double>::quiet_NaN();
+            Check(app::CalibrationLimitReached(bounded,current,limits,start),"encoder NaN dừng");
+            current=obs; current.odom_at-=std::chrono::milliseconds(bounded.tof_timeout_ms);
+            Check(app::CalibrationLimitReached(bounded,current,limits,start),"encoder tới tuổi giới hạn dừng");
+            if(limits.limit_yaw) {
+                current=obs; current.yaw_rel_deg=30+360;
+                Check(app::CalibrationLimitReached(bounded,current,limits,start),"đủ vòng yaw dương");
+                current.yaw_rel_deg=30-360;
+                Check(app::CalibrationLimitReached(bounded,current,limits,start),"đủ vòng yaw âm");
+            }
+            cal.CancelMotion();
+            cmd=cal.Tick(s,-1,start);
+            Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0 && !cmd.position_control && !cmd.calib_limits.enabled,
+                "huỷ xoá motor, góc, chế độ vị trí và giới hạn cũ");
+            cal.Tick(s,'d',start); cal.Tick(s,'y',start);
+            s.observation.odom_at=s.observation.captured_at=start+std::chrono::seconds(2);
+            cmd=cal.Tick(s,-1,start+std::chrono::seconds(2));
+            Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0,"Tick vẫn tự kiểm hạn và xoá góc");
+            obs.odom_at=obs.captured_at=start;
+            cal.Tick(s,'d',start); cal.Tick(s,'y',start);
+            obs.captured_at=start-std::chrono::seconds(1);
+            cmd=cal.Tick(s,-1,start);
+            Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0,"mất ảnh xoá cả góc calib");
+            obs.captured_at=start;
+            cmd=cal.Tick(s,-1,start);
+            Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0,"ảnh về không khôi phục góc/lệnh");
+        }
+    }
     const auto config_text=common::ConfigText(cfg);
     const auto gate=c.log_dir+"/smoke_gate.json";
     auto write_gate=[&](const std::string &bad,int value) {

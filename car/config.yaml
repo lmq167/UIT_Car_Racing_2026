@@ -27,9 +27,9 @@ smoke_servo_deg: 10
 calib_speed_cms: 10.0
 calib_servo_step_deg: 5
 calib_servo_limit_deg: 30
-calib_distance_cm: 200.0
-calib_position_cm: 50.0
-calib_max_duration_s: 60.0
+calib_distance_cm: 200.0       # Quãng mỗi lượt trong (0, 300] cm, kể cả đo bán kính.
+calib_position_cm: 50.0       # Đích vị trí trong (0, 100] cm.
+calib_max_duration_s: 60.0    # Hạn mỗi lượt trong (0, 120] s, luồng chấp hành tự kiểm.
 imu_calibration_file: "../include/sensor/bno055_calibration.txt"
 imu_drift_ms: 500
 yaw_axis: 2

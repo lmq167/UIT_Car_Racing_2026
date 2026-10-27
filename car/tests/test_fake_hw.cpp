@@ -24,6 +24,7 @@ int main(int argc,char **argv) {
     unsetenv("UCR_FAKE_HW_TRACE"); unsetenv("UCR_FAKE_TOF_SCRIPT");
     unsetenv("UCR_FAKE_CAMERA_GAPS"); unsetenv("UCR_FAKE_FAULT");
     unsetenv("UCR_FAKE_KEYS");
+    unsetenv("UCR_FAKE_UI_STALL");
     setenv("UCR_FAKE_HW_TRACE",trace.c_str(),1);
     // Các mốc tuyệt đối dùng chung với mã giả, tránh phụ thuộc thời gian chuẩn bị thư mục.
     const auto base=app::fake::Millis()+300;
@@ -39,6 +40,16 @@ int main(int argc,char **argv) {
         setenv("UCR_FAKE_FAULT",fault.c_str(),1);
     } else Check(scenario=="normal","Kịch bản không hợp lệ");
     if(scenario=="normal") {
+        Check(app::fake::ParseUIStall("")==std::make_pair(0LL,0LL),"biến chặn UI rỗng không chặn");
+        Check(app::fake::ParseUIStall("0:0")==std::make_pair(0LL,0LL),"chấp nhận hai số 0");
+        Check(app::fake::ParseUIStall("1200:4000")==std::make_pair(1200LL,4000LL),"đúng mốc và thời gian chặn UI");
+        for(const char *bad:{"1",":1","1:","1:2:3","-1:2","1:-2","+1:2","1.0:2"," 1:2","1:2,3:4",
+                             "9223372036854775808:1","1:9223372036854775808"}) {
+            bool rejected=false;
+            try { (void)app::fake::ParseUIStall(bad); }
+            catch(const std::runtime_error &e) { rejected=std::string(e.what()).find("UCR_FAKE_UI_STALL")!=std::string::npos; }
+            Check(rejected,std::string("Phải báo rõ kịch bản chặn UI sai: ")+bad);
+        }
         const auto keys=app::fake::ParseKeys("1500:w,0:,,1500::,1500: ,1500:\x7f");
         Check(keys==std::vector<std::pair<long long,int>>{{0,','},{1500,'w'},{1500,':'},{1500,' '},{1500,127}},
               "Phím ASCII, thứ tự thời gian và thứ tự cùng mốc phải được giữ đúng");

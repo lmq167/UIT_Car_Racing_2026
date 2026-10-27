@@ -32,6 +32,7 @@ void App::Init() {
 #ifdef UCR_FAKE_HW
     // Kiểm hết kịch bản trước cả tạo log và khởi tạo thiết bị.
     (void)fake::KeyScript();
+    (void)fake::UIStallScript();
 #endif
     CheckAutoSmoke();
     logger_.reset(new common::RunLogger(c_,config_path_,mode_));
@@ -148,12 +149,14 @@ void App::ActuatorThread() {
         fake::Fault("actuator_throw");
 #endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
-        if((mode_=="calib" || mode_=="collect") && !FreshImage(c_,s.observation,now)) {
+        std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
+        const bool calib_limit=mode_=="calib" && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
+        if(((mode_=="calib" || mode_=="collect") && !FreshImage(c_,s.observation,now)) || calib_limit) {
             // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
             std::lock_guard<std::mutex> lock(shared_.mutex);
             shared_.value.requested={}; cancel_held_command_=true; cmd={};
+            if(calib_limit) state="DUNG_GIOI_HAN_CALIB";
         }
-        std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
         cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
         if(mode_=="auto") cmd=recovery.Filter(c_,s.observation,cmd,now,state);
         cmd=SafeCommand(c_,s.observation,cmd,now,state);
@@ -162,9 +165,7 @@ void App::ActuatorThread() {
         const bool send_motor=cmd.speedCmPerSec!=previous.speedCmPerSec || cmd.position_control!=previous.position_control ||
             now-sent>=std::chrono::milliseconds(c_.motor_keepalive_ms);
         if(send_motor || cmd.steeringDeg!=previous.steeringDeg || cmd.marker!=previous.marker) {
-            const bool mark=cmd.marker && cmd.marker!=previous.marker;
             backend_.Apply(cmd,send_motor); previous=cmd;
-            if(mark) { s.applied=cmd; s.state="DANH_DAU_"+std::to_string(cmd.marker); backend_.Render(s,mode_); }
             if(send_motor) sent=now;
         }
         s.applied=cmd; s.state=state; s.sampled_at=now;
@@ -210,10 +211,26 @@ void App::UIThread() {
 #endif
     if(mode_=="manual"&&!keyboard_available) std::cerr << "Khong co cua so ban phim; xe giu dung, Ctrl+C de thoat\n";
     auto rendered=common::Clock::time_point{};
+    std::uint64_t rendered_marker=0;
+#ifdef UCR_FAKE_HW
+    const auto &ui_stall=fake::UIStallScript();
+    bool stalled=false;
+#endif
     bool terminal_open=true;
     while(running_) {
+#ifdef UCR_FAKE_HW
+        if(!stalled && fake::Millis()>=ui_stall.first) {
+            stalled=true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(ui_stall.second));
+        }
+#endif
         auto s=Snapshot(); const auto now=common::Clock::now();
-        if(now-rendered>=std::chrono::duration<double>(1.0/c_.ui_hz)) { backend_.Render(s,mode_); rendered=now; }
+        const bool marker_changed=s.applied.marker!=rendered_marker;
+        if(marker_changed || now-rendered>=std::chrono::duration<double>(1.0/c_.ui_hz)) {
+            auto view=s;
+            if(marker_changed && s.applied.marker) view.state="DANH_DAU_"+std::to_string(s.applied.marker);
+            backend_.Render(view,mode_); rendered=now; rendered_marker=s.applied.marker;
+        }
         int key=-1;
         if(show) {
             if(!s.observation.frame.empty()) cv::imshow("UCR",collector_ ? collector_->View(s) : s.observation.frame);

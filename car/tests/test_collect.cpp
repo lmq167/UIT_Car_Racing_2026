@@ -57,6 +57,7 @@ int main() {
     auto now=common::Clock::now(); common::Snapshot s; common::ControlCommand cmd;
     auto capture=[&](int value,double speed) {
         now+=std::chrono::milliseconds(150);
+        (void)value;
 #ifdef UCR_FAKE_HW
         Check(backend.Frame(s.observation.frame),"camera đọc thư mục ảnh có dấu cách");
 #else

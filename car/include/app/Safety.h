@@ -7,6 +7,16 @@ namespace app {
 inline bool FreshImage(const common::Config &c,const common::Observation &o,common::Clock::time_point now) {
     return o.frame_id && now-o.captured_at<std::chrono::milliseconds(c.image_timeout_ms);
 }
+inline bool CalibrationLimitReached(const common::Config &c,const common::Observation &o,
+        const common::CalibrationLimits &limits,common::Clock::time_point now) {
+    if(!limits.enabled) return false;
+    return now>=limits.deadline || !o.odom_valid || !std::isfinite(o.odom_cm) ||
+        o.odom_at==common::Clock::time_point{} || o.odom_at>now ||
+        now-o.odom_at>=std::chrono::milliseconds(c.tof_timeout_ms) ||
+        std::abs(o.odom_cm-limits.start_odom_cm)>=limits.max_distance_cm ||
+        (limits.limit_yaw && (!std::isfinite(o.yaw_rel_deg) ||
+            std::abs(o.yaw_rel_deg-limits.start_yaw_deg)>=limits.max_yaw_deg));
+}
 inline common::ControlCommand SafeCommand(const common::Config &c, const common::Observation &o,
         common::ControlCommand cmd, common::Clock::time_point now, std::string &state) {
     if(!std::isfinite(cmd.speedCmPerSec) || (cmd.position_control && !std::isfinite(cmd.position_cm))) cmd={};

@@ -89,6 +89,21 @@ int main() {
     }
     Check(load("tof_timeout_ms","1").tof_timeout_ms==1,"Tuổi mẫu ToF tối thiểu hợp lệ");
     Check(load("tof_timeout_ms","500").tof_timeout_ms==500,"Tuổi mẫu ToF tối đa hợp lệ");
+    for(const auto &item:std::vector<std::pair<std::string,std::string>>{
+        {"calib_distance_cm","300"},{"calib_position_cm","100"},{"calib_max_duration_s","120"}}) {
+        load(item.first,"0.1");
+        load(item.first,item.second);
+        for(const auto &bad:{std::string("0"),std::string("-1"),item.second+".0000001"}) {
+            bool rejected=false;
+            try { load(item.first,bad); }
+            catch(const std::runtime_error &e) {
+                const std::string message=e.what();
+                rejected=message.find(item.first+" = ")!=std::string::npos &&
+                    message.find("ngoài khoảng hợp lệ (0, "+item.second+"]")!=std::string::npos;
+            }
+            Check(rejected,"Trần calib phải kiểm trước khi làm tròn float: "+item.first+" = "+bad);
+        }
+    }
     // Các nhánh kiểm khoảng phải chỉ ra đúng khóa, giá trị và miền hợp lệ.
     for(const auto &item:std::vector<std::pair<std::string,std::string>>{
         {"camera_hz","0"},{"sensor_hz","9"},{"control_hz","9"},{"odometry_hz","0"},{"ui_hz","0"},

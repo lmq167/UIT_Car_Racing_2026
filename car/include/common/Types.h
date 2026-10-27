@@ -7,7 +7,21 @@
 #include <string>
 namespace common {
 using Clock = std::chrono::steady_clock;
-struct ControlCommand { float speedCmPerSec=0; int steeringDeg=0; bool position_control=false; float position_cm=0; std::uint64_t marker=0; };
+struct CalibrationLimits {
+    bool enabled=false;
+    Clock::time_point deadline{};
+    double start_odom_cm=0, max_distance_cm=0;
+    bool limit_yaw=false;
+    double start_yaw_deg=0, max_yaw_deg=360;
+};
+struct ControlCommand {
+    float speedCmPerSec=0;
+    int steeringDeg=0;
+    bool position_control=false;
+    float position_cm=0;
+    std::uint64_t marker=0;
+    CalibrationLimits calib_limits{};
+};
 struct Observation {
     cv::Mat frame;
     std::uint64_t frame_id=0;

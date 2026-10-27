@@ -120,6 +120,22 @@ inline int NextKey() {
     if(next==keys.size() || Millis()<keys[next].first) return -1;
     return keys[next++].second;
 }
+inline std::pair<long long,long long> ParseUIStall(const std::string &text) {
+    if(text.empty()) return {0,0};
+    try {
+        const auto colon=text.find(':');
+        if(colon==std::string::npos || text.find(':',colon+1)!=std::string::npos)
+            throw std::runtime_error("cần đúng một dấu ':'");
+        return {Time(text.substr(0,colon)),Time(text.substr(colon+1))};
+    } catch(const std::exception &e) {
+        throw std::runtime_error(std::string("UCR_FAKE_UI_STALL không hợp lệ; cần <bắt_đầu_ms>:<kéo_dài_ms>, ")+
+            "hai số nguyên trong [0, 9223372036854775807]: "+e.what());
+    }
+}
+inline const std::pair<long long,long long> &UIStallScript() {
+    static const auto stall=ParseUIStall(Env("UCR_FAKE_UI_STALL"));
+    return stall;
+}
 inline void Fault(const char *thread) {
     static const auto spec=[] {
         const auto text=Env("UCR_FAKE_FAULT");

@@ -34,6 +34,13 @@ if(BUILD_TESTING)
     target_link_libraries(test_config_types PRIVATE app_core)
     add_test(NAME config_types COMMAND test_config_types)
     if(UCR_FAKE_HW)
+        find_package(PythonInterp 3.6 REQUIRED)
+        foreach(scenario motor_duration radius_duration motor_distance radius_distance position_distance cancel_angle config invalid_stall)
+            add_test(NAME dev_calib_${scenario} COMMAND ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8 ${PYTHON_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_calib_limits.py $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>
+                ${CMAKE_CURRENT_SOURCE_DIR}/config.yaml ${scenario})
+            set_tests_properties(dev_calib_${scenario} PROPERTIES TIMEOUT 90)
+        endforeach()
         add_executable(test_fake_hw tests/test_fake_hw.cpp)
         target_link_libraries(test_fake_hw PRIVATE app_core)
         foreach(scenario normal tof camera actuator_throw sensor_throw)

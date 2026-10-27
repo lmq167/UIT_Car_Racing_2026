@@ -73,8 +73,16 @@ void Config::Load(const std::string &path) {
     read("smoke_servo_deg", smoke_servo_deg, "[1, 60] độ");
     read("calib_speed_cms", calib_speed_cms, "(0, +inf) cm/s");
     read("calib_servo_step_deg", calib_servo_step_deg, "[1, +inf) độ"); read("calib_servo_limit_deg", calib_servo_limit_deg, "[1, 60] độ");
-    read("calib_distance_cm", calib_distance_cm, "(0, +inf) cm"); read("calib_position_cm", calib_position_cm, "(0, +inf) cm");
-    read("calib_max_duration_s", calib_max_duration_s, "(0, +inf) s");
+    auto calib_limit = [&](const char *name,float &value,double maximum,const char *range) {
+        double number=value;
+        read(name,number,range);
+        // Kiểm trước khi ép float để không làm tròn số vượt trần thành hợp lệ.
+        require(name,number>0 && number<=maximum && static_cast<float>(number)>0,range);
+        value=static_cast<float>(number);
+    };
+    calib_limit("calib_distance_cm",calib_distance_cm,300,"(0, 300] cm");
+    calib_limit("calib_position_cm",calib_position_cm,100,"(0, 100] cm");
+    calib_limit("calib_max_duration_s",calib_max_duration_s,120,"(0, 120] s");
     require("image_timeout_ms",image_timeout_ms>=1 && image_timeout_ms<=500,"[1, 500] ms");
     require("camera_resume_max_s",camera_resume_max_s>image_timeout_ms/1000.0f,"> image_timeout_ms/1000 s");
     require("soft_start_s",soft_start_s>0,"(0, +inf) s");
@@ -86,9 +94,6 @@ void Config::Load(const std::string &path) {
     require("calib_speed_cms",calib_speed_cms>0,"(0, +inf) cm/s");
     require("calib_servo_step_deg",calib_servo_step_deg>=1,"[1, +inf) độ");
     require("calib_servo_limit_deg",calib_servo_limit_deg>=1 && calib_servo_limit_deg<=60,"[1, 60] độ");
-    require("calib_distance_cm",calib_distance_cm>0,"(0, +inf) cm");
-    require("calib_position_cm",calib_position_cm>0,"(0, +inf) cm");
-    require("calib_max_duration_s",calib_max_duration_s>0,"(0, +inf) s");
     read("imu_calibration_file", imu_calibration_file, "chuỗi đường dẫn");
     read("imu_drift_ms", imu_drift_ms, "[1, +inf) ms");
     read("yaw_axis", yaw_axis, "[0, 2]");
