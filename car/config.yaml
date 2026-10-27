@@ -15,9 +15,9 @@ tof_safety_enabled: 1
 tof_brake_mm: 250
 tof_timeout_ms: 500
 image_timeout_ms: 500
-camera_resume_max_s: 2.0
+camera_resume_max_s: 2.0     # Trong (image_timeout_ms/1000, 5] s.
 resume_stable_s: 2.0
-soft_start_s: 1.0
+soft_start_s: 1.0            # Trong [0.2, 10] s; áp dụng cả ảnh đầu tiên của auto.
 tof_mapping_confirmed: 0
 camera_width: 640
 camera_height: 384

@@ -25,7 +25,7 @@ int main() {
     app::CameraRecovery recovery;
     common::ControlCommand filtered;
     auto run=[&](int ms){filtered=recovery.Filter(c,o,{20,4},at(ms),state); return filtered.speedCmPerSec;};
-    Check(run(0)==20,"khởi đầu có ảnh không cần tăng tốc mềm");
+    Check(run(0)==0,"khởi đầu có ảnh cũng tăng tốc mềm từ 0");
     Check(run(501)==0 && filtered.steeringDeg==0,"mất ảnh dừng và trả góc về trim"); frame(600);
     Check(run(600)==0,"ảnh có lại bắt đầu từ 0");
     Check(filtered.steeringDeg==4,"ảnh có lại: tăng tốc mềm vẫn giữ góc bộ điều khiển");
@@ -79,6 +79,12 @@ int main() {
                 limits.start_odom_cm==17 && limits.max_distance_cm==distance &&
                 limits.limit_yaw==(std::string(step)=="radius") && limits.start_yaw_deg==30,
                 "lệnh giữ mang đủ mốc lượt, hạn tuyệt đối và giới hạn riêng từng bước");
+            obs.odom_cm=20; obs.yaw_rel_deg=40;
+            obs.odom_at=obs.captured_at=start+std::chrono::seconds(1);
+            cmd=cal.Tick(s,'y',obs.odom_at);
+            Check(cmd.calib_limits.deadline==limits.deadline && cmd.calib_limits.start_odom_cm==17 &&
+                cmd.calib_limits.start_yaw_deg==30,"y khi đang chạy không đổi mốc quãng, yaw hoặc hạn");
+            obs.odom_cm=17; obs.yaw_rel_deg=30; obs.odom_at=obs.captured_at=start;
             auto current=obs;
             Check(!app::CalibrationLimitReached(bounded,current,limits,start),"đầu lượt hợp lệ");
             current.odom_at=start+std::chrono::seconds(2);
@@ -105,8 +111,12 @@ int main() {
                 "huỷ xoá motor, góc, chế độ vị trí và giới hạn cũ");
             cal.Tick(s,'d',start); cal.Tick(s,'y',start);
             s.observation.odom_at=s.observation.captured_at=start+std::chrono::seconds(2);
-            cmd=cal.Tick(s,-1,start+std::chrono::seconds(2));
+            cmd=cal.Tick(s,'y',start+std::chrono::seconds(2));
             Check(cmd.speedCmPerSec==0 && cmd.steeringDeg==0,"Tick vẫn tự kiểm hạn và xoá góc");
+            cmd=cal.Tick(s,'y',start+std::chrono::seconds(2));
+            Check(cmd.speedCmPerSec>0 && cmd.calib_limits.deadline==start+std::chrono::seconds(4),
+                "lượt mới chỉ bắt đầu ở lần bấm sau lệnh dừng");
+            cal.CancelMotion();
             obs.odom_at=obs.captured_at=start;
             cal.Tick(s,'d',start); cal.Tick(s,'y',start);
             obs.captured_at=start-std::chrono::seconds(1);
@@ -172,18 +182,40 @@ int main() {
         Check(tick(cal,3020,'y').steeringDeg==10,"servo dương 10 độ cần xác nhận");
         Check(tick(cal,3030,'y').steeringDeg==0,"servo trả trim");
         Check(tick(cal,3040,'y').speedCmPerSec==0,"chưa xác nhận kê bánh: không motor");
-        Check(tick(cal,3050,'y').speedCmPerSec==10,"đã xác nhận kê bánh: chạy 10");
-        snapshot.observation.meas_speed=10; tick(cal,5051);
+        const auto first=tick(cal,3050,'y');
+        Check(first.speedCmPerSec==10 && first.calib_limits.enabled,"đã kê bánh: chạy 10 với giới hạn độc lập UI");
+        snapshot.observation.meas_speed=10;
+        Check(tick(cal,5051).calib_limits.deadline==first.calib_limits.deadline,"smoke 6 sang 7 không gia hạn");
         snapshot.observation.tof[c.FrontSlot()].distanceMm=100; tick(cal,5100);
         snapshot.observation.meas_speed=0; Check(tick(cal,5200).speedCmPerSec==0,"encoder dừng sau ToF");
-        snapshot.observation.tof[c.FrontSlot()].distanceMm=2000; tick(cal,5300,'y');
-        snapshot.observation.meas_speed=10; tick(cal,6400); Check(cal.DropCamera(),"chỉ ngắt ảnh sau encoder đang chạy");
-        snapshot.observation.meas_speed=0; tick(cal,7000); Check(!cal.DropCamera(),"encoder dừng: cấp ảnh lại");
+        snapshot.observation.tof[c.FrontSlot()].distanceMm=2000;
+        const auto drop=tick(cal,5300,'y');
+        Check(drop.calib_limits.enabled && drop.calib_limits.deadline>first.calib_limits.deadline,"đoạn ngắt ảnh có hạn riêng");
+        snapshot.observation.meas_speed=10;
+        Check(tick(cal,6400).calib_limits.deadline==drop.calib_limits.deadline,"smoke 10 sang 11 không gia hạn");
+        Check(cal.DropCamera(),"chỉ ngắt ảnh sau encoder đang chạy");
+        snapshot.observation.meas_speed=0;
+        const auto kill=tick(cal,7000);
+        Check(kill.calib_limits.enabled && kill.calib_limits.deadline>drop.calib_limits.deadline,"đoạn kill có hạn riêng");
+        Check(!cal.DropCamera(),"encoder dừng: cấp ảnh lại");
         Check(!std::ifstream(marker).good(),"chưa chạy lại: không được kill");
-        snapshot.observation.meas_speed=10; tick(cal,8101);
+        snapshot.observation.meas_speed=10;
+        Check(tick(cal,8101).calib_limits.deadline==kill.calib_limits.deadline,"smoke 12 sang 13 không gia hạn");
         Check(std::ifstream(marker).good(),"encoder chạy lại mới báo run.sh kill");
     }
     std::remove(marker.c_str());
+    for(const char *fault:{"duration","distance","encoder","cancel"}) {
+        app::Calibration cal(c,"smoke",c.log_dir,cfg,marker,true);
+        tick(cal,3001); for(int i=0;i<5;++i) tick(cal,3010+i*10,'y');
+        auto now=snapshot.observation.odom_at;
+        if(std::string(fault)=="duration") now+=std::chrono::seconds(61);
+        if(std::string(fault)=="distance") snapshot.observation.odom_cm+=c.calib_distance_cm;
+        if(std::string(fault)=="encoder") snapshot.observation.odom_valid=false;
+        if(std::string(fault)=="cancel") cal.CancelMotion();
+        Check(cal.Tick(snapshot,-1,now).speedCmPerSec==0 && cal.Done() && cal.Failed(),
+            "smoke hết hạn/quãng/encoder hoặc nhận huỷ đều kết thúc KHÔNG ĐẠT");
+        snapshot.observation.odom_cm=0;
+    }
     {
         common::Config small=c; small.smoke_servo_deg=8; small.max_steering_deg=6;
         app::Calibration cal(small,"smoke",c.log_dir,cfg,"",true);

@@ -12,7 +12,9 @@
 namespace {
 void Check(bool ok,const std::string &message) { if(!ok) throw std::runtime_error(message); }
 struct Controller:app::IController {
-    common::ControlCommand step(const common::Observation &) override { return {6,4}; }
+    explicit Controller(float speed=6):speed_(speed) {}
+    common::ControlCommand step(const common::Observation &) override { return {speed_,4}; }
+    float speed_;
 };
 struct Row { long long ms; std::string kind,value; };
 }
@@ -35,6 +37,8 @@ int main(int argc,char **argv) {
     } else if(scenario=="camera") {
         const auto gaps=std::to_string(base)+":"+std::to_string(base+800);
         setenv("UCR_FAKE_CAMERA_GAPS",gaps.c_str(),1);
+    } else if(scenario=="startup") {
+        setenv("UCR_FAKE_CAMERA_GAPS","0:3000",1);
     } else if(scenario=="actuator_throw" || scenario=="sensor_throw") {
         const auto fault=scenario+"@"+std::to_string(base);
         setenv("UCR_FAKE_FAULT",fault.c_str(),1);
@@ -92,13 +96,13 @@ int main(int argc,char **argv) {
         bool rejected=false;
         try { application.SetController(nullptr); } catch(const std::invalid_argument &) { rejected=true; }
         Check(rejected,"Không chấp nhận bộ điều khiển rỗng");
-        application.SetController(std::unique_ptr<app::IController>(new Controller));
+        application.SetController(std::unique_ptr<app::IController>(new Controller(scenario=="startup" ? 100 : 6)));
         application.Init(); application.Start();
         rejected=false;
         try { application.SetController(std::unique_ptr<app::IController>(new Controller)); }
         catch(const std::logic_error &) { rejected=true; }
         Check(rejected,"Không thay bộ điều khiển sau Start");
-        const auto end=base+(scenario=="camera" ? 2200 : 1400);
+        const auto end=scenario=="startup" ? 4500 : base+(scenario=="camera" ? 2200 : 1400);
         while(application.IsRunning() && app::fake::Millis()<end)
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         const bool fault=scenario=="actuator_throw" || scenario=="sensor_throw";
@@ -114,7 +118,7 @@ int main(int argc,char **argv) {
     Check(rows.size()>4,"Phải có vết phần cứng");
     Check(rows[rows.size()-2].kind=="motor_speed" && rows[rows.size()-2].value=="0","Lệnh motor cuối bằng 0");
     Check(rows.back().kind=="servo_angle" && rows.back().value=="7","Servo cuối về trim");
-    int init=0,cfg=0; bool moved=false,trim=false,blocked=false,resumed=false;
+    int init=0,cfg=0; bool moved=false,trim=false,blocked=false,resumed=false,full_speed=false;
     long long last_motor=-1; std::string last_value; bool stopped_in_fault=false;
     for(const auto &row:rows) {
         if(row.kind=="motor_init") ++init;
@@ -123,7 +127,13 @@ int main(int argc,char **argv) {
         if(scenario=="camera" && row.kind=="servo_angle" && row.ms>=base+350 && row.ms<base+800)
             Check(row.value=="7","Mất ảnh trả góc vật lý về trim, kể cả khi đảo chiều servo");
         if(row.kind!="motor_speed") continue;
-        if(row.value=="6") moved=true;
+        if(std::stof(row.value)>0) moved=true;
+        if(std::abs(std::stof(row.value)-(scenario=="startup" ? c.max_speed_cms : 6))<=1e-3) full_speed=true;
+        if(scenario=="startup") {
+            const float cap=c.max_speed_cms*std::clamp((row.ms-3000)/1000.0,0.0,1.0);
+            Check(std::stof(row.value)<=cap+0.5f,"ảnh đầu sau 3 s: lệnh cao vẫn qua trần tăng mềm");
+            if(row.ms<3000) Check(row.value=="0","chưa có ảnh đầu tiên không được chạy");
+        }
         if(scenario=="normal" && last_motor>=0 && row.value=="6" && row.value==last_value && row.ms<base+1200)
             Check(row.ms-last_motor>=c.motor_keepalive_ms-1000/c.control_hz,"Không gửi tốc độ lặp sớm khi không đổi");
         last_motor=row.ms; last_value=row.value;
@@ -143,7 +153,8 @@ int main(int argc,char **argv) {
         }
     }
     Check(init==1 && cfg==7,"Chuỗi khởi tạo chỉ một lần, đủ bảy lệnh");
-    Check(moved && trim,"Đã gửi tốc độ 6 cm/s và góc 7-4=3 độ");
+    Check(moved && trim,"Đã gửi tốc độ dương và góc 7-4=3 độ");
+    if(scenario=="normal" || scenario=="startup") Check(full_speed,"đủ thời gian tăng mềm phải đạt lệnh đầy");
     if(scenario=="tof" || scenario=="camera") Check(blocked && resumed,"Quan sát được dừng rồi phục hồi");
     if(scenario=="actuator_throw" || scenario=="sensor_throw") Check(stopped_in_fault,"Quan sát được dừng sau lỗi");
     if(scenario=="normal") {
@@ -192,7 +203,7 @@ int main(int argc,char **argv) {
             Check(servo==angle,"góc phục hồi: đảo chiều góc lái rồi cộng trim đúng một lần");
         };
         const int turned=invert ? 3 : 11;
-        apply(0,true,6,turned);
+        apply(0,true,0,turned);
         apply(501,false,0,7);
         apply(600,true,0,turned);
         for(int ms=700;ms<1100;ms+=100) apply(ms,true,6.f*(ms-600)/1000,turned);

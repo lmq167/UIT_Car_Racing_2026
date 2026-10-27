@@ -95,7 +95,7 @@ void CheckLongRecovery() {
             return recovery.Filter(c,o,{speed,4},at(ms),state);
         };
         Check(run(0,false).speedCmPerSec==0,"chưa từng có ảnh phải đứng yên");
-        Check(run(100,true).speedCmPerSec==speed,"ảnh đầu tiên không phải phục hồi");
+        Check(run(100,true).speedCmPerSec==0,"ảnh đầu tiên cũng bắt đầu tăng mềm từ 0");
         Check(run(2201,false).speedCmPerSec==0 && state=="MAT_ANH","ngắt dài mà ảnh còn cũ vẫn là MAT_ANH");
         Check(run(2300,true).steeringDeg==0 && state=="DUNG_CHO_ANH_ON_DINH","ảnh về: chờ ổn định và trả góc về trim");
         for(int ms=2400;ms<=3300;ms+=100) Check(run(ms,true).speedCmPerSec==0,"chưa đủ thời gian phải đứng yên");
@@ -117,16 +117,42 @@ void CheckLongRecovery() {
     for(int ms=2300;ms<=5000;ms+=100)
         Check(recovery.Filter(c,o,{20,0},at(ms),state).speedCmPerSec==0,"khung đứng yên không chứng minh ảnh liên tục");
 }
+void CheckFirstImageRamp() {
+    common::Config c;
+    const auto base=common::Clock::now();
+    for(float speed:{25.0f,-25.0f}) {
+        app::CameraRecovery recovery; common::Observation o; std::string state;
+        Check(recovery.Filter(c,o,{speed,0},base,state).speedCmPerSec==0,"đợi ảnh đầu phải dừng");
+        for(int ms=3000;ms<=4200;ms+=100) {
+            const auto now=base+std::chrono::milliseconds(ms);
+            o.frame_id++; o.captured_at=now;
+            const auto cmd=recovery.Filter(c,o,{speed,0},now,state);
+            const float expected=speed*std::min(1.0f,(ms-3000)/1000.0f);
+            Check(std::abs(cmd.speedCmPerSec-expected)<1e-3,"ảnh đầu trễ 3 s vẫn tăng từ 0 đủ soft_start_s");
+            Check(state!="DUNG_CHO_ANH_ON_DINH","ảnh đầu không áp thời gian chờ phục hồi dài");
+        }
+    }
+}
 }
 int main() {
     CheckRecoveryAtLowFps();
     CheckLongRecovery();
+    CheckFirstImageRamp();
     CheckConfigRates();
     common::Config c; common::Observation o; const auto now=common::Clock::now();
     o.frame_id=1; o.captured_at=now;
     auto &t=o.tof[c.FrontSlot()]; t.valid=true; t.distanceMm=2000; t.updatedAt=now;
     auto &rear=o.tof[c.RearSlot()]; rear.valid=true; rear.distanceMm=2000; rear.updatedAt=now;
     std::string state;
+    for(const char *mode:{"auto","manual","collect","smoke","calib_servo","calib_motor","calib_position"}) {
+        const bool allowed=std::string(mode)=="calib_position";
+        const auto cmd=app::SafeCommand(c,o,{10,5,true,50},now,state,allowed);
+        Check(cmd.position_control==allowed && cmd.speedCmPerSec==(allowed ? 10 : 0),
+            "chỉ calib bước position được giữ lệnh vị trí");
+        if(!allowed) Check(cmd.steeringDeg==0 && cmd.position_cm==0,"lệnh vị trí bị cấm phải xoá toàn bộ");
+    }
+    Check(app::SafeCommand(c,o,{10,5,true,50},now,state).speedCmPerSec==0,
+        "đường gọi không cấp quyền vị trí mặc định giữ dừng");
     auto apply=[&](float speed,int angle) { return app::SafeCommand(c,o,{speed,angle},now,state); };
     for(int fault:{0,1,2,3}) {
         rear.valid=fault!=0; rear.timedOut=fault==1;
@@ -136,10 +162,10 @@ int main() {
         Check(apply(-10,0).speedCmPerSec==0 && state=="PHANH_TOF_SAU","ToF sau hỏng/hết giờ phải chặn lùi");
         common::ControlCommand position{10,0,true,50};
         state="VI_TRI";
-        Check(app::SafeCommand(c,o,position,now,state).speedCmPerSec==10 && state=="VI_TRI",
+        Check(app::SafeCommand(c,o,position,now,state,true).speedCmPerSec==10 && state=="VI_TRI",
             "ToF sau không chặn lệnh vị trí có tốc độ tiến");
         position.speedCmPerSec=-10;
-        Check(app::SafeCommand(c,o,position,now,state).speedCmPerSec==0 && state=="PHANH_TOF_SAU",
+        Check(app::SafeCommand(c,o,position,now,state,true).speedCmPerSec==0 && state=="PHANH_TOF_SAU",
             "ToF sau vẫn chặn lệnh vị trí có tốc độ lùi");
     }
     rear.valid=true; rear.timedOut=false; rear.updatedAt=now; rear.distanceMm=2000;

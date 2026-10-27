@@ -44,8 +44,20 @@ void Calibration::Result(bool killed,bool stopped) {
 void Calibration::Next(int stage,const char *prompt) {
     stage_=stage; stage_at_=now_; std::cout<<prompt<<std::endl;
 }
+void Calibration::BeginMotion(const common::Observation &o) {
+    active_=true; start_cm_=o.odom_cm; start_yaw_=o.yaw_rel_deg;
+    motion_limits_.enabled=true;
+    motion_limits_.deadline=now_+std::chrono::duration_cast<common::Clock::duration>(
+        std::chrono::duration<double>(c_.calib_max_duration_s));
+    // Mỗi đoạn smoke có hạn riêng nhưng không được vượt hạn tổng của phép kiểm.
+    if(step_=="smoke") motion_limits_.deadline=std::min(motion_limits_.deadline,started_+std::chrono::seconds(120));
+    motion_limits_.start_odom_cm=start_cm_;
+    motion_limits_.max_distance_cm=step_=="position" ? c_.calib_position_cm : c_.calib_distance_cm;
+    motion_limits_.limit_yaw=step_=="radius";
+    motion_limits_.start_yaw_deg=start_yaw_;
+}
 common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,common::Clock::time_point now) {
-    if(done_) return {};
+    if(done_) { if(step_=="smoke") Result(); return {}; }
     now_=now; const auto &o=s.observation;
     const double elapsed=std::chrono::duration<double>(now-started_).count();
     const auto phase=[&]{ return std::chrono::duration<double>(now-stage_at_).count(); };
@@ -69,6 +81,9 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
         std::cout<<std::endl;
     }
     if(step_=="smoke") {
+        if(active_ && CalibrationLimitReached(c_,o,motion_limits_,now)) {
+            CancelMotion(); Result(); return {};
+        }
         if(elapsed>120) { failed_=done_=true; Result(); std::cerr<<"KHÔNG ĐẠT: hết 120 s\n"; return {}; }
         state_="SMOKE_"+std::to_string(stage_);
         if(stage_==0 && elapsed>=3) {
@@ -95,6 +110,8 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
                 std::cerr<<"Chạy scripts/smoke_test.sh --smoke-drop-camera để có phép kill -9; chưa chạy motor.\n";
                 return {};
             }
+            if(!fresh_odom || !FreshImage(c_,o,now)) return {};
+            BeginMotion(o);
             Next(6,"Đang kiểm encoder > 0; không chạm bánh.");
         }
         const float test_speed=std::min(10.0f,c_.max_speed_cms);
@@ -107,11 +124,14 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
             Next(8,"Đang đo thời gian phanh ToF bằng encoder.");
         if(stage_==8) {
             if(fresh_odom && std::abs(o.meas_speed)<=c_.smoke_stop_speed_cms && phase()<=1) {
+                active_=false;
                 tof_=true; Result(); Next(9,"Rút tay khỏi front rồi y: kiểm mất ảnh nhân tạo bằng --smoke-drop-camera.");
             } else if(phase()>1) { failed_=done_=true; Result(); return {}; }
         }
         if(stage_==9 && key=='y') {
             if(!drop_enabled_) { failed_=done_=true; Result(); return {}; }
+            if(!fresh_odom || !FreshImage(c_,o,now)) return {};
+            BeginMotion(o);
             Next(10,"Chạy lại trước khi ngắt ảnh nhân tạo.");
         }
         if(stage_==10 && phase()>=1 && fresh_odom && o.meas_speed>c_.smoke_stop_speed_cms) {
@@ -119,6 +139,7 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
         }
         if(stage_==11) {
             if(phase()>c_.image_timeout_ms/1000.0 && fresh_odom && std::abs(o.meas_speed)<=c_.smoke_stop_speed_cms && phase()<=1) {
+                BeginMotion(o);
                 dropping_=false; drop_=true; Result(); Next(12,"Chạy lại trước phép kill -9 độc lập.");
             } else if(phase()>1) { failed_=done_=true; Result(); return {}; }
         }
@@ -132,7 +153,9 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
         }
         if(stage_==2) return {0,-std::min(c_.smoke_servo_deg,c_.max_steering_deg)};
         if(stage_==3) return {0,std::min(c_.smoke_servo_deg,c_.max_steering_deg)};
-        if(stage_==6 || stage_==7 || stage_==8 || stage_==10 || stage_==11 || stage_==12 || stage_==13) return {test_speed,0};
+        if(stage_==6 || stage_==7 || stage_==8 || stage_==10 || stage_==11 || stage_==12 || stage_==13) {
+            common::ControlCommand cmd{test_speed,0}; cmd.calib_limits=motion_limits_; return cmd;
+        }
         return {};
     }
     if(key=='a') angle_-=c_.calib_servo_step_deg;
@@ -155,17 +178,10 @@ common::ControlCommand Calibration::Tick(const common::Snapshot &s,int key,commo
     const bool motion_step=step_=="motor" || step_=="radius" || step_=="position" || step_=="servo";
     const bool fresh_image=FreshImage(c_,o,now);
     if(!fresh_image || s.state=="MAT_ANH") CancelMotion();
-    if(key=='y' && motion_step) {
+    if(key=='y' && motion_step && !active_) {
         if(!c_.tof_mapping_confirmed || !fresh_odom || !fresh_image) std::cerr<<"Chưa xác nhận ToF hoặc encoder/ảnh không mới: giữ dừng.\n";
         else {
-            active_=true; start_cm_=o.odom_cm; start_yaw_=o.yaw_rel_deg;
-            motion_limits_.enabled=true;
-            motion_limits_.deadline=now+std::chrono::duration_cast<common::Clock::duration>(
-                std::chrono::duration<double>(c_.calib_max_duration_s));
-            motion_limits_.start_odom_cm=start_cm_;
-            motion_limits_.max_distance_cm=step_=="position" ? c_.calib_position_cm : c_.calib_distance_cm;
-            motion_limits_.limit_yaw=step_=="radius";
-            motion_limits_.start_yaw_deg=start_yaw_;
+            BeginMotion(o);
         }
     }
     const double distance=std::abs(o.odom_cm-start_cm_),yaw=std::abs(o.yaw_rel_deg-start_yaw_);

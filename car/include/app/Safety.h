@@ -18,7 +18,10 @@ inline bool CalibrationLimitReached(const common::Config &c,const common::Observ
             std::abs(o.yaw_rel_deg-limits.start_yaw_deg)>=limits.max_yaw_deg));
 }
 inline common::ControlCommand SafeCommand(const common::Config &c, const common::Observation &o,
-        common::ControlCommand cmd, common::Clock::time_point now, std::string &state) {
+        common::ControlCommand cmd, common::Clock::time_point now, std::string &state,
+        bool allow_position_control=false) {
+    // Chỉ luồng chấp hành ở calib bước position được cấp quyền; mặc định giữ dừng.
+    if(cmd.position_control && !allow_position_control) { cmd={}; state="DUNG_LENH_VI_TRI"; }
     if(!std::isfinite(cmd.speedCmPerSec) || (cmd.position_control && !std::isfinite(cmd.position_cm))) cmd={};
     cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c.max_speed_cms,c.max_speed_cms);
     cmd.steeringDeg=std::clamp(cmd.steeringDeg,-c.max_steering_deg,c.max_steering_deg);
@@ -54,6 +57,8 @@ public:
         if(!gap_ && last_frame_!=common::Clock::time_point{} && o.captured_at-last_frame_>=timeout) {
             last_=last_frame_; gap_=true; stable_={}; ramping_=false;
         }
+        // Ảnh đầu tiên cũng tăng mềm, dù đã đợi camera nhiều giây.
+        if(last_frame_==common::Clock::time_point{}) { ramp_=now; ramping_=true; }
         last_frame_=o.captured_at;
         if(gap_) {
             if(std::chrono::duration<double>(o.captured_at-last_).count()>c.camera_resume_max_s) waiting_stable_=true;

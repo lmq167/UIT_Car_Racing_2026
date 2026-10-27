@@ -8,7 +8,10 @@ public:
     Calibration(const common::Config &c,std::string step,std::string directory,std::string config,
                 std::string kill_file,bool drop_camera);
     common::ControlCommand Tick(const common::Snapshot &s,int key,common::Clock::time_point now=common::Clock::now());
-    void CancelMotion() { active_=false; angle_=0; }
+    void CancelMotion() {
+        active_=false; angle_=0;
+        if(step_=="smoke") { failed_=done_=true; dropping_=false; }
+    }
     bool Done() const { return done_; }
     bool Failed() const { return failed_; }
     bool DropCamera() const { return dropping_; }
@@ -16,6 +19,7 @@ public:
 private:
     void Result(bool killed=false,bool stopped=false);
     void Next(int stage,const char *prompt);
+    void BeginMotion(const common::Observation &o);
     common::Config c_;
     std::string step_,directory_,config_,kill_file_,state_,config_text_;
     common::Clock::time_point started_=common::Clock::now(), stage_at_=started_, printed_{};

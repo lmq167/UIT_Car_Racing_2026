@@ -61,8 +61,16 @@ void Config::Load(const std::string &path) {
     read("tof_brake_mm", tof_brake_mm, "[1, +inf) mm");
     read("tof_timeout_ms", tof_timeout_ms, "[1, 500] ms");
     read("image_timeout_ms", image_timeout_ms, "[1, 500] ms");
-    read("camera_resume_max_s", camera_resume_max_s, "> image_timeout_ms/1000 s");
-    read("soft_start_s", soft_start_s, "(0, +inf) s");
+    require("image_timeout_ms",image_timeout_ms>=1 && image_timeout_ms<=500,"[1, 500] ms");
+    std::ostringstream resume_range;
+    resume_range<<'('<<image_timeout_ms/1000.0<<", 5] s (image_timeout_ms/1000)";
+    double resume_seconds=camera_resume_max_s, soft_seconds=soft_start_s;
+    read("camera_resume_max_s",resume_seconds,resume_range.str());
+    require("camera_resume_max_s",resume_seconds>image_timeout_ms/1000.0 && resume_seconds<=5,resume_range.str());
+    read("soft_start_s",soft_seconds,"[0.2, 10] s");
+    require("soft_start_s",soft_seconds>=0.2 && soft_seconds<=10,"[0.2, 10] s");
+    camera_resume_max_s=static_cast<float>(resume_seconds);
+    soft_start_s=static_cast<float>(soft_seconds);
     double stable_seconds=resume_stable_s;
     read("resume_stable_s", stable_seconds, "[0.5, 30] s");
     require("resume_stable_s",stable_seconds>=0.5 && stable_seconds<=30,"[0.5, 30] s");
@@ -83,9 +91,6 @@ void Config::Load(const std::string &path) {
     calib_limit("calib_distance_cm",calib_distance_cm,300,"(0, 300] cm");
     calib_limit("calib_position_cm",calib_position_cm,100,"(0, 100] cm");
     calib_limit("calib_max_duration_s",calib_max_duration_s,120,"(0, 120] s");
-    require("image_timeout_ms",image_timeout_ms>=1 && image_timeout_ms<=500,"[1, 500] ms");
-    require("camera_resume_max_s",camera_resume_max_s>image_timeout_ms/1000.0f,"> image_timeout_ms/1000 s");
-    require("soft_start_s",soft_start_s>0,"(0, +inf) s");
     require("smoke_servo_deg",smoke_servo_deg>=1 && smoke_servo_deg<=60,"[1, 60] độ");
     require("camera_width",camera_width>=1,"[1, +inf)");
     require("camera_height",camera_height>=1,"[1, +inf)");

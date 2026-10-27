@@ -150,8 +150,8 @@ void App::ActuatorThread() {
 #endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
         std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
-        const bool calib_limit=mode_=="calib" && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
-        if(((mode_=="calib" || mode_=="collect") && !FreshImage(c_,s.observation,now)) || calib_limit) {
+        const bool calib_limit=(mode_=="calib" || mode_=="smoke") && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
+        if(((mode_=="calib" || mode_=="collect" || mode_=="manual") && !FreshImage(c_,s.observation,now)) || calib_limit) {
             // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
             std::lock_guard<std::mutex> lock(shared_.mutex);
             shared_.value.requested={}; cancel_held_command_=true; cmd={};
@@ -159,7 +159,7 @@ void App::ActuatorThread() {
         }
         cmd.speedCmPerSec=std::clamp(cmd.speedCmPerSec,-c_.max_speed_cms,c_.max_speed_cms);
         if(mode_=="auto") cmd=recovery.Filter(c_,s.observation,cmd,now,state);
-        cmd=SafeCommand(c_,s.observation,cmd,now,state);
+        cmd=SafeCommand(c_,s.observation,cmd,now,state,mode_=="calib" && step_=="position");
         if(logger_->Failed()) throw std::runtime_error("Loi luong ghi anh");
         if(!running_) { backend_.Stop(); break; }
         const bool send_motor=cmd.speedCmPerSec!=previous.speedCmPerSec || cmd.position_control!=previous.position_control ||
@@ -238,7 +238,7 @@ void App::UIThread() {
             key=raw_key<0 ? -1 : raw_key&255;
         }
 #ifdef UCR_FAKE_HW
-        if(mode_=="collect" || mode_=="calib" || mode_=="manual") {
+        if(mode_=="collect" || mode_=="calib" || mode_=="manual" || mode_=="smoke") {
             const int injected=fake::NextKey();
             if(injected>=0) key=injected;
         }
@@ -254,7 +254,9 @@ void App::UIThread() {
         } else if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
         if(mode_=="manual") {
             std::lock_guard<std::mutex> lock(shared_.mutex); auto &cmd=shared_.value.requested;
-            switch(key) {
+            if(cancel_held_command_.exchange(false)) cmd={};
+            if(!FreshImage(c_,shared_.value.observation,common::Clock::now())) cmd={};
+            else switch(key) {
                 case 'w': case 'W': cmd.speedCmPerSec+=c_.keyboard_speed_step_cms; break;
                 case 's': case 'S': cmd.speedCmPerSec-=c_.keyboard_speed_step_cms; break;
                 case 'a': case 'A': cmd.steeringDeg-=c_.keyboard_steering_step_deg; break;
@@ -277,12 +279,12 @@ void App::UIThread() {
             }
         }
         if(calibration_) {
-            if(mode_=="calib" && cancel_held_command_.exchange(false)) calibration_->CancelMotion();
+            if(cancel_held_command_.exchange(false)) calibration_->CancelMotion();
             const auto cmd=calibration_->Tick(s,key);
             if(mode_=="smoke") drop_camera_=calibration_->DropCamera();
             if(calibration_->Done()) { if(calibration_->Failed()) failed_=true; RequestStop(); break; }
             std::lock_guard<std::mutex> lock(shared_.mutex);
-            shared_.value.requested=mode_=="calib" && (cancel_held_command_ ||
+            shared_.value.requested=cancel_held_command_ || (mode_=="calib" &&
                 !FreshImage(c_,shared_.value.observation,common::Clock::now())) ? common::ControlCommand{} : cmd;
             shared_.value.requested_state=calibration_->State();
         }

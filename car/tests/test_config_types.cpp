@@ -56,10 +56,18 @@ int main() {
         catch(const std::runtime_error &e) {
             const std::string message=e.what();
             rejected=message.find("camera_resume_max_s = ")!=std::string::npos &&
-                message.find("ngoài khoảng hợp lệ > image_timeout_ms/1000 s")!=std::string::npos;
+                message.find("ngoài khoảng hợp lệ (0.5, 5] s")!=std::string::npos &&
+                message.find("image_timeout_ms")!=std::string::npos;
         }
         Check(rejected,"Lỗi phục hồi phải nêu khóa, khoảng hợp lệ và bất đẳng thức chặt theo timeout");
     }
+    for(const char *value:{"0.2","10"}) load("soft_start_s",value);
+    for(const char *value:{"0.1999999999","10.0000001","11"}) reject("soft_start_s",value);
+    for(const char *value:{"0.5001","5"}) load("camera_resume_max_s",value);
+    for(const char *value:{"5.0000001","6"}) reject("camera_resume_max_s",value);
+    Check(load("camera_resume_max_s","0.201\nimage_timeout_ms: 200").camera_resume_max_s>0.2f,
+        "cận dưới phục hồi phụ thuộc ngưỡng ảnh đã nạp");
+    reject("camera_resume_max_s","0.2\nimage_timeout_ms: 200");
     for(const char *value:{"-1","0","0.499999999","30.0000001","31","1.e100","1.e-100","\"2\"","[]",".Nan",".Inf"}) {
         bool rejected=false;
         try { load("resume_stable_s",value); }
