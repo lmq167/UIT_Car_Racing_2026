@@ -165,14 +165,17 @@ void Run(const std::string &scenario) {
     if(scenario=="startup") {
         if(frames.empty()) return;
         const auto first=frames.front().ms;
-        bool full=false;
+        bool full=false, intermediate=false;
         for(const auto &l:speeds) {
             if(l.ms<first) ACC_CHECK(acc::Near(l.num,0),"R17: trước ảnh đầu chỉ lệnh 0");
-            if(l.ms>=first && l.ms<=first+settle_ms && acc::Near(l.num,20)) full=true;
+            const double bound=20*std::max(0.0,std::min(1.0,double(l.ms-first+settle_ms)/(1000*f.c.soft_start_s)));
+            ACC_CHECK(std::abs(l.num)<=bound+1e-3,"E4/R17: ảnh đầu tăng mềm từ 0");
+            if(l.ms>=first && l.ms<first+f.c.soft_start_s*1000 && l.num>0.1 && l.num<19.9) intermediate=true;
+            if(l.ms>=first+f.c.soft_start_s*1000 && acc::Near(l.num,20)) full=true;
         }
         for(const auto &l:acc::Of(running_trace,"servo_angle")) if(l.ms<first)
             ACC_CHECK(acc::Near(l.num,7),"R17: chưa có ảnh phải về trim");
-        ACC_CHECK(full,"R17: ảnh đầu không tạo chốt/tăng mềm");
+        ACC_CHECK(intermediate && full,"E4/R17: ảnh đầu có tăng mềm và sau S đạt tốc độ đầy");
         return;
     }
     bool waiting_for_stable=false;

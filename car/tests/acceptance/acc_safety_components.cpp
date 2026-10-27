@@ -23,14 +23,14 @@ void ConfigCases() {
         ACC_CHECK(acc::Near(c.max_speed_cms,std::stof(v),1e-3),"CFG02: nhận cả hai biên hợp lệ");
     }
     for(int timeout:{200,500}) {
-        for(const auto r:{"0.501","2","10"}) {
+        for(const auto r:{"0.501","2","5"}) {
             c=load("image_timeout_ms: "+std::to_string(timeout)+"\ncamera_resume_max_s: "+r+"\n");
             ACC_CHECK(acc::Near(c.camera_resume_max_s,std::stof(r)),"CFG05: nhận R hợp lệ theo timeout");
         }
     }
-    for(const auto s:{"0.001","1","2","1000"}) {
+    for(const auto s:{"0.2","1","2","10"}) {
         c=load(std::string("soft_start_s: ")+s+"\n");
-        ACC_CHECK(acc::Near(c.soft_start_s,std::stof(s)),"CFG06: không đặt thêm trần thời gian");
+        ACC_CHECK(acc::Near(c.soft_start_s,std::stof(s)),"E3/CFG06: thời gian trong [0.2,10]");
     }
     for(int timeout:{200,500}) for(const auto stable:{"0.5","0.501","1","2.0","29.999","30.0"}) {
         c=load("image_timeout_ms: "+std::to_string(timeout)+"\nresume_stable_s: "+stable+"\n");
@@ -102,7 +102,7 @@ void RearCases() {
     for(bool rear:{false,true}) {
         o=Good(f.c,now); o.tof[rear ? f.c.RearSlot() : f.c.FrontSlot()].distanceMm=f.c.tof_brake_mm/2;
         common::ControlCommand position{rear ? -20.f : 20.f,10}; position.position_control=true; position.position_cm=rear ? -50 : 50;
-        Applied(f,b,app::SafeCommand(f.c,o,position,now,state),0,10,"A04: vị trí không đi vòng qua ToF");
+        Applied(f,b,app::SafeCommand(f.c,o,position,now,state,true),0,10,"A04/E6: vị trí calib được cấp quyền vẫn qua ToF");
     }
     for(float v:{-40.f,-30.f,30.f,40.f}) {
         o=Good(f.c,now);
@@ -133,7 +133,15 @@ void RecoveryCases() {
         ACC_CHECK(state!="DUNG_CHOT_CAN_XAC_NHAN","R14: không xuất trạng thái đã bỏ");
         return state;
     };
-    tick(0,0,20,20);
+    // E4: các ca dưới kiểm phục hồi sau khi giai đoạn tăng mềm ban đầu đã hoàn tất.
+    auto warm=[&] {
+        recovery=app::CameraRecovery();
+        for(int ms=-2000;ms<0;ms+=100) {
+            const auto now=base+Ms(ms); auto o=Good(f.c,now); std::string state;
+            recovery.Filter(f.c,o,{20,10},now,state);
+        }
+    };
+    warm(); tick(0,0,20,20);
     // R01: đồng hồ truyền vào giữ trần logic 500 ms, không cộng dung sai lịch của test App.
     ACC_CHECK(f.c.image_timeout_ms==500,"R01: giữ timeout ảnh mặc định 500 ms");
     tick(499,0,20,20);
@@ -146,7 +154,7 @@ void RecoveryCases() {
     for(int ms=4500;ms<=5500;ms+=100) tick(ms,ms,20,std::min(20.f,(ms-4400)*0.02f));
 
     // R10/R13: lặp ảnh rồi quá tuổi khi đang chờ phải đặt lại toàn bộ W.
-    recovery=app::CameraRecovery();
+    warm();
     tick(0,0,20,20); tick(501,0,20,0); tick(2300,0,20,0);
     for(int ms=2400;ms<=3400;ms+=100) tick(ms,ms,20,0,0);
     tick(3600,3400,20,0,0); tick(3800,3400,20,0,0); tick(4001,3400,20,0,0);
@@ -155,7 +163,7 @@ void RecoveryCases() {
     for(int ms=6200;ms<=7200;ms+=100) tick(ms,ms,20,std::min(20.f,(ms-6100)*0.02f));
 
     for(int direction:{-1,1}) {
-        recovery=app::CameraRecovery();
+        warm();
         tick(0,0,20.f*direction,20.f*direction);
         tick(501,0,20.f*direction,0);
         tick(600,600,20.f*direction,0); // R02: mất đúng 0,6 s.
@@ -167,7 +175,7 @@ void RecoveryCases() {
         tick(1700,1700,-20,-20);
     }
     // R03: kiểm cả trạng thái, xe luôn dừng cũng không được đạt vì phải có mẫu +5 rồi +20.
-    recovery=app::CameraRecovery(); f.c.resume_stable_s=0.7f;
+    warm(); f.c.resume_stable_s=0.7f;
     tick(0,0,20,20); tick(500,0,20,0);
     ACC_CHECK(tick(1700,1700,20,0)!="DUNG_CHO_ANH_ON_DINH","R03: mất ngắn không vào chờ ổn định");
     ACC_CHECK(tick(1950,1950,20,5)!="DUNG_CHO_ANH_ON_DINH","R03: tăng ngay, không chờ W");
@@ -176,7 +184,7 @@ void RecoveryCases() {
     tick(2700,2700,20,20);
     // R16b: cùng từng lỗi rear, tách mất ngắn và mất dài đã chờ đủ W; phải có lệnh âm trước lỗi.
     for(int gap:{600,2300}) for(int fault=1;fault<=5;++fault) {
-        recovery=app::CameraRecovery();
+        warm();
         tick(0,0,-20,-20); tick(500,0,-20,0);
         int ramp=gap;
         if(gap>2000) {
@@ -192,7 +200,7 @@ void RecoveryCases() {
     // R13/R19: một khung không được tính là chuỗi; tuổi đúng ngưỡng đặt lại W.
     f.c.resume_stable_s=2;
     for(int age:{499,500,501}) {
-        recovery=app::CameraRecovery();
+        warm();
         tick(0,0,20,20); tick(500,0,20,0); tick(2300,0,20,0);
         tick(2400,2400,20,0,0);
         ACC_CHECK(tick(2400+age,2400,20,0,0)==(age<500 ? "DUNG_CHO_ANH_ON_DINH" : "MAT_ANH"),"R19: 499 mới, 500/501 cũ lúc chờ");
@@ -209,7 +217,9 @@ void RecoveryCases() {
     auto cmd=recovery.Filter(f.c,never,{20,10},base+Ms(3000),state);
     ACC_CHECK(state!="DUNG_CHO_ANH_ON_DINH","R17: chưa từng có ảnh không vào chờ ổn định");
     Applied(f,b,app::SafeCommand(f.c,never,cmd,base+Ms(3000),state),0,0,"R17: chưa từng có ảnh");
-    tick(3100,3100,20,20);
+    tick(3100,3100,20,0);
+    tick(3350,3350,20,5); tick(3600,3600,20,10);
+    tick(3850,3850,20,15); tick(4100,4100,20,20);
     b.Stop(); Tail(f);
 }
 

@@ -53,6 +53,7 @@ for _key in ("yaw_axis", "pitch_axis", "roll_axis"):
 for _key in ("yaw_sign", "pitch_sign", "roll_sign"):
     CHECK_RULES[_key] = ("-1", "0", r"(?:\{\s*-1\s*,\s*\+?1\s*\}|±\s*1|[+-]\s*1\s*/\s*[+-]\s*1)")
 CHECK_RULES.update({
+    "soft_start_s": ("0.7", "0.199", r"\[\s*0\.2\s*,\s*10\s*\]"),
     "resume_stable_s": ("0.7", "30.001", r"\[\s*0\.5\s*,\s*30\s*\]"),
     "max_speed_cms": ("100", "100.001", r"\(\s*0\s*,\s*100\s*\]"),
     "camera_resume_max_s": ("3", "0.5", r"(?:>\s*(?:image_timeout_ms\s*/\s*1000|0\.5)|\(\s*0\.5\s*,)"),

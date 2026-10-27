@@ -14,7 +14,7 @@
 //    hoặc đến chu kỳ duy trì kết nối"), mục "Điểm cắm kiểm thử bản giả lập" (định dạng vết, ToF giả, khoảng ngắt camera, lỗi giả).
 //
 // Mỗi kịch bản chạy trong MỘT tiến trình riêng (biến môi trường UCR_FAKE_* được đọc một lần). Dùng: acc_hwtrace <kịch_bản>
-// Mã thoát 77 = CHƯA KIỂM ĐƯỢC (điều kiện tiền đề không xảy ra, ví dụ xe chưa kịp chạy trước mốc thử).
+// Tiền đề không đạt là lỗi test, không dùng mã bỏ qua.
 //
 // Các ngưỡng thời gian tự đặt (ghi rõ để xem xét, đã chọn có biên độ cho máy chậm):
 //  - Phanh ToF: độ trễ từ lúc kịch bản ToF đổi đến lúc lệnh tốc độ 0 xuất hiện trong vết <= chu kỳ cảm biến + chu kỳ điều khiển
@@ -184,7 +184,7 @@ bool StateAt(const Trace &t, const std::string &kind, long long tmoc, double &v)
 
 int Inconclusive(const std::string &why) {
     std::fprintf(stderr, "CHUA KIEM DUOC: %s\n", why.c_str());
-    return 77;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -296,16 +296,34 @@ int KeepaliveScenario(const std::string &name) {
     const int K = name == "keepalive_100" ? 100 : 200;
     x.c.motor_keepalive_ms = K;
     const bool toggle = name == "keepalive_steer";
-    auto ctl = std::make_unique<FnController>([=](long long rel, long long) {
+    std::atomic<long long> first_call{-1};
+    auto ctl = std::make_unique<FnController>([&](long long rel, long long now) {
+        long long initial = -1;
+        first_call.compare_exchange_strong(initial, now);
         const int steer = toggle ? (((rel / 100) % 2) ? 3 : -3) : 0;
         return common::ControlCommand{8.0f, steer};
     });
     const auto o = RunApp(x, "auto", std::move(ctl), 2600);
     const Trace t = CommonChecks(x, o);
+    if (first_call.load() < 0) return Inconclusive("bo dieu khien chua duoc goi");
+    // E4: gần 8 ở cuối tăng mềm chưa phải lệnh giữ tốc độ; không cộng thêm dung sai sau khi tăng mềm xong.
+    const long long steady_from = first_call.load() + std::llround(1000 * x.c.soft_start_s);
+    std::printf("[keepalive] first_call=%lld steady_from=%lld stop=%lld K=%d vet=%s\n",
+                first_call.load(), steady_from, o.stop_req_ms, K, x.trace.c_str());
     Trace v8;
-    for (const auto &l : acc::Of(t, "motor_speed")) if (acc::Near(l.num, 8.0) && l.ms < o.stop_req_ms) v8.push_back(l);
+    Trace near8;
+    for (const auto &l : acc::Of(t, "motor_speed")) {
+        if (!acc::Near(l.num, 8.0) || l.ms >= o.stop_req_ms) continue;
+        if (!near8.empty() && l.ms - near8.back().ms < 0.8 * K)
+            std::printf("[keepalive] cap ngan %lld,%s -> %lld,%s; %s\n", near8.back().ms,
+                        near8.back().value.c_str(), l.ms, l.value.c_str(),
+                        near8.back().ms < steady_from ? "trong/qua bien tang mem E4" : "NGHI LOI CODE: sau tang mem");
+        near8.push_back(l);
+        if (l.ms >= steady_from) v8.push_back(l);
+    }
     if (v8.size() < 2) return Inconclusive("xe khong di chuyen / khong co lenh lap lai nao (chi " + std::to_string(v8.size()) + " dong toc do 8)");
     const double steady = static_cast<double>(o.stop_req_ms - v8.front().ms);
+    ACC_CHECK(steady >= 4 * K, "tien de: can it nhat 4 chu ky giu ket noi sau tang mem E4");
     const double expected = steady / K;
     ACC_CHECK(v8.size() >= 0.6 * expected, "phai gui lai toc do theo chu ky giu ket noi K=" + std::to_string(K) + " ms: ky vong ~" +
               std::to_string(expected) + " dong, thay " + std::to_string(v8.size()));
@@ -313,7 +331,8 @@ int KeepaliveScenario(const std::string &name) {
               " dong, thay " + std::to_string(v8.size()) + " (gui lap moi vong dieu khien?)");
     for (size_t i = 1; i < v8.size(); ++i) {
         const long long gap = v8[i].ms - v8[i - 1].ms;
-        ACC_CHECK(gap >= 0.8 * K, "hai lenh toc do giong nhau cach nhau " + std::to_string(gap) + " ms < 0.8*K (K=" + std::to_string(K) + ")");
+        ACC_CHECK(gap >= 0.8 * K, "NGHI LOI CODE: hai lenh sau tang mem " + std::to_string(v8[i - 1].ms) + "," + v8[i - 1].value +
+                  " -> " + std::to_string(v8[i].ms) + "," + v8[i].value + " cach nhau " + std::to_string(gap) + " ms < 0.8*K (K=" + std::to_string(K) + ")");
         ACC_CHECK(gap <= K + 150, "hai lenh toc do giong nhau cach nhau " + std::to_string(gap) + " ms > K+150 (K=" + std::to_string(K) + "): giu ket noi bi thieu");
     }
     return acc::Finish(("acc_hwtrace " + name).c_str());
@@ -323,18 +342,21 @@ int KeepaliveScenario(const std::string &name) {
 int SpeedChangeScenario() {
     Ctx x = Prepare();
     x.c.motor_keepalive_ms = 200;
-    std::atomic<long long> t9{-1}, t5b{-1};
+    std::atomic<long long> first_call{-1}, t9{-1}, t5b{-1};
     auto ctl = std::make_unique<FnController>([&](long long rel, long long abs) {
+        long long initial=-1; first_call.compare_exchange_strong(initial,abs);
         float s = 5.0f;
-        if (rel >= 1400) { s = 5.0f; long long e = -1; t5b.compare_exchange_strong(e, abs); }
-        else if (rel >= 700) { s = 9.0f; long long e = -1; t9.compare_exchange_strong(e, abs); }
+        if (rel >= 2400) { s = 5.0f; long long e = -1; t5b.compare_exchange_strong(e, abs); }
+        else if (rel >= 1700) { s = 9.0f; long long e = -1; t9.compare_exchange_strong(e, abs); }
         return common::ControlCommand{s, 0};
     });
-    const auto o = RunApp(x, "auto", std::move(ctl), 2300);
+    const auto o = RunApp(x, "auto", std::move(ctl), 3300);
     const Trace t = CommonChecks(x, o);
     if (t9.load() < 0 || t5b.load() < 0) return Inconclusive("bo dieu khien khong duoc goi du lau");
     std::vector<double> seq;
     for (const auto &l : acc::Of(t, "motor_speed")) {
+        // E4: chỉ kiểm đổi lệnh khi đã qua tăng mềm ban đầu; vẫn giữ hạn đổi 150 ms.
+        if(l.ms<first_call.load()+std::llround(1000*x.c.soft_start_s)+150) continue;
         if (l.ms >= o.stop_req_ms || std::fabs(l.num) < 0.5) continue;
         if (seq.empty() || !acc::Near(seq.back(), l.num)) seq.push_back(l.num);
     }

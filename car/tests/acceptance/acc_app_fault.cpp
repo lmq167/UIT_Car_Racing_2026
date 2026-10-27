@@ -90,10 +90,10 @@ int main(int argc, char **argv) {
     else if (scenario == "nan") { ctl->speed = std::numeric_limits<float>::quiet_NaN(); ctl->steer = 7; }
     else if (scenario == "pass") { ctl->speed = 6.f; ctl->steer = 4; }
     else if (scenario == "imgloss") {
-        // Camera giả: chuỗi 5 ảnh rồi hết (thư mục có dấu cách để thử luôn đường dẫn có dấu cách).
+        // E4: nguồn 20 ảnh ở 10 Hz đủ tăng mềm 1 s rồi mới mất ảnh.
         const std::string imgdir = root + "/anh thu";
         mkdir(imgdir.c_str(), 0755);
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < 20; ++i) {
             cv::Mat img(384, 640, CV_8UC3, cv::Scalar(40 + 30 * i, 100, 160));
             cv::circle(img, cv::Point(80 + 70 * i, 190), 40, cv::Scalar(255, 255, 255), -1);
             char name[64];
@@ -101,8 +101,9 @@ int main(int argc, char **argv) {
             if (!cv::imwrite(imgdir + name, img)) { std::fprintf(stderr, "khong ghi duoc anh\n"); return 2; }
         }
         c.fake_source = imgdir + "/frame_%06d.jpg";
+        c.camera_hz = 10;
         ctl->speed = 10.f; ctl->steer = 5;
-        run_ms = 2600;
+        run_ms = 4500;
     } else { std::fprintf(stderr, "kich ban la: %s\n", scenario.c_str()); return 2; }
 
     // Tạo lại dữ liệu cổng sau khi đã chọn đầy đủ cấu hình của kịch bản.
@@ -196,7 +197,7 @@ int main(int argc, char **argv) {
         const bool moved = any_row([](double s, double a, double age) { return Near(s, 10.0) && Near(a, 5.0) && age < 500.0; });
         if (!moved) { std::fprintf(stderr, "Bo dieu khien khong duoc goi hoac khong co dong khi con anh: CHUA KIEM DUOC\n"); return 1; }
         const bool saw_loss = any_row([](double, double, double age) { return age > 600.0; });
-        ACC_CHECK(saw_loss, "sau khi nguon anh het 2.6 s, log phai co dong voi image_age_ms > 600 (mat anh duoc nhan ra)");
+        ACC_CHECK(saw_loss, "trong cua so 4.5 s, log phai co dong voi image_age_ms > 600 sau khi nguon anh het");
         ACC_CHECK(all_rows([](double s, double a, double age) { return !(age > 600.0) || (Near(s,0.0) && a == 0.0); }),
                   "moi dong co image_age_ms > 600 (mat anh qua 0.5 s + 1 chu ky + du dia) phai co cmd_speed=0 va cmd_steer=0");
     }
