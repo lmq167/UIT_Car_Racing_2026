@@ -155,3 +155,51 @@ if(UCR_FAKE_HW)
     add_test(NAME acc_harness_selfcheck COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} self-test)
     set_tests_properties(acc_harness_selfcheck PROPERTIES LABELS "acceptance" TIMEOUT 10)
 endif()
+
+# Giới hạn hiệu chuẩn: hành vi phần cứng giả, không kiểm cấu trúc giới hạn nội bộ.
+# Vẫn đăng ký khi OFF để báo FAIL rõ ràng thay vì âm thầm thiếu/bỏ qua ca (phân xử L5).
+find_package(PythonInterp 3.6 REQUIRED)
+set(ACC_CALIB_PYTHON ${CMAKE_COMMAND} -E env PYTHONIOENCODING=utf-8 PYTHONDONTWRITEBYTECODE=1 ${PYTHON_EXECUTABLE})
+set(ACC_CALIB_LIMITS ${CMAKE_CURRENT_SOURCE_DIR}/acc_calib_limits.py)
+if(UCR_FAKE_HW)
+    add_executable(acc_calib_limits acc_calib_limits.cpp)
+    target_link_libraries(acc_calib_limits PRIVATE app_core)
+    target_compile_options(acc_calib_limits PRIVATE -Wall -Wextra)
+endif()
+foreach(scenario tick_limits cancel_keys limit_defaults)
+    if(UCR_FAKE_HW)
+        add_test(NAME acc_calib_${scenario} COMMAND acc_calib_limits ${scenario})
+    else()
+        add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
+            require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+    endif()
+    set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 120)
+endforeach()
+foreach(scenario deadline capture_deadline distance)
+    foreach(step motor radius)
+        add_test(NAME acc_calib_${scenario}_${step} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
+            ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step})
+        set_tests_properties(acc_calib_${scenario}_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
+    endforeach()
+endforeach()
+foreach(scenario expiry_braked expiry_restart image_plain image_inverted image_stalled
+        image_key_a image_key_plus image_key_minus image_stale_key
+        tof_front_near tof_front_invalid tof_forward_rear_invalid
+        exit_q exit_eof signal_INT signal_TERM stall_once stall_zero stop_invalid)
+    add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
+        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+    set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 90)
+endforeach()
+foreach(step motor radius)
+    add_test(NAME acc_calib_unconfirmed_${step} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
+        stall_unconfirmed ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step})
+    set_tests_properties(acc_calib_unconfirmed_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
+endforeach()
+foreach(scenario config_defaults config_valid config_range config_type config_before_init stall_syntax)
+    add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
+        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+    set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 120)
+endforeach()
+set_tests_properties(acc_calib_config_before_init PROPERTIES LABELS "acceptance;threads")
+add_test(NAME acc_calib_limit_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS} self-test)
+set_tests_properties(acc_calib_limit_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
