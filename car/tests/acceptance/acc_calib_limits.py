@@ -64,7 +64,7 @@ def check_restart(rows, cycle, delta, duration_ms):
     stopped(rows, stop_by, rows[-1][0])
 
 
-def observed_timing(rows, logs):
+def observed_timing(rows, logs, control_hz=50):
     # Đo trước sự kiện; dùng timestamp vết cho chu kỳ gửi servo và hiệu thời gian CSV cho ảnh.
     stamps = [ms for ms, kind, _ in rows if kind == "servo_angle" and 1000 <= ms <= 3300]
     cycles = [b-a for a, b in zip(stamps, stamps[1:]) if b > a]
@@ -76,10 +76,16 @@ def observed_timing(rows, logs):
                 frames.append((row["frame_id"], captured))
     periods = [b[1]-a[1] for a, b in zip(frames, frames[1:]) if b[1] > a[1]]
     require(len(cycles) >= 10 and len(periods) >= 5, "Tiền đề: thiếu mẫu đo chu kỳ trước sự kiện")
-    cycle = max(20, max(cycles))  # control_hz=50, không hạ dưới chu kỳ cấu hình.
+    control_period = 1000.0/control_hz
+    cycle = max(control_period, max(cycles))
     frame = max(40, max(periods))  # camera_hz=25; container có thể chậm hơn.
     delta = 2*cycle+100
-    require(delta <= 600 and frame <= 250, "Tiền đề: máy quá chậm cho cửa sổ đã thiết kế")
+    # T05g ở 10 Hz: quá ba chu kỳ không còn phân giải được sự cố ToF 300 ms.
+    cycle_limit = 300 if control_hz == 10 else 250
+    require(cycle <= cycle_limit and frame <= 250,
+            "Tiền đề: cycle={:.1f} ms (trần {}), frame={:.1f} ms (trần 250), delta={:.1f} ms; "
+            "nhịp quá chậm để phân giải sự cố/cửa sổ ảnh đã thiết kế".format(
+                cycle, cycle_limit, frame, delta))
     return cycle, frame, delta
 
 
@@ -251,8 +257,6 @@ class LimitsSuite(Suite):
                     held_window(rows, "motor_speed", t0+300, 8500, speed)
                 else:
                     held_window(rows, "motor_speed", brake_by, 8500, 0)
-                    state = "PHANH_TOF"
-                    require(any(row["state"] == state for row in log_rows(folder, "calib")), "Thiếu trạng thái " + state)
             elif scenario == "distance":
                 rows = self.reach(process, folder, 12200)
                 # Không dừng sớm theo odom tuyệt đối của lượt thứ nhất.
@@ -277,8 +281,6 @@ class LimitsSuite(Suite):
                 if scenario == "expiry_braked":
                     held_window(rows, "motor_speed", t0+300, tof_at-2*cycle, speed)
                     held_window(rows, "motor_speed", tof_at+20+delta, 12000, 0)
-                    require(any(row["state"] == "PHANH_TOF" for row in log_rows(folder, "calib")),
-                            "Tiền đề: ToF phải thực sự phanh trước hết hạn")
                 if scenario == "capture_deadline":
                     require(images(folder)-captures_before, "Phím c phải chụp ảnh trước hạn")
             if scenario == "expiry_restart":
@@ -289,8 +291,12 @@ class LimitsSuite(Suite):
                 stopped(rows, stop_by, 12000)
             self.finish(process)
 
-        code, _ = run(self.command(config, step), folder, env, observe, timeout=15)
+        code, output = run(self.command(config, step), folder, env, observe, timeout=15)
         require(code in (0, 143), "Calib phải kết thúc chủ động, không timeout/lỗi")
+        if tof and scenario != "tof_forward_rear_invalid":
+            # L đổi hành vi: state phanh chỉ một tick; stdout giữ bằng chứng khi UI chặn.
+            require(output.splitlines().count("AN_TOAN_CHOT: phanh_tof") == 1,
+                    "ToF phải chốt đúng một dòng AN_TOAN_CHOT: phanh_tof")
         rows = trace(folder / "trace.csv")
         require(sum(k == "motor_init" for _, k, _ in rows) == 1, "Không khởi tạo lại motor")
         tail(rows)
@@ -515,6 +521,20 @@ def self_test():
                 raise AssertionError("Bộ test không được chạy với bản thật")
         with patch("acc_calib_limits.subprocess.check_output", return_value=b"simulated=1; source_id=mau"):
             suite.fake_only()
+        # L đổi hành vi: chấp nhận stdout dù CSV bỏ lỡ tick phanh; bắt thiếu/lặp/sai lý do.
+        final_trace = [(0, "motor_init", "1"), (1, "motor_speed", "0"), (1, "servo_angle", "7")]
+        for scenario in ("tof_front_near", "expiry_braked"):
+            for output in ("AN_TOAN_CHOT: phanh_tof\n", "", "AN_TOAN_CHOT: mat_anh\n",
+                           "AN_TOAN_CHOT: phanh_tof\n"*2):
+                with patch.object(sys.modules[__name__], "run", return_value=(0, output)), \
+                        patch.object(sys.modules[__name__], "trace", return_value=final_trace):
+                    try:
+                        suite.motion(scenario)
+                    except AssertionError as error:
+                        require(output != "AN_TOAN_CHOT: phanh_tof\n" and "AN_TOAN_CHOT" in str(error),
+                                "Tự kiểm stdout hỏng ngoài phép đếm dòng chốt")
+                    else:
+                        require(output == "AN_TOAN_CHOT: phanh_tof\n", "Bỏ lọt stdout thiếu/lặp/sai lý do")
     print("ĐẠT tự kiểm bộ đọc vết/tiền đề; chưa kiểm sản phẩm")
 
 

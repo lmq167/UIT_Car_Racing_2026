@@ -285,3 +285,47 @@ foreach(kind deadline image distance)
 endforeach()
 add_test(NAME acc_review_fix_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES} self-test)
 set_tests_properties(acc_review_fix_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
+
+# T05g/Quyết định L: giữ huỷ lệnh ở manual/collect/calib; auto và smoke giữ hành vi cũ.
+# Mỗi ca tự dùng thư mục/vết riêng, không RUN_SERIAL và không mã bỏ qua.
+set(ACC_SAFETY_LATCH ${CMAKE_CURRENT_SOURCE_DIR}/acc_safety_latch.py)
+if(UCR_FAKE_HW)
+    add_executable(acc_safety_latch_main ${PROJECT_SOURCE_DIR}/main.cpp acc_safety_latch_inject.cpp)
+    target_link_libraries(acc_safety_latch_main PRIVATE app_core)
+    target_compile_definitions(acc_safety_latch_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
+    target_compile_options(acc_safety_latch_main PRIVATE -Wall -Wextra)
+    set_property(TARGET acc_safety_latch_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
+endif()
+set(ACC_LATCH_SCENARIOS auto_front auto_rear auto_image smoke
+    limit_deadline limit_distance limit_position
+    calib_front calib_front_stalled calib_long_stalled calib_image calib_short
+    calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed
+    collect_front_stalled collect_long_stalled)
+foreach(mode manual collect)
+    foreach(kind phase image image_reverse image_opposite image_reverse_opposite
+            front front_opposite rear rear_opposite rear_invalid rear_forward rear_forward_invalid
+            front_reverse short stale stale_reverse image_twice front_twice rear_twice front_mixed idle startup)
+        list(APPEND ACC_LATCH_SCENARIOS ${mode}_${kind})
+    endforeach()
+endforeach()
+# Chỉ tập đại diện giữ nhãn threads (TSan chạy hết ca threads, quá giờ nếu để cả ~63 ca).
+# collect_phase (~105 s) và collect_rear bỏ khỏi TSan: collect_image cùng ý nghĩa mất ảnh (~10 s).
+set(ACC_LATCH_TSAN_SET collect_image calib_front auto_image)
+foreach(scenario ${ACC_LATCH_SCENARIOS})
+    set(latch_labels "acceptance")
+    if(scenario IN_LIST ACC_LATCH_TSAN_SET)
+        set(latch_labels "acceptance;threads")
+    endif()
+    set(latch_main $<TARGET_FILE:main>)
+    set(latch_scenario ${scenario})
+    if(NOT UCR_FAKE_HW)
+        set(latch_scenario require_fake)
+    elseif(scenario MATCHES "^auto_")
+        set(latch_main $<TARGET_FILE:acc_safety_latch_main>)
+    endif()
+    add_test(NAME acc_t05g_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH}
+        ${latch_scenario} ${PROJECT_SOURCE_DIR} ${latch_main} $<TARGET_FILE:ucr_stop>)
+    set_tests_properties(acc_t05g_${scenario} PROPERTIES LABELS "${latch_labels}" TIMEOUT 120)
+endforeach()
+add_test(NAME acc_t05g_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH} self-test)
+set_tests_properties(acc_t05g_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
