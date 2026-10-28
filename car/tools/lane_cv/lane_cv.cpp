@@ -3,16 +3,23 @@
 #include <opencv2/imgproc.hpp>
 
 #include <algorithm>
+#include <cerrno>
 #include <cctype>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
+#include <unistd.h>
 #include <vector>
 #if defined(__GNUC__) && __GNUC__ < 8
 #include <experimental/filesystem>
@@ -29,6 +36,7 @@ const cv::Scalar LEFT(255, 180, 0), RIGHT(0, 145, 255), CENTER(75, 240, 100);
 
 struct Options {
     fs::path input, output;
+    bool directory = false;
     std::string fit = "crop";
     bool steps = true;
     double smax = 75, vmin = 205, kernel = 3;
@@ -76,10 +84,10 @@ const Parameter PARAMETERS[] = {
     {"boundary-margin", &Options::margin, 0, W, false, "Khoang cach hai bien > nguong, px"}
 };
 
-std::vector<cv::Point> polygon(const Options& o) {
-    auto point = [](double x, double y) {
-        return cv::Point(std::min(W-1, int(std::lround(x*W))),
-                         std::min(H-1, int(std::lround(y*H))));
+std::vector<cv::Point> polygon(const Options& o, int width = W, int height = H) {
+    auto point = [width, height](double x, double y) {
+        return cv::Point(std::min(width-1, int(std::lround(x*width))),
+                         std::min(height-1, int(std::lround(y*height))));
     };
     return {point(o.roiTLX, o.roiTLY), point(o.roiTRX, o.roiTRY),
             point(o.roiBRX, o.roiBRY), point(o.roiBLX, o.roiBLY)};
@@ -100,20 +108,37 @@ void validate(const Options& o) {
 
 void help() {
     std::cout << "ucr_lane_cv --in <anh|thu_muc> --out-dir <thu_muc_moi> [--fit crop|stretch] [--no-steps]\n";
+    std::cout << "ucr_lane_cv --in-dir <thu_muc_anh> --out-dir <thu_muc_moi_hoac_rong>\n"
+                 "  --in-dir: giu nguyen co anh; ghi <stem>_mask.png, <stem>_overlay.jpg, summary.csv\n"
+                 "  Trung stem da ghi trong luot nay: dung ten day du gom duoi anh.\n"
+                 "  Anh ti le 5:3 (ke ca 640x384) giu nguyen co trong ca hai che do.\n"
+                 "  Nguong px duoi day tinh theo anh moc 480x288, tu doi theo ti le W/H.\n";
     Options defaults;
     for (const auto& p : PARAMETERS)
         std::cout << "  --" << p.name << " <so> = " << defaults.*(p.value) << " : " << p.description << '\n';
     std::cout << "Ma thoat: 0 du bang chung; 1 doi so; 2 doc anh; 3 thieu bang chung; 4 ghi du lieu.\n";
+    std::cout << "Voi --in-dir: 0 xu ly xong (ke ca khong co lan); 1 doi so; "
+                 "2 khong doc duoc anh nao; 4 loi xu ly/ghi (ke ca thu muc ra khong rong). "
+                 "time_ms chi do phan tich, khong tinh doc/ghi.\n";
 }
 
 Options parse(int argc, char** argv) {
     Options o;
+    bool singleInput = false;
     for (int i = 1; i < argc; ++i) {
         const std::string key = argv[i];
         if (key == "--no-steps") { o.steps = false; continue; }
         if (i+1 == argc) throw std::runtime_error("Thieu gia tri: " + key);
         const std::string value = argv[++i];
-        if (key == "--in") o.input = fs::path(value);
+        if (value.compare(0,2,"--") == 0) throw std::runtime_error("Thieu gia tri: " + key);
+        if (key == "--in") {
+            if (o.directory) throw std::runtime_error("Khong ket hop --in va --in-dir");
+            singleInput = true; o.input = fs::path(value);
+        }
+        else if (key == "--in-dir") {
+            if (singleInput) throw std::runtime_error("Khong ket hop --in va --in-dir");
+            o.directory = true; o.input = fs::path(value);
+        }
         else if (key == "--out-dir") o.output = fs::path(value);
         else if (key == "--fit") o.fit = value;
         else {
@@ -130,7 +155,7 @@ Options parse(int argc, char** argv) {
             if (!found) throw std::runtime_error("Doi so khong biet: " + key);
         }
     }
-    if (o.input.empty() || o.output.empty()) throw std::runtime_error("Can --in va --out-dir");
+    if (o.input.empty() || o.output.empty()) throw std::runtime_error("Can --in hoac --in-dir, va --out-dir");
     validate(o);
     return o;
 }
@@ -146,9 +171,10 @@ struct Curve {
     int y0 = -1, y1 = -1, rows = 0, inliers = 0;
     double rmse = 0;
     cv::Mat coefficients;
+    int height = H;
     std::string reason = "chua_khop";
     double at(int y) const {
-        const double t = double(y)/H;
+        const double t = double(y)/height;
         return ((coefficients.at<double>(0)*t + coefficients.at<double>(1))*t
                + coefficients.at<double>(2))*t + coefficients.at<double>(3);
     }
@@ -156,11 +182,12 @@ struct Curve {
 
 Curve fitRows(const cv::Mat& mask, const Options& o) {
     Curve f;
+    f.height = mask.rows;
     std::vector<int> ys;
     std::vector<double> xs;
-    for (int y = 0; y < H; ++y) {
+    for (int y = 0; y < mask.rows; ++y) {
         std::vector<double> row;
-        for (int x = 0; x < W; ++x) if (mask.at<uchar>(y,x)) row.push_back(x);
+        for (int x = 0; x < mask.cols; ++x) if (mask.at<uchar>(y,x)) row.push_back(x);
         if (!row.empty()) { ys.push_back(y); xs.push_back(median(row)); }
     }
     f.rows = int(ys.size());
@@ -168,7 +195,7 @@ Curve fitRows(const cv::Mat& mask, const Options& o) {
     std::vector<bool> good(ys.size(), true);
     for (int iteration = 0; iteration <= int(o.iterations); ++iteration) {
         const int count = int(std::count(good.begin(), good.end(), true));
-        int first = H, last = -1;
+        int first = mask.rows, last = -1;
         for (std::size_t i = 0; i < ys.size(); ++i) if (good[i]) {
             first = std::min(first, ys[i]); last = std::max(last, ys[i]);
         }
@@ -178,7 +205,7 @@ Curve fitRows(const cv::Mat& mask, const Options& o) {
         cv::Mat a(count, 4, CV_64F), b(count, 1, CV_64F);
         int row = 0;
         for (std::size_t i = 0; i < ys.size(); ++i) if (good[i]) {
-            const double t = double(ys[i])/H;
+            const double t = double(ys[i])/mask.rows;
             a.at<double>(row,0) = t*t*t; a.at<double>(row,1) = t*t;
             a.at<double>(row,2) = t; a.at<double>(row,3) = 1;
             b.at<double>(row++,0) = xs[i];
@@ -205,6 +232,8 @@ Curve fitRows(const cv::Mat& mask, const Options& o) {
 
 cv::Mat normalize(const cv::Mat& image, const Options& o, cv::Rect& crop) {
     crop = cv::Rect(0, 0, image.cols, image.rows);
+    if (o.directory || static_cast<long long>(image.cols)*3 == static_cast<long long>(image.rows)*5)
+        return image;
     if (o.fit == "crop") {
         if (static_cast<long long>(image.cols)*3 > static_cast<long long>(image.rows)*5) {
             crop.width = std::max(1, int(static_cast<long long>(image.rows)*5/3));
@@ -227,6 +256,7 @@ struct Result {
     int common0 = -1, common1 = -1;
     bool valid = false, disjoint = false, ordered = false;
     std::string reason;
+    double timeMs = 0;
 };
 
 bool checkPair(Result& r, const Options& o) {
@@ -244,7 +274,7 @@ bool checkPair(Result& r, const Options& o) {
     // Không vẽ một đường khớp rời khỏi ảnh như thể vẫn có bằng chứng hợp lệ.
     for (const Curve* f : {&r.lc, &r.rc}) for (int y = f->y0; y <= f->y1; ++y) {
         const double x = f->at(y);
-        if (!std::isfinite(x) || x < 0 || x > W-1) {
+        if (!std::isfinite(x) || x < 0 || x > r.image.cols-1) {
             r.reason = "duong_khop_ra_ngoai_anh"; return false;
         }
     }
@@ -255,11 +285,26 @@ bool checkPair(Result& r, const Options& o) {
     return true;
 }
 
-Result analyze(const cv::Mat& original, const Options& o) {
+// Giữ đơn vị tham số dòng lệnh cũ; đổi ngưỡng hình học theo kích thước ảnh đang xử lý.
+Options scaledOptions(const Options& o, const cv::Size& size) {
+    Options scaled = o;
+    const double sx = double(size.width)/W, sy = double(size.height)/H;
+    scaled.leftArea *= sx*sy;
+    scaled.leftHeight *= sy; scaled.rightHeight *= sy;
+    scaled.minRows = std::max(4., o.minRows*sy); scaled.minSpan *= sy;
+    scaled.residualFloor *= sx; scaled.margin *= sx;
+    scaled.kernel = 2*std::lround((o.kernel-1)/2*std::min(sx,sy))+1;
+    return scaled;
+}
+
+Result analyze(const cv::Mat& original, const Options& options) {
+    const auto start = std::chrono::steady_clock::now();
     Result r;
-    r.image = normalize(original, o, r.crop);
-    r.roi = cv::Mat::zeros(H,W,CV_8U);
-    cv::fillPoly(r.roi, std::vector<std::vector<cv::Point>>{polygon(o)}, cv::Scalar(255));
+    r.image = normalize(original, options, r.crop);
+    const int width = r.image.cols, height = r.image.rows;
+    const Options o = scaledOptions(options, r.image.size());
+    r.roi = cv::Mat::zeros(height,width,CV_8U);
+    cv::fillPoly(r.roi, std::vector<std::vector<cv::Point>>{polygon(o,width,height)}, cv::Scalar(255));
     cv::Mat hsv;
     cv::cvtColor(r.image, hsv, cv::COLOR_BGR2HSV);
     cv::inRange(hsv, cv::Scalar(0,0,o.vmin), cv::Scalar(179,o.smax,255), r.white);
@@ -269,16 +314,16 @@ Result analyze(const cv::Mat& original, const Options& o) {
     cv::Mat labels, stats, centroids;
     const int n = cv::connectedComponentsWithStats(r.clean, labels, stats, centroids, 8, CV_32S);
     r.components = n-1;
-    r.left = cv::Mat::zeros(H,W,CV_8U); r.right = r.left.clone();
+    r.left = cv::Mat::zeros(height,width,CV_8U); r.right = r.left.clone();
     int rightId = -1, rightArea = -1;
     for (int id = 1; id < n; ++id) {
         const int area = stats.at<int>(id,cv::CC_STAT_AREA);
-        const int height = stats.at<int>(id,cv::CC_STAT_HEIGHT);
+        const int componentHeight = stats.at<int>(id,cv::CC_STAT_HEIGHT);
         const double x = centroids.at<double>(id,0);
-        if (area >= o.leftArea && height >= o.leftHeight && x < o.leftX*W) {
+        if (area >= o.leftArea && componentHeight >= o.leftHeight && x < o.leftX*width) {
             r.left.setTo(255, labels == id); ++r.leftComponents;
         }
-        if (area >= o.rightAreaRatio*W*H && height >= o.rightHeight && x > o.rightX*W) {
+        if (area >= o.rightAreaRatio*width*height && componentHeight >= o.rightHeight && x > o.rightX*width) {
             ++r.rightCandidates;
             if (area > rightArea) { rightArea = area; rightId = id; }
         }
@@ -292,16 +337,21 @@ Result analyze(const cv::Mat& original, const Options& o) {
         cv::findContours(item.first.clone(), contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
         cv::drawContours(r.overlay, contours, -1, item.second, 1, cv::LINE_AA);
     }
+    const double scale = double(width)/W;
+    const int step = std::max(1, int(std::lround(5.*height/H)));
+    const int radius = std::max(1, int(std::lround(scale)));
     if (r.valid) {
         for (const auto& item : std::vector<std::pair<const Curve*,cv::Scalar>>{{&r.lc,LEFT},{&r.rc,RIGHT}})
-            for (int y = item.first->y0; y <= item.first->y1; y += 5)
-                cv::circle(r.overlay, cv::Point(int(std::lround(item.first->at(y))),y), 1, item.second, -1, cv::LINE_AA);
-        for (int y = r.common0; y <= r.common1; y += 5)
-            cv::circle(r.overlay, cv::Point(int(std::lround((r.lc.at(y)+r.rc.at(y))/2)),y), 1, CENTER, -1, cv::LINE_AA);
+            for (int y = item.first->y0; y <= item.first->y1; y += step)
+                cv::circle(r.overlay, cv::Point(int(std::lround(item.first->at(y))),y), radius, item.second, -1, cv::LINE_AA);
+        for (int y = r.common0; y <= r.common1; y += step)
+            cv::circle(r.overlay, cv::Point(int(std::lround((r.lc.at(y)+r.rc.at(y))/2)),y), radius, CENTER, -1, cv::LINE_AA);
     }
     const std::string label = r.valid ? "TRAI: xanh | PHAI: cam | TAM: la" : "THIEU BANG CHUNG - KHONG CO TAM";
-    cv::putText(r.overlay, label, cv::Point(6,18), cv::FONT_HERSHEY_SIMPLEX, .42, cv::Scalar(0,0,0), 3, cv::LINE_AA);
-    cv::putText(r.overlay, label, cv::Point(6,18), cv::FONT_HERSHEY_SIMPLEX, .42, cv::Scalar(255,255,255), 1, cv::LINE_AA);
+    const cv::Point origin(int(std::lround(6*scale)), int(std::lround(18.*height/H)));
+    cv::putText(r.overlay, label, origin, cv::FONT_HERSHEY_SIMPLEX, .42*scale, cv::Scalar(0,0,0), 3, cv::LINE_AA);
+    cv::putText(r.overlay, label, origin, cv::FONT_HERSHEY_SIMPLEX, .42*scale, cv::Scalar(255,255,255), 1, cv::LINE_AA);
+    r.timeMs = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
     return r;
 }
 
@@ -334,11 +384,13 @@ cv::Mat readImage(const fs::path& path) {
 
 void writeImage(const fs::path& path, const cv::Mat& image) {
     std::vector<uchar> bytes;
-    if (!cv::imencode(".png", image, bytes)) throw std::runtime_error("Khong ma hoa duoc PNG");
-    std::ofstream out(path.string(), std::ios::binary);
+    if (!cv::imencode(path.extension().string(), image, bytes)) throw std::runtime_error("Khong ma hoa duoc anh");
+    const fs::path temp = path.string() + ".tmp";
+    std::ofstream out(temp.string(), std::ios::binary);
     out.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
     out.close();
     if (!out) throw std::runtime_error("Khong ghi duoc: " + path.string());
+    fs::rename(temp, path);
 }
 
 void curveJson(std::ostream& out, const Curve& f) {
@@ -359,7 +411,9 @@ std::string metrics(const fs::path& input, const cv::Mat& original, const Result
         << "\",\n  \"reason\":" << jsonString(r ? r->reason : "khong_doc_duoc_anh")
         << ",\n  \"opencv\":" << jsonString(CV_VERSION) << ",\n  \"original_size\":";
     if (r) out << '[' << original.cols << ',' << original.rows << ']'; else out << "null";
-    out << ",\n  \"normalized_size\":[480,288],\n  \"fit\":" << jsonString(o.fit)
+    out << ",\n  \"normalized_size\":";
+    if (r) out << '[' << r->image.cols << ',' << r->image.rows << ']'; else out << "null";
+    out << ",\n  \"fit\":" << jsonString(o.fit)
         << ",\n  \"steps\":" << (o.steps ? "true" : "false") << ",\n  \"thresholds\":{";
     bool first = true;
     for (const auto& p : PARAMETERS) {
@@ -372,11 +426,14 @@ std::string metrics(const fs::path& input, const cv::Mat& original, const Result
         out << ",\n  \"crop_xywh\":[" << r->crop.x << ',' << r->crop.y << ',' << r->crop.width << ',' << r->crop.height
             << "],\n  \"roi_polygon\":[";
         first = true;
-        for (const auto& p : polygon(o)) { if (!first) out << ','; first = false; out << '[' << p.x << ',' << p.y << ']'; }
+        for (const auto& p : polygon(o,r->image.cols,r->image.rows)) {
+            if (!first) out << ',';
+            first = false; out << '[' << p.x << ',' << p.y << ']';
+        }
         out << "],\n  \"components_total\":" << r->components << ",\n  \"left_components\":" << r->leftComponents
             << ",\n  \"right_candidates\":" << r->rightCandidates << ",\n  \"right_components\":" << r->rightComponents
             << ",\n  \"left_pixels\":" << cv::countNonZero(r->left) << ",\n  \"right_pixels\":" << cv::countNonZero(r->right)
-            << ",\n  \"left\":";
+            << ",\n  \"time_ms\":" << r->timeMs << ",\n  \"left\":";
         curveJson(out, r->lc); out << ",\n  \"right\":"; curveJson(out, r->rc);
         out << ",\n  \"masks_disjoint\":" << (r->disjoint ? "true" : "false")
             << ",\n  \"boundaries_ordered\":" << (r->ordered ? "true" : "false") << ",\n  \"midpoint_y\":";
@@ -388,20 +445,21 @@ std::string metrics(const fs::path& input, const cv::Mat& original, const Result
 }
 
 cv::Mat steps(const Result& r) {
-    cv::Mat roiView, observed = cv::Mat::zeros(H,W,CV_8UC3);
+    const int width = r.image.cols, height = r.image.rows;
+    cv::Mat roiView, observed = cv::Mat::zeros(height,width,CV_8UC3);
     cv::bitwise_and(r.image, r.image, roiView, r.roi);
     cv::addWeighted(r.image, .55, roiView, .45, 0, roiView);
     observed.setTo(LEFT, r.left); observed.setTo(RIGHT, r.right);
     const std::vector<cv::Mat> panels{r.image, roiView, r.white, r.clean, observed, r.overlay};
     const char* titles[]{"1. Anh chuan hoa", "2. Vung quan tam", "3. Mat na trang HSV",
                          "4. ROI va mo hinh thai", "5. Diem anh giu lai", "6. Duong khop va trung diem"};
-    cv::Mat sheet(3*(H+32),2*W,CV_8UC3,cv::Scalar(20,25,34));
+    cv::Mat sheet(3*(height+32),2*width,CV_8UC3,cv::Scalar(20,25,34));
     for (int i = 0; i < 6; ++i) {
-        const int x = (i%2)*W, y = (i/2)*(H+32);
+        const int x = (i%2)*width, y = (i/2)*(height+32);
         cv::Mat panel;
         if (panels[i].channels() == 1) cv::cvtColor(panels[i], panel, cv::COLOR_GRAY2BGR);
         else panel = panels[i];
-        panel.copyTo(sheet(cv::Rect(x,y+32,W,H)));
+        panel.copyTo(sheet(cv::Rect(x,y+32,width,height)));
         cv::putText(sheet, titles[i], cv::Point(x+8,y+22), cv::FONT_HERSHEY_SIMPLEX, .5,
                     cv::Scalar(255,255,255), 1, cv::LINE_AA);
     }
@@ -410,6 +468,7 @@ cv::Mat steps(const Result& r) {
 
 // Đưa mặt nạ về đúng vị trí ảnh gốc; phần ngoài vùng cắt giữ bằng 0.
 cv::Mat originalMask(const cv::Mat& mask, const cv::Size& size, const cv::Rect& crop) {
+    if (mask.size() == size && crop == cv::Rect(0,0,size.width,size.height)) return mask;
     cv::Mat out = cv::Mat::zeros(size,CV_8U), scaled;
     cv::resize(mask, scaled, crop.size(), 0, 0, cv::INTER_NEAREST);
     scaled.copyTo(out(crop));
@@ -424,6 +483,7 @@ int processFile(const fs::path& input, const fs::path& dir, const Options& o) {
         return READ_ERROR;
     }
     const Result r = analyze(original, o);
+    std::cout << input.string() << " : " << r.timeMs << " ms\n";
     writeImage(dir/"normalized.png", r.image);
     for (const auto& item : std::vector<std::pair<std::string,cv::Mat>>{
             {"white_mask",r.white},{"roi_mask",r.cropped},{"clean_mask",r.clean}}) {
@@ -436,21 +496,79 @@ int processFile(const fs::path& input, const fs::path& dir, const Options& o) {
     return r.valid ? OK : NO_EVIDENCE;
 }
 
-std::vector<fs::path> inputFiles(const fs::path& input) {
+std::vector<fs::path> inputFiles(const fs::path& input, bool directoryMode = false) {
     if (!fs::is_directory(input)) return {input};
     std::vector<fs::path> files;
     for (const auto& item : fs::directory_iterator(input)) {
         if (!fs::is_regular_file(item.path())) continue;
         std::string ext = item.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return char(std::tolower(c)); });
-        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tif" || ext == ".tiff"
-                || ext == ".ppm" || ext == ".pgm" || ext == ".webp") files.push_back(item.path());
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || (!directoryMode &&
+                (ext == ".tif" || ext == ".tiff" || ext == ".ppm" || ext == ".pgm" || ext == ".webp")))
+            files.push_back(item.path());
     }
     std::sort(files.begin(), files.end());
     return files;
 }
 
+std::string csvString(const std::string& value) {
+    std::string out = "\"";
+    for (char c : value) { if (c == '"') out += '"'; out += c; }
+    return out + '"';
+}
+
+int runDirectory(const Options& o) {
+    try {
+        if (fs::exists(o.output) && (!fs::is_directory(o.output) || !fs::is_empty(o.output))) {
+            std::cerr << "--out-dir da co ket qua/dang duoc su dung hoac khong phai thu muc; can thu muc moi/rong\n"; return WRITE_ERROR;
+        }
+        std::vector<fs::path> files;
+        try {
+            if (!fs::is_directory(o.input)) { std::cerr << "--in-dir khong phai thu muc doc duoc\n"; return READ_ERROR; }
+            files = inputFiles(o.input, true);
+        } catch (const fs::filesystem_error& e) {
+            std::cerr << "Loi doc thu muc: " << e.what() << '\n'; return READ_ERROR;
+        }
+        if (!fs::create_directories(o.output) && (!fs::is_directory(o.output) || !fs::is_empty(o.output)))
+            throw std::runtime_error("--out-dir khong tao duoc hoac da co ket qua/dang duoc su dung");
+        const int fd = ::open((o.output/"summary.csv").string().c_str(), O_CREAT | O_EXCL | O_WRONLY, 0666);
+        if (fd < 0) throw std::system_error(errno, std::generic_category(), "Khong tao doc quyen summary.csv; dich co the dang duoc su dung");
+        FILE* csvRaw = ::fdopen(fd, "w");
+        struct Closer { void operator()(FILE* f) const { if (f) std::fclose(f); } };
+        std::unique_ptr<FILE, Closer> csv(csvRaw);
+        if (!csv) { ::close(fd); throw std::runtime_error("Khong mo duoc summary.csv de ghi"); }
+        if (std::fputs("image,left_clusters,right_clusters,has_center,time_ms\n", csv.get()) == EOF || std::fflush(csv.get()) != 0)
+            throw std::runtime_error("Khong ghi duoc summary.csv");
+        std::size_t count = 0;
+        double totalMs = 0;
+        for (const auto& file : files) {
+            cv::Mat image;
+            try { image = readImage(file); } catch (const cv::Exception&) { /* Báo ảnh hỏng và tiếp tục. */ }
+            if (image.empty()) { std::cerr << "Khong doc duoc anh: " << file.string() << '\n'; continue; }
+            const Result r = analyze(image, o);
+            std::string name = file.stem().string();
+            if (fs::exists(o.output/(name+"_mask.png"))) name = file.filename().string();
+            writeImage(o.output/(name+"_mask.png"), r.clean);
+            writeImage(o.output/(name+"_overlay.jpg"), r.overlay);
+            std::ostringstream row;
+            row << std::setprecision(10) << csvString(file.filename().u8string()) << ',' << r.leftComponents << ',' << r.rightComponents
+                << ',' << (r.valid ? 1 : 0) << ',' << r.timeMs << '\n';
+            if (std::fputs(row.str().c_str(), csv.get()) == EOF || std::fflush(csv.get()) != 0)
+                throw std::runtime_error("Khong ghi duoc summary.csv");
+            ++count; totalMs += r.timeMs;
+            std::cout << file.string() << " : " << r.timeMs << " ms\n";
+        }
+        if (std::fclose(csv.release()) != 0) throw std::runtime_error("Khong dong duoc summary.csv");
+        std::cout << "Tong: " << count << " anh, trung binh " << (count ? totalMs/count : 0) << " ms\n";
+        if (!count) { std::cerr << "Thu muc khong co anh doc duoc\n"; return READ_ERROR; }
+        return OK;
+    } catch (const std::exception& e) {
+        std::cerr << "Loi xu ly/ghi ket qua: " << e.what() << '\n'; return WRITE_ERROR;
+    }
+}
+
 int run(const Options& o) {
+    if (o.directory) return runDirectory(o);
     std::vector<fs::path> files;
     try { files = inputFiles(o.input); }
     catch (const fs::filesystem_error& e) { std::cerr << "Loi doc dau vao: " << e.what() << '\n'; return READ_ERROR; }
@@ -499,11 +617,35 @@ int selfTest(const fs::path& dir) {
         Options o;
         require(median({1,4,2,3}) == 2.5 && median({1,3,2}) == 2, "Trung vi sai");
         require(jsonString("\"\\\n") == "\"\\\"\\\\\\u000a\"", "Ma hoa chuoi JSON sai");
+        require(csvString("a,\"b\n.png") == "\"a,\"\"b\n.png\"", "Ma hoa cot CSV sai");
         const cv::Mat image = synthetic();
         const Result r = analyze(image,o);
         require(r.valid && r.leftComponents == 4 && r.rightComponents == 1, "Anh tong hop phai co du hai bien");
         require(r.common0 == 125 && r.common1 == 243, "Trung diem vuot mien quan sat chung");
         require(r.lc.rmse < 1e-6 && r.rc.rmse < 1e-6, "Duong thang khop sai");
+        const double scale = 640./W;
+        cv::Mat enlarged, direct(384,640,CV_8UC3,cv::Scalar(35,35,35));
+        cv::resize(image, enlarged, direct.size(), 0, 0, cv::INTER_LINEAR);
+        auto rectangle = [&direct, scale](int x, int y, int width, int height) {
+            cv::rectangle(direct, cv::Rect(int(std::lround(x*scale)), int(std::lround(y*scale)),
+                          int(std::lround(width*scale)), int(std::lround(height*scale))), cv::Scalar(255,255,255), -1);
+        };
+        for (int y = 125; y <= 230; y += 35) rectangle(190,y,9,14);
+        rectangle(355,115,11,160);
+        for (const cv::Mat& large : {enlarged, direct}) {
+            const Result scaled = analyze(large,o);
+            require(scaled.image.size() == large.size() && scaled.crop == cv::Rect(0,0,640,384)
+                    && cv::norm(large,scaled.image,cv::NORM_INF) == 0, "Anh 640 bi cat/doi co/noi dung");
+            require(scaled.leftComponents == r.leftComponents && scaled.rightComponents == r.rightComponents
+                    && scaled.valid == r.valid, "Ket qua 640 khong tuong duong 480");
+            for (int y = r.common0; y <= r.common1; ++y) {
+                const int ly = int(std::lround(y*scale));
+                if (ly < scaled.common0 || ly > scaled.common1) continue;
+                const double oldCenter = (r.lc.at(y)+r.rc.at(y))/2;
+                const double newCenter = (scaled.lc.at(ly)+scaled.rc.at(ly))/2;
+                require(std::abs(newCenter/640-oldCenter/W) <= .03, "Tam 640 lech qua 3% W");
+            }
+        }
         require(!analyze(cv::Mat::zeros(H,W,CV_8UC3),o).valid, "Anh den phai thieu bang chung");
         cv::Mat oneSide = image.clone(); oneSide(cv::Rect(300,0,180,H)).setTo(0);
         require(!analyze(oneSide,o).valid, "Mot bien khong du de tinh tam");
@@ -555,6 +697,50 @@ int selfTest(const fs::path& dir) {
         require(processFile(dir/"blank.png",dir/"blank-output",o) == NO_EVIDENCE, "Sai ma thieu bang chung");
         fs::create_directory(dir/"broken-output");
         require(processFile(dir/"broken.png",dir/"broken-output",o) == READ_ERROR, "Sai ma doc anh");
+        Options batch;
+        batch.directory = true; batch.input = dir/"batch-input"; batch.output = dir/"batch-output";
+        fs::create_directory(batch.input); fs::create_directory(batch.output);
+        writeImage(batch.input/"a.png", direct);
+        writeImage(batch.input/"b.png", cv::Mat::zeros(384,640,CV_8UC3));
+        writeText(batch.input/"c.jpg", "anh hong");
+        require(runDirectory(batch) == OK, "Xu ly thu muc co anh den/hong sai");
+        require(readImage(batch.output/"a_mask.png").size() == direct.size()
+                && readImage(batch.output/"a_overlay.jpg").size() == direct.size(), "Sai dau ra thu muc");
+        std::ifstream summary((batch.output/"summary.csv").string(), std::ios::binary);
+        const std::string csv((std::istreambuf_iterator<char>(summary)), std::istreambuf_iterator<char>());
+        require(csv.find("image,left_clusters,right_clusters,has_center,time_ms\n\"a.png\",4,1,1,") == 0
+                && csv.find("\n\"b.png\",0,0,0,") != std::string::npos, "Sai CSV/thu tu/anh thieu lan");
+        require(runDirectory(batch) == WRITE_ERROR, "Khong chan thu muc ra da co ket qua");
+        batch.output = dir/"collision-output";
+        writeImage(batch.input/"same.jpg", direct);
+        writeImage(batch.input/"same.png", cv::Mat::zeros(384,640,CV_8UC3));
+        require(runDirectory(batch) == OK, "Xu ly trung stem that bai");
+        for (const char* name : {"same_mask.png", "same_overlay.jpg", "same.png_mask.png", "same.png_overlay.jpg"})
+            require(readImage(batch.output/name).size() == direct.size(), "Trung stem lam mat ket qua");
+        require(cv::countNonZero(readImage(batch.output/"same_mask.png").reshape(1)) > 0
+                && cv::countNonZero(readImage(batch.output/"same.png_mask.png").reshape(1)) == 0,
+                "Trung stem ghi de mat na hoac sai thu tu");
+        batch.input = dir/"empty-input"; batch.output = dir/"empty-output";
+        fs::create_directory(batch.input);
+        require(runDirectory(batch) == READ_ERROR, "Thu muc rong phai tra ma 2");
+        writeText(batch.input/"broken.png", "anh hong"); batch.output = dir/"unreadable-output";
+        require(runDirectory(batch) == READ_ERROR, "Thu muc toan anh hong phai tra ma 2");
+        batch.input = dir/"missing-input"; batch.output = dir/"missing-output";
+        require(runDirectory(batch) == READ_ERROR, "Thu muc khong ton tai phai tra ma 2");
+        for (std::vector<std::string> args : {
+                std::vector<std::string>{"ucr_lane_cv", "--in-dir"},
+                {"ucr_lane_cv", "--in-dir", "input"},
+                {"ucr_lane_cv", "--in-dir", "--out-dir", "output"},
+                {"ucr_lane_cv", "--in-dir", "input", "--out-dir"},
+                {"ucr_lane_cv", "--in-dir", "input", "--out-dir", "output", "--unknown", "1"},
+                {"ucr_lane_cv", "--in-dir", "input", "--in", "image", "--out-dir", "output"},
+                {"ucr_lane_cv", "--in", "image", "--in-dir", "input", "--out-dir", "output"}}) {
+            std::vector<char*> argv;
+            for (auto& arg : args) argv.push_back(&arg[0]);
+            bool rejected = false;
+            try { parse(int(argv.size()), argv.data()); } catch (const std::exception&) { rejected = true; }
+            require(rejected, "Khong chan doi so sai/thieu gia tri");
+        }
         std::cout << "Kiem thu tong hop: DAT\n";
         return OK;
     } catch (const std::exception& e) { std::cerr << "Kiem thu: " << e.what() << '\n'; return ARG_ERROR; }

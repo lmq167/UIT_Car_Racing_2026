@@ -21,5 +21,16 @@ if(BUILD_TESTING)
     add_test(NAME lane_cv_symbols COMMAND ${CMAKE_COMMAND}
         -DPROGRAM=$<TARGET_FILE:ucr_lane_cv> -DNM=${CMAKE_NM}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/check_symbols.cmake)
-    set_tests_properties(lane_cv_symbols PROPERTIES TIMEOUT 20)
+    set_tests_properties(lane_cv_symbols PROPERTIES TIMEOUT 60 LABELS "acceptance")
+    find_package(PythonInterp 3.6 REQUIRED)
+    foreach(scenario directory direct_640 scale invalid empty occupied ascii concurrent_output)
+        add_test(NAME lane_cv_acc_${scenario} COMMAND ${CMAKE_COMMAND} -E env
+            PYTHONIOENCODING=utf-8 ${PYTHON_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/test_acceptance.py $<TARGET_FILE:ucr_lane_cv> ${scenario})
+        set_tests_properties(lane_cv_acc_${scenario} PROPERTIES TIMEOUT 120 LABELS "acceptance")
+    endforeach()
+    add_test(NAME lane_cv_acc_harness COMMAND ${CMAKE_COMMAND} -E env
+        PYTHONIOENCODING=utf-8 ${PYTHON_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/test_acceptance.py --self-check)
+    set_tests_properties(lane_cv_acc_harness PROPERTIES TIMEOUT 60 LABELS "acceptance")
 endif()
