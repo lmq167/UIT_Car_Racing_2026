@@ -361,6 +361,9 @@ foreach(scenario ${ACC_STOP_SCENARIOS})
 endforeach()
 add_test(NAME acc_t05h_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH} self-test)
 set_tests_properties(acc_t05h_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
-# C1: ca position cũ đã đổi sang từ chối, không cần chạy lại dưới TSan.
-set_tests_properties(acc_calib_position acc_calib_repeat_deadline_position acc_t05g_limit_position
-    PROPERTIES LABELS "acceptance")
+# C1: chỉ gán nhãn cho ca đã đăng ký vì acc_calib_position không tồn tại khi UCR_FAKE_HW=OFF.
+foreach(t acc_calib_position acc_calib_repeat_deadline_position acc_t05g_limit_position)
+    if(TEST ${t})
+        set_tests_properties(${t} PROPERTIES LABELS "acceptance")
+    endif()
+endforeach()
