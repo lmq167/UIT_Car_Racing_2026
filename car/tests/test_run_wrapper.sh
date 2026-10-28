@@ -16,6 +16,7 @@ trap cleanup EXIT
 cat > "$tmp/ucr_stop" <<'STOP'
 #!/usr/bin/env bash
 printf '%s\n' "$@" >> "$UCR_TEST_DIR/stops"
+exit "${UCR_TEST_STOP_STATUS:-0}"
 STOP
 cat > "$tmp/main" <<'MAIN'
 #!/usr/bin/env bash
@@ -82,6 +83,12 @@ run_case() {
 }
 run_case normal 0
 run_case error 7
+export UCR_TEST_STOP_STATUS=9
+run_case normal 1 2>"$tmp/stop_error"
+grep -Fx 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' "$tmp/stop_error"
+run_case error 7 2>"$tmp/stop_error"
+grep -Fx 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' "$tmp/stop_error"
+unset UCR_TEST_STOP_STATUS
 run_case crash 139
 run_case hold 137 child
 run_case hold 143 TERM

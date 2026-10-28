@@ -10,6 +10,16 @@ namespace common
 {
 std::mutex Logger::mutex_;
 LogLevel Logger::level_{LogLevel::Info};
+thread_local DeferredDeviceLog *DeferredDeviceLog::current_=nullptr;
+
+DeferredDeviceLog::DeferredDeviceLog() : parent_(current_) { current_=this; }
+DeferredDeviceLog::~DeferredDeviceLog() noexcept {
+    current_=parent_;
+    try {
+        for(const auto &entry:entries_)
+            Logger::Log(entry.level,entry.component,entry.operation,entry.message);
+    } catch(...) { /* Lỗi đầu ra không được thay thế lỗi thiết bị đang xử lý. */ }
+}
 
 void Logger::SetLevel(LogLevel level)
 {
@@ -57,6 +67,10 @@ void Logger::Log(LogLevel level,
                  const std::string& operation,
                  const std::string& message)
 {
+    if(DeferredDeviceLog::current_) {
+        DeferredDeviceLog::current_->entries_.push_back({level,component,operation,message});
+        return;
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     if (level_ == LogLevel::Off ||
         static_cast<int>(level) < static_cast<int>(level_))

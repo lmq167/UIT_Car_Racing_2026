@@ -1,6 +1,7 @@
 #include "sensor/BNO055.h"
 #include <limits>
 #include <iostream>
+#include "common/Logger.h"
 #include <cerrno>
 #include <cstdlib>
 #include <cerrno>
@@ -94,6 +95,7 @@ BNO055::~BNO055()
 
 bool BNO055::initialize(std::chrono::milliseconds timeout)
 {
+    common::DeferredDeviceLog messages;
     std::lock_guard<std::mutex> lock(mutex_);
     clearError();
 
@@ -138,7 +140,7 @@ bool BNO055::initialize(std::chrono::milliseconds timeout)
         if (!loadCalibrationFromFile())
         {
             clearError();
-            std::cerr << "Warning: The calibration file is invalid. \n";
+            common::Logger::Warn("BNO055","calibration","Tệp hiệu chuẩn không hợp lệ");
         }
     }
     return true;

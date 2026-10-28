@@ -1,6 +1,7 @@
 #pragma once
 #include "SensorSetup.h"
 #include <memory>
+#include <iostream>
 
 namespace tof {
 struct Measurement {
@@ -16,7 +17,7 @@ public:
     // Attempts every identified slot; throws only if none starts successfully.
     void start(std::ostream& log);
     bool initialized(std::size_t slot) const;
-    Measurement read(std::size_t slot);
+    Measurement read(std::size_t slot, std::ostream& log=std::cerr);
     bool stop(std::ostream& log);
 private:
     struct Impl;

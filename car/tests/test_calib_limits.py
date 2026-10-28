@@ -39,6 +39,15 @@ def main():
             "calib_speed_cms": 10, "calib_distance_cm": 300, "calib_max_duration_s": 2,
         })
         config.write_text(text, encoding="utf-8")
+        if scenario == "position_distance":
+            for args in (("--step", "5"), ("--step", "position"), ("position",)):
+                result = subprocess.run([executable, "--config", str(config), "--mode", "calib"] + list(args),
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, timeout=5)
+                message = result.stderr.decode("utf-8", "replace")
+                assert result.returncode == 2, message
+                assert "Bước 5 đang khoá cho tới khi kiểm chế độ vị trí trên xe" in message, message
+                assert not trace.exists() and not (root / "runs").exists(), "Bước 5 đã mở thiết bị/ghi log"
+            return
         if scenario == "config":
             for key, maximum, unit in (("calib_distance_cm", 300, "cm"),
                                        ("calib_position_cm", 100, "cm"),

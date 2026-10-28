@@ -27,6 +27,8 @@ public:
     bool Init();
     // Chỉ mở cổng và đặt định dạng UART, không gửi lệnh tới driver.
     bool OpenPortOnly();
+    // Cổng riêng, ghi không chặn; không đọc/sửa trạng thái UART hay cấu hình driver.
+    bool EmergencyStop() const noexcept;
     bool LastWriteOk() const { return lastWriteOk_; }
     // Chuyển chế độ vận hành trong RAM, không lưu ROM, không khởi tạo lại.
     void PositionControl(bool enabled);

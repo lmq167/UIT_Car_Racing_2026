@@ -26,14 +26,15 @@ public:
 private:
     common::Config c_;
     cv::VideoCapture camera_;
-    std::mutex motor_mutex_, i2c_mutex_;
+    std::timed_mutex motor_mutex_, i2c_mutex_;
     bool motor_ready_=false, servo_ready_=false, oled_ready_=false;
     bool position_active_=false;
     double yaw_=0, bias_=0;
     std::atomic<bool> stopping_{false};
+    void StopUntil(common::Clock::time_point deadline) noexcept;
 #ifdef UCR_FAKE_HW
     double fake_position_=0;
-    float fake_speed_=0;
+    std::atomic<float> fake_speed_{0};
     common::Clock::time_point fake_updated_=common::Clock::now();
     void AdvanceFake();
 #endif

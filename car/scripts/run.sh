@@ -41,7 +41,10 @@ cleanup() {
     if [[ -n $smoke_report && $status == 137 ]]; then
         if "$build/ucr_stop" --config "$config" --smoke-report "$smoke_report/smoke.json" --stop-since "$smoke_since"; then status=0; else status=1; fi
     else
-        "$build/ucr_stop" --config "$config" || printf '%s\n' 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' >&2
+        if ! "$build/ucr_stop" --config "$config"; then
+            printf '%s\n' 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' >&2
+            if [[ $status == 0 ]]; then status=1; fi
+        fi
     fi
     exit "$status"
 }

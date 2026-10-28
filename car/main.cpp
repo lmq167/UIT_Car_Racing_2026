@@ -42,7 +42,7 @@ int main(int argc,char **argv) {
             const std::string arg=argv[i];
             if(arg=="--help") { std::cout << "--config <tep.yaml> --mode manual|auto|collect|smoke|calib --step <1..10>\n"
                 <<"--check-config --config <file>: chỉ kiểm cấu hình, không mở thiết bị\n"
-                <<"Bước: 1 môi trường, 2 servo, 3 bán kính, 4 motor, 5 vị trí, 6 IMU, 7 ToF, 8 camera, 9 độ trễ, 10 nhịp vòng.\n"
+                <<"Bước: 1 môi trường, 2 servo, 3 bán kính, 4 motor, 5 vị trí (đang khoá), 6 IMU, 7 ToF, 8 camera, 9 độ trễ, 10 nhịp vòng.\n"
                 <<"--env-info: chỉ đọc bản build; --calib-drop-camera-after <giây>: chỉ calib motor; smoke dùng scripts/smoke_test.sh --smoke-drop-camera\n"; return 0; }
             if(arg=="--env-info") {
                 std::cout<<"OpenCV "<<CV_VERSION<<"; source_id="<<common::SourceId()<<"; simulated="<<common::Simulated()<<'\n';
@@ -59,7 +59,7 @@ int main(int argc,char **argv) {
                 if(!step.empty()) throw std::runtime_error("Bước hiệu chuẩn bị lặp");
                 const std::string number=argv[++i];
                 const char *steps[]={"env","servo","radius","motor","position","imu","tof","camera","latency","timing"};
-                int index=number=="10" ? 9 : (number.size()==1 && number[0]>='1' && number[0]<='9' ? number[0]-'1' : -1);
+                int index=number=="position" ? 4 : number=="10" ? 9 : (number.size()==1 && number[0]>='1' && number[0]<='9' ? number[0]-'1' : -1);
                 if(index<0) throw std::runtime_error("Bước hiệu chuẩn không hợp lệ: "+number+"; --step phải từ 1 đến 10");
                 step=steps[index];
             }
@@ -83,6 +83,10 @@ int main(int argc,char **argv) {
         if(mode!="manual"&&mode!="auto"&&mode!="collect"&&mode!="calib"&&mode!="smoke") throw std::runtime_error("Chế độ không hợp lệ");
         if(mode=="calib" && step.empty()) throw std::runtime_error("thiếu bước hiệu chuẩn: dùng --step <1..10>");
         if(mode!="calib" && !step.empty()) throw std::runtime_error("--step chỉ dùng với --mode calib");
+        if(mode=="calib" && step=="position") {
+            std::cerr<<"Bước 5 đang khoá cho tới khi kiểm chế độ vị trí trên xe\n";
+            return 2;
+        }
         if(mode!="smoke" && (smoke_drop || !kill_file.empty())) throw std::runtime_error("Cờ smoke chỉ dùng với --mode smoke");
         if(calib_drop_after>0 && (mode!="calib" || step!="motor")) throw std::runtime_error("Cờ ngắt ảnh hiệu chuẩn chỉ dùng với calib motor");
         if(step=="env") {

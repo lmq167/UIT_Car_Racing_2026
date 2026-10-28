@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace common
 {
@@ -13,6 +14,21 @@ enum class LogLevel
     Error,
     Fatal,
     Off
+};
+
+// Khai báo trước khoá thiết bị: gom thông báo theo luồng, xuất sau khi khoá đã nhả.
+class DeferredDeviceLog {
+public:
+    DeferredDeviceLog();
+    ~DeferredDeviceLog() noexcept;
+    DeferredDeviceLog(const DeferredDeviceLog&) = delete;
+    DeferredDeviceLog& operator=(const DeferredDeviceLog&) = delete;
+private:
+    friend class Logger;
+    struct Entry { LogLevel level; std::string component, operation, message; };
+    static thread_local DeferredDeviceLog *current_;
+    DeferredDeviceLog *parent_;
+    std::vector<Entry> entries_;
 };
 
 class Logger
@@ -36,6 +52,7 @@ public:
                       const std::string& message);
 
 private:
+    friend class DeferredDeviceLog;
     static void Log(LogLevel level,
                     const std::string& component,
                     const std::string& operation,

@@ -29,9 +29,9 @@ namespace {
 bool isWarning(int status) {
     return status == -28 || status == -29 || status == -30;
 }
-int readStatus(int status, std::size_t slot, const char* operation) {
+int readStatus(int status, std::size_t slot, const char* operation, std::ostream& log) {
     if (!isWarning(status)) return status;
-    std::cerr << "[WARN] BOARD " << kSlots[slot].boardPin << ' ' << operation << " ST=" << status << '\n';
+    log << "[WARN] BOARD " << kSlots[slot].boardPin << ' ' << operation << " ST=" << status << '\n';
     return 0;
 }
 void check(int status, std::size_t slot, const char* operation) {
@@ -184,30 +184,30 @@ void SensorReader::start(std::ostream& log) {
 bool SensorReader::initialized(std::size_t slot) const {
     return impl_->started.at(slot);
 }
-Measurement SensorReader::read(std::size_t slot) {
+Measurement SensorReader::read(std::size_t slot, std::ostream& log) {
     Measurement result;
     if (!impl_->started.at(slot)) throw std::runtime_error("Ranging has not started");
     uint8_t ready = 0;
     if (impl_->types[slot] == SensorType::L0) {
         auto dev = &impl_->l0[slot];
-        result.apiError = readStatus(VL53L0X_GetMeasurementDataReady(dev, &ready), slot, "read");
+        result.apiError = readStatus(VL53L0X_GetMeasurementDataReady(dev, &ready), slot, "read", log);
         if (result.apiError != 0 || !ready) return result;
         VL53L0X_RangingMeasurementData_t data{};
-        result.apiError = readStatus(VL53L0X_GetRangingMeasurementData(dev, &data), slot, "read");
+        result.apiError = readStatus(VL53L0X_GetRangingMeasurementData(dev, &data), slot, "read", log);
         if (result.apiError != 0) return result;
         result.rangeStatus = data.RangeStatus;
         result.distanceMm = data.RangeMilliMeter;
-        result.apiError = readStatus(VL53L0X_ClearInterruptMask(dev, 0), slot, "read");
+        result.apiError = readStatus(VL53L0X_ClearInterruptMask(dev, 0), slot, "read", log);
     } else {
         auto dev = &impl_->l1[slot];
-        result.apiError = readStatus(VL53L1_GetMeasurementDataReady(dev, &ready), slot, "read");
+        result.apiError = readStatus(VL53L1_GetMeasurementDataReady(dev, &ready), slot, "read", log);
         if (result.apiError != 0 || !ready) return result;
         VL53L1_RangingMeasurementData_t data{};
-        result.apiError = readStatus(VL53L1_GetRangingMeasurementData(dev, &data), slot, "read");
+        result.apiError = readStatus(VL53L1_GetRangingMeasurementData(dev, &data), slot, "read", log);
         if (result.apiError != 0) return result;
         result.rangeStatus = data.RangeStatus;
         result.distanceMm = data.RangeMilliMeter;
-        result.apiError = readStatus(VL53L1_ClearInterruptAndStartMeasurement(dev), slot, "read");
+        result.apiError = readStatus(VL53L1_ClearInterruptAndStartMeasurement(dev), slot, "read", log);
     }
     result.ready = result.apiError == 0;
     return result;

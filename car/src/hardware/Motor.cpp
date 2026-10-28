@@ -2,6 +2,8 @@
 #include "common/Logger.h"
 
 #include <atomic>
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 #include <cerrno>
@@ -33,8 +35,8 @@ void LogUart(const char *direction, const char *data, std::size_t size)
             escaped += hex[c & 15];
         }
     }
-    std::cout << "[Motor UART " << direction << "] " << size
-              << " bytes: \"" << escaped << "\"" << std::endl;
+    common::Logger::Info("Motor", "uart", std::string("[Motor UART ")+direction+
+        "] "+std::to_string(size)+" bytes: \""+escaped+"\"");
 }
 }
 
@@ -58,7 +60,7 @@ bool Motor::Init()
 
 bool Motor::OpenPortOnly()
 {
-    if (_device < 0) _device = open(_device_port, O_RDWR | O_NOCTTY);
+    if (_device < 0) _device = open(_device_port, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (_device == -1)
     {
         common::Logger::Error("Motor", "open",
@@ -91,9 +93,19 @@ bool Motor::OpenPortOnly()
     }
 
     if (_uartLogging)
-        std::cout << "[Motor UART] port=" << _device_port
-                  << " baud=115200 8N1 flow_control=none\n";
+        common::Logger::Info("Motor", "uart", std::string("[Motor UART] port=")+_device_port+
+                             " baud=115200 8N1 flow_control=none");
     return true;
+}
+
+bool Motor::EmergencyStop() const noexcept
+{
+    const int fd=::open(_device_port,O_WRONLY | O_NOCTTY | O_NONBLOCK);
+    if(fd<0) return false;
+    const char command[]="N1 v0\n";
+    const bool ok=::write(fd,command,sizeof(command)-1)==static_cast<ssize_t>(sizeof(command)-1);
+    ::close(fd);
+    return ok;
 }
 
 void Motor::SendCommand(const char *cmd, bool IsReadRes)
@@ -139,8 +151,22 @@ void Motor::ReadDriverResponse()
     std::string response;
     int bytesRead = 0;
 
-    while ((bytesRead = read(_device, readBuf, sizeof(readBuf) - 1)) > 0)
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(100);
+    while (std::chrono::steady_clock::now()<deadline)
     {
+        const int remaining=static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline-std::chrono::steady_clock::now()).count());
+        pollfd uart{_device,POLLIN,0};
+        const int ready=::poll(&uart,1,std::max(0,remaining));
+        if(ready<0 && errno==EINTR) continue;
+        if(ready<0) {
+            common::Logger::Error("Motor","uart_poll",std::strerror(errno));
+            return;
+        }
+        if(ready<=0) break;
+        bytesRead=::read(_device,readBuf,sizeof(readBuf)-1);
+        if(bytesRead<0 && (errno==EAGAIN || errno==EWOULDBLOCK || errno==EINTR)) { bytesRead=0; continue; }
+        if(bytesRead<=0) break;
         if (_uartLogging)
             LogUart("RX", readBuf, static_cast<std::size_t>(bytesRead));
         response.append(readBuf, static_cast<std::size_t>(bytesRead));
@@ -153,15 +179,11 @@ void Motor::ReadDriverResponse()
     }
 
     if (_uartLogging && response.empty())
-        std::cout << "[Motor UART RX] no bytes received for command\n";
+        common::Logger::Info("Motor", "uart", "[Motor UART RX] no bytes received for command");
 
     if (!_uartLogging && !response.empty())
     {
-        std::cout << "[Driver -> MCU]: " << response;
-        if (response.back() != '\n')
-        {
-            std::cout << '\n';
-        }
+        common::Logger::Info("Motor", "uart", "[Driver -> MCU]: "+response);
     }
 }
 
@@ -253,20 +275,25 @@ bool Motor::GetStatus(char *buffer, std::size_t bufferSize)
     }
 
     SendCommand("N1 O G1\n", false);
+    if(!LastWriteOk()) return false;
 
     char rawBuffer[512];
     std::size_t totalBytes = 0;
 
     constexpr int idleTimeoutMs = 20;
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(idleTimeoutMs);
     while (totalBytes < sizeof(rawBuffer) - 1)
     {
+        const auto remaining=std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline-std::chrono::steady_clock::now()).count();
+        if(remaining<=0) break;
         pollfd uart{_device, POLLIN, 0};
-        const int ready = ::poll(&uart, 1, idleTimeoutMs);
+        const int ready = ::poll(&uart, 1, static_cast<int>(remaining));
         if (ready == 0)
         {
             if (_uartLogging && totalBytes == 0)
-                std::cout << "[Motor UART RX] timeout: no bytes received for N1 O G1 within "
-                          << idleTimeoutMs << " ms\n";
+                common::Logger::Info("Motor", "uart", "[Motor UART RX] timeout: no bytes received for N1 O G1 within "+
+                                     std::to_string(idleTimeoutMs)+" ms");
             break;
         }
         if (ready < 0)
@@ -299,7 +326,7 @@ bool Motor::GetStatus(char *buffer, std::size_t bufferSize)
             break;
         }
 
-        if (errno == EINTR)
+        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
         {
             continue;
         }

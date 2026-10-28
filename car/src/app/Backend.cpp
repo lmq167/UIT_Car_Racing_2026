@@ -1,4 +1,7 @@
 #include "app/Backend.h"
+#ifndef UCR_FAKE_HW
+#include "common/Logger.h"
+#endif
 #ifdef UCR_FAKE_HW
 #include "app/FakeHardware.h"
 #endif
@@ -12,7 +15,7 @@ namespace app {
 #ifdef UCR_FAKE_HW
 void Backend::AdvanceFake() {
     const auto now=common::Clock::now();
-    fake_position_+=fake_speed_*std::chrono::duration<double>(now-fake_updated_).count();
+    fake_position_+=fake_speed_.load()*std::chrono::duration<double>(now-fake_updated_).count();
     fake_updated_=now;
 }
 #endif
@@ -89,7 +92,10 @@ bool Backend::Frame(cv::Mat &frame) {
     return camera_.read(frame) && !frame.empty();
 }
 bool Backend::Sensors(common::Observation &o, double dt) {
-    std::lock_guard<std::mutex> lock(i2c_mutex_);
+#ifndef UCR_FAKE_HW
+    common::DeferredDeviceLog messages;
+#endif
+    std::lock_guard<std::timed_mutex> lock(i2c_mutex_);
 #ifdef UCR_FAKE_HW
     (void)dt;
     o.imu_valid=true;
@@ -115,7 +121,10 @@ bool Backend::Sensors(common::Observation &o, double dt) {
     o.yaw_rel_deg=yaw_; o.sensor_at=common::Clock::now(); return true;
 }
 bool Backend::Position(float &cm) {
-    std::lock_guard<std::mutex> lock(motor_mutex_);
+#ifndef UCR_FAKE_HW
+    common::DeferredDeviceLog messages;
+#endif
+    std::lock_guard<std::timed_mutex> lock(motor_mutex_);
 #ifdef UCR_FAKE_HW
     AdvanceFake(); cm=static_cast<float>(fake_position_); return true;
 #else
@@ -124,7 +133,12 @@ bool Backend::Position(float &cm) {
 }
 void Backend::Apply(common::ControlCommand c, bool send_motor) {
 #ifndef UCR_FAKE_HW
-    if(send_motor) { std::lock_guard<std::mutex> lock(motor_mutex_);
+    common::DeferredDeviceLog messages;
+    const auto deadline=common::Clock::now()+std::chrono::milliseconds(100);
+    try {
+    if(send_motor || c.speedCmPerSec==0) {
+      std::unique_lock<std::timed_mutex> lock(motor_mutex_,std::defer_lock);
+      Check(lock.try_lock_until(deadline),"Hết hạn chờ khoá motor; buộc dừng phiên");
       if(stopping_) return;
       if(c.position_control && c.speedCmPerSec>0) {
           if(!position_active_) {
@@ -137,40 +151,98 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
           motor_.SetSpeedCms(c.speedCmPerSec);
       }
       Check(motor_.LastWriteOk(),"Loi gui motor"); }
-    { std::lock_guard<std::mutex> lock(i2c_mutex_);
+    { std::unique_lock<std::timed_mutex> lock(i2c_mutex_,std::defer_lock);
+      Check(lock.try_lock_until(deadline),"Hết hạn chờ khoá I²C; buộc dừng phiên");
       if(stopping_) return;
       Check(servo_.SetAngle(c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg)),"Loi gui servo"); }
-#else
-    std::lock_guard<std::mutex> lock(motor_mutex_);
-    if(stopping_) return;
-    AdvanceFake();
-    if(send_motor) {
-        if(c.position_control && c.speedCmPerSec>0 && !position_active_) fake::TraceNumber("motor_position",c.position_cm);
-        position_active_=c.position_control && c.speedCmPerSec>0;
-        fake_speed_=c.speedCmPerSec; fake::TraceNumber("motor_speed",fake_speed_);
+    } catch(...) {
+        // Gửi v0 ngay, trước mọi lần chờ khoá tiếp theo hoặc xuất lỗi.
+        stopping_=true;
+        const bool sent=motor_.EmergencyStop();
+        StopUntil(deadline);
+        common::Logger::Error("Backend","apply",sent ? "Đã gửi v0 dự phòng; buộc dừng phiên" : "Không gửi được v0 dự phòng");
+        throw;
     }
+#else
+    const auto deadline=common::Clock::now()+std::chrono::milliseconds(100);
+    bool position_sent=false;
+    {
+        std::unique_lock<std::timed_mutex> lock(motor_mutex_,std::defer_lock);
+        if(!lock.try_lock_until(deadline)) {
+            StopUntil(deadline);
+            throw std::runtime_error("Hết hạn chờ khoá motor giả; buộc dừng phiên");
+        }
+        if(stopping_) return;
+        AdvanceFake();
+        if(send_motor || c.speedCmPerSec==0) {
+            position_sent=c.position_control && c.speedCmPerSec>0 && !position_active_;
+            position_active_=c.position_control && c.speedCmPerSec>0;
+            fake_speed_=c.speedCmPerSec;
+        }
+    }
+    if(position_sent) fake::TraceNumber("motor_position",c.position_cm);
+    if(send_motor || c.speedCmPerSec==0) fake::TraceNumber("motor_speed",c.speedCmPerSec);
     const int angle=c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg);
     fake::TraceNumber("servo_angle",std::max(-60,std::min(60,angle)));
 #endif
 }
 void Backend::Stop() noexcept {
+    StopUntil(common::Clock::now()+std::chrono::milliseconds(100));
+}
+void Backend::StopUntil(common::Clock::time_point deadline) noexcept {
     stopping_=true;
 #ifdef UCR_FAKE_HW
-    try { std::lock_guard<std::mutex> lock(motor_mutex_); AdvanceFake(); fake_speed_=0;
-          if(motor_ready_) fake::TraceNumber("motor_speed",0);
-          if(servo_ready_) fake::TraceNumber("servo_angle",c_.servo_trim_deg); } catch(...) {}
+    try {
+        {
+            std::unique_lock<std::timed_mutex> lock(motor_mutex_,std::defer_lock);
+            if(lock.try_lock_until(deadline)) AdvanceFake();
+            fake_speed_=0;
+        }
+        if(motor_ready_) fake::TraceNumber("motor_speed",0);
+        if(servo_ready_) fake::TraceNumber("servo_angle",c_.servo_trim_deg);
+    } catch(...) {}
 #endif
 #ifndef UCR_FAKE_HW
-    try { std::lock_guard<std::mutex> lock(motor_mutex_); if(motor_ready_) {
-        motor_.SetSpeedCms(0);
-        if(position_active_) { motor_.PositionControl(false); position_active_=false; motor_.SetSpeedCms(0); }
-    } } catch(...) {}
-    try { std::lock_guard<std::mutex> lock(i2c_mutex_); if(servo_ready_) servo_.SetAngle(c_.servo_trim_deg); } catch(...) {}
+    try {
+        common::DeferredDeviceLog messages;
+        bool motor_ok=true, servo_ok=true, motor_timeout=false, servo_timeout=false;
+        {
+            std::unique_lock<std::timed_mutex> lock(motor_mutex_,std::defer_lock);
+            if(lock.try_lock_until(deadline)) {
+                if(motor_ready_) {
+                    motor_.SetSpeedCms(0); motor_ok=motor_.LastWriteOk();
+                    if(position_active_) {
+                        motor_.PositionControl(false); motor_ok=motor_.LastWriteOk() && motor_ok;
+                        position_active_=false; motor_.SetSpeedCms(0); motor_ok=motor_.LastWriteOk() && motor_ok;
+                    }
+                }
+            } else {
+                motor_timeout=true;
+                motor_ok=motor_.EmergencyStop();
+            }
+        }
+        {
+            std::unique_lock<std::timed_mutex> lock(i2c_mutex_,std::defer_lock);
+            if(lock.try_lock_until(deadline)) {
+                if(servo_ready_) servo_ok=servo_.SetAngle(c_.servo_trim_deg);
+            } else {
+                servo_timeout=true;
+                // Đối tượng riêng tránh truy cập trạng thái Servo đang do luồng khác giữ.
+                Servo emergency_servo;
+                servo_ok=emergency_servo.Init() && emergency_servo.SetPWMFreq(50) && emergency_servo.SetAngle(c_.servo_trim_deg);
+            }
+        }
+        if(motor_timeout || servo_timeout)
+            common::Logger::Error("Backend","stop","Hết hạn chờ khoá thiết bị; đã thử đường dừng độc lập");
+        if(!motor_ok || !servo_ok)
+            common::Logger::Error("Backend","stop","Không xác nhận được motor 0 hoặc servo về trim");
+    } catch(...) { motor_.EmergencyStop(); }
 #endif
 }
 void Backend::Render(const common::Snapshot &s, const std::string &mode) {
 #ifndef UCR_FAKE_HW
-    std::lock_guard<std::mutex> lock(i2c_mutex_);
+    common::DeferredDeviceLog messages;
+    std::lock_guard<std::timed_mutex> lock(i2c_mutex_);
     if(!oled_ready_) return;
     oled_.clear();
     if(s.state=="DUNG_CHO_ANH_ON_DINH" || s.state=="MAT_ANH") {

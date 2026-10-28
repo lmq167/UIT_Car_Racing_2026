@@ -1,4 +1,5 @@
 #include "sensor/TOF.h"
+#include "common/Logger.h"
 
 #include "tof/LinuxHardware.h"
 #include "tof/SensorReader.h"
@@ -83,7 +84,10 @@ namespace sensor
             if (!reading.initialized) continue;
             try
             {
-                const auto sample = impl_->reader->read(i);
+                // Bộ đệm trong RAM tránh stderr bị nghẽn khi Backend đang giữ khoá I²C.
+                std::ostringstream warnings;
+                const auto sample = impl_->reader->read(i,warnings);
+                if(!warnings.str().empty()) common::Logger::Warn("ToF","read",warnings.str());
                 if (sample.ready || sample.apiError != 0)
                 {
                     reading.apiError = sample.apiError;
