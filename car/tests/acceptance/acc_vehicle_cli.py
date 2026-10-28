@@ -687,6 +687,11 @@ class Suite:
 
     def calib(self, step, sig):
         # C02/C13/A01: mỗi bước số hợp lệ, stdin giữ mở tới hết quan sát.
+        if step == "position":
+            # C1 (28/10): bước vị trí bị khoá trước khởi tạo, giữ các bước còn lại.
+            from acc_stop_path import reject_position
+            reject_position(self, "5")
+            return
         folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
         if step == "env":
             code, output = run([self.main, "--config", config, "--mode", "calib", "--step", "1"], folder, env)
@@ -698,7 +703,7 @@ class Suite:
                 return (any(k == "motor_init" for _, k, _ in trace(folder / "trace.csv", live=True)) and
                         log_ready(folder, "calib"))
             wait_ready(process, ready, step + ": calib không tới giao diện/log trong hạn")
-            if step in ("servo", "radius", "motor", "position"):
+            if step in ("servo", "radius", "motor"):
                 process.stdin.write(b"d\ny\n" if step == "radius" else b"y\n")
                 process.stdin.flush()
                 require(poll(lambda: any(k == "motor_speed" and abs(float(v)) > 0.1

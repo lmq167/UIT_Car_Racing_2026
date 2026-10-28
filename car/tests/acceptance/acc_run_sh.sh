@@ -9,8 +9,8 @@
 #  - Yêu cầu dừng khẩn: "ucr_stop luôn được gọi đúng 1 lần".
 #  - docs/ucr_car.md mục Xây dựng và chạy: UCR_BUILD_DIR chứa `main` và `ucr_stop`; --config tương đối tính từ nơi gọi
 #    run.sh và chuyển thành tuyệt đối, cả main và ucr_stop nhận cùng đường dẫn; mặc định config.yaml ở gốc ucr_car;
-#    chuyển tiếp SIGINT/SIGTERM, chờ con thực sự kết thúc rồi mới gọi ucr_stop; lỗi ucr_stop được in rõ nhưng không thay
-#    mã thoát của chương trình chính; đường dẫn có dấu cách phải dùng được.
+#    chuyển tiếp SIGINT/SIGTERM, chờ con thực sự kết thúc rồi mới gọi ucr_stop; theo T05h, lỗi ucr_stop đổi main 0 thành 1,
+#    giữ mã main nếu đã lỗi; đường dẫn có dấu cách phải dùng được.
 source "$(dirname "$0")/acc_lib.sh"
 
 B="$T/build"
@@ -124,11 +124,11 @@ else
     acc_reap "$rpid"; fail "main gia khong san sang"
 fi
 
-# ucr_stop lỗi: vẫn gọi 1 lần, không đổi mã thoát của main, có in thông báo
+# T05h: ucr_stop lỗi vẫn gọi 1 lần, main 0 thành 1, giữ main khác 0 và báo đúng chuỗi.
 newrun
 ACC_STOP_RC=5 ACC_MAIN_MODE=exit0 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?
-check "ucr_stop loi (5) + main 0 => run.sh van thoat 0 (docs: loi dung khan duoc in nhung khong doi ma), nhan $RC" test "$RC" -eq 0
-check "ucr_stop loi: phai in thong bao ro (dau ra khong rong)" test -s "$RUN/out"
+check "ucr_stop loi (5) + main 0 => run.sh thoat 1, nhan $RC" test "$RC" -eq 1
+check "ucr_stop loi: phai in dung chuoi LOI" grep -qF 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' "$RUN/out"
 check "ucr_stop loi: van chi goi 1 lan" test "$(calls)" -eq 1
 newrun
 ACC_STOP_RC=5 ACC_MAIN_MODE=exit3 UCR_BUILD_DIR="$B" acc_run timeout --foreground -k 2s 30 bash "$RUNSH" --mode auto >"$RUN/out" 2>&1; RC=$?

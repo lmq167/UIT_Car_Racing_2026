@@ -329,3 +329,38 @@ foreach(scenario ${ACC_LATCH_SCENARIOS})
 endforeach()
 add_test(NAME acc_t05g_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH} self-test)
 set_tests_properties(acc_t05g_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
+
+# T05h: FIFO nghẽn + lỗi encoder tại API, C1 và mã lỗi trình bao; mỗi ca dùng thư mục riêng.
+set(ACC_STOP_PATH ${CMAKE_CURRENT_SOURCE_DIR}/acc_stop_path.py)
+if(UCR_FAKE_HW)
+    add_executable(acc_stop_path_main ${PROJECT_SOURCE_DIR}/main.cpp acc_stop_path_inject.cpp ${PROJECT_SOURCE_DIR}/src/common/Logger.cpp)
+    target_link_libraries(acc_stop_path_main PRIVATE app_core)
+    target_compile_definitions(acc_stop_path_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
+    target_compile_options(acc_stop_path_main PRIVATE -Wall -Wextra)
+    set_property(TARGET acc_stop_path_main APPEND_STRING PROPERTY LINK_FLAGS
+        " -Wl,--wrap=_ZN3app7Backend8PositionERf -Wl,--wrap=_ZN3app7Backend4InitEv")
+endif()
+set(ACC_STOP_SCENARIOS position_5 position_named check_config wrapper_stop_failure
+    stdout_collect_image stdout_collect_tof stdout_calib_image stdout_calib_tof)
+foreach(step 1 2 3 4 6 7 8 9 10)
+    list(APPEND ACC_STOP_SCENARIOS other_step_${step})
+endforeach()
+foreach(scenario ${ACC_STOP_SCENARIOS})
+    set(stop_main $<TARGET_FILE:main>)
+    set(stop_labels "acceptance")
+    if(UCR_FAKE_HW)
+        set(stop_main $<TARGET_FILE:acc_stop_path_main>)
+    endif()
+    # Chỉ một ca ngắn đại diện đi qua TSan, không nhân cả ma trận FIFO.
+    if(scenario STREQUAL "stdout_collect_tof")
+        set(stop_labels "acceptance;threads")
+    endif()
+    add_test(NAME acc_t05h_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH}
+        ${scenario} ${PROJECT_SOURCE_DIR} ${stop_main} $<TARGET_FILE:ucr_stop>)
+    set_tests_properties(acc_t05h_${scenario} PROPERTIES LABELS "${stop_labels}" TIMEOUT 90)
+endforeach()
+add_test(NAME acc_t05h_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH} self-test)
+set_tests_properties(acc_t05h_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
+# C1: ca position cũ đã đổi sang từ chối, không cần chạy lại dưới TSan.
+set_tests_properties(acc_calib_position acc_calib_repeat_deadline_position acc_t05g_limit_position
+    PROPERTIES LABELS "acceptance")

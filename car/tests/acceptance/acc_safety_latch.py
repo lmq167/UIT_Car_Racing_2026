@@ -312,7 +312,11 @@ class LatchSuite(LimitsSuite):
 
     def limit(self, kind):
         # T20/S4/H1/L: huỷ một lượt đúng một dòng, kể cả UI không đọc được state.
-        position = kind == "position"
+        if kind == "position":
+            # C1: bước 5 bị khoá; giữ nguyên limit_deadline/limit_distance ở motor.
+            from acc_stop_path import reject_position
+            reject_position(self)
+            return
         distance = kind != "deadline"
         folder, config, env = self.setup({"calib_max_duration_s": "30" if distance else "3",
                                           "calib_distance_cm": "30" if distance else "300",
@@ -359,7 +363,7 @@ class LatchSuite(LimitsSuite):
                 require(rows[-1][0] < second[0]+3000,
                         "Tiền đề: kết thúc quan sát trước hạn lượt mới")
             self.finish(process)
-        output, _ = self.execute("calib", config, folder, env, observe, "position" if position else "motor")
+        output, _ = self.execute("calib", config, folder, env, observe, "motor")
         notifications(output, ["gioi_han_calib"])
 
     def automatic(self, kind):

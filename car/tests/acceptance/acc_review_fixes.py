@@ -67,6 +67,11 @@ def smoke_timing(kind, t0, cycle, frame, delta):
 class ReviewSuite(LimitsSuite):
     def repeated(self, kind, step):
         # E1/H1: y trong lượt không được thay mốc thời gian hoặc mốc encoder của lượt đầu.
+        if step == "position":
+            # C1: không còn được chạy vị trí; motor/radius vẫn kiểm đủ hạn/quãng/y lặp.
+            from acc_stop_path import reject_position
+            reject_position(self)
+            return
         distance = kind == "distance"
         duration = 12 if distance else 3
         folder, config, env = self.setup({"calib_max_duration_s": str(duration),
