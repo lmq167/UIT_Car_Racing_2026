@@ -46,8 +46,8 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 98)]
-CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07']
+CASES += ['D{:02d}'.format(n) for n in range(65, 104)]
+CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09']
 
 
 class SafetyFailure(AssertionError):
@@ -78,7 +78,7 @@ def read_trace(path):
         stamp = float(fields[0])
         need(math.isfinite(stamp), 'Mốc vết không hữu hạn')
         kind = fields[1]
-        need(kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'key', 'state'),
+        need(kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'key', 'state', 'key_burst'),
              'Sự kiện ngoài hợp đồng: ' + repr(line))
         value = ' '.join(fields[2:])
         failed = value.endswith(' fail') or value == 'fail'
@@ -630,11 +630,173 @@ def unlock_case(n, cfg, root):
         run.finish()
 
 
+def no_selftest_hardware(events):
+    need(not any(e[1].startswith(('motor_', 'servo_')) for e in events),
+         '--selftest đã chạm motor/servo', 'selftest_hardware')
+
+
+def burst_case(n, cfg, root):
+    if n == 101:
+        # C qua bộ lọc preview mà không xả hàng như Space; '?' bị bỏ ngay ở con.
+        # Con preview tiếp tục gửi khi cha bị dừng: tạo một lần đọc >=4 phím, không sửa preview.cpp.
+        for end in ('', '3', 'E'):
+            with running(cfg, root / (end or 'continue'),
+                         env={'UCR_DRIVE_FAKE_INIT_MS': '0',
+                              'UCR_DRIVE_FAKE_PREVIEW': 'keys:' + 'c' * 120 + 'wAdC' + end}) as run:
+                try:
+                    run.boot()
+                    run.wait(lambda: len(matched(run.events(), 'key', 'c')) >= 100,
+                             message='Chưa tới cửa sổ tạo hàng preview')
+                    mark = len(run.events())
+                    os.kill(run.process.pid, signal.SIGSTOP)
+                    until = time.monotonic() + 0.65
+                    run.wait(lambda: time.monotonic() >= until, 2, 'Chưa tạo đủ hàng preview')
+                finally:
+                    if run.process.poll() is None:
+                        os.kill(run.process.pid, signal.SIGCONT)
+                run.wait(lambda: [str(e[2]).lower() for e in run.events()[mark:]
+                                  if e[1] == 'key' and str(e[2]).lower() in 'wadc'][-4:] == list('wadc'),
+                         message='Không đọc được lô preview', alive=False)
+                if end:
+                    run.wait(lambda: run.process.poll() is not None, 8, 'Phím thoát preview bị mất', alive=False)
+                    need(run.process.returncode == (130 if end == '3' else 0), 'Sai mã thoát preview')
+                    final_stop(run.events())
+                    run.check_output('sigint' if end == '3' else 'esc', run.process.returncode)
+                    motion_quiet(run.events()[mark:], 'key_burst')
+                else:
+                    run.observe(0.1, lambda: motion_quiet(run.events()[mark:], 'key_burst'))
+                    run.observe(0.9, lambda: motion_quiet(run.events()[mark:], 'key_burst'))
+                    run.keep_driving()  # Nhấn đơn rồi lặp W mỗi 100 ms vẫn hoạt động.
+                    run.observe(1.8)
+                    run.finish()
+                need(matched(run.events()[mark:], 'key_burst'), 'Không ghi vết lô preview', 'key_burst')
+        return
+    if n == 100:
+        for index, (key, reason) in enumerate((('X', 'key_x'), (' ', 'key_space'),
+                                               ('S', 'key_s'), ('\x1b', 'esc'), ('\x03', 'sigint'))):
+            with running(cfg, root / str(index)) as run:
+                run.boot()
+                run.drive()
+                run.observe(0.45)
+                mark = len(run.events())
+                run.send('wAdC' + key + 'WWWW')
+                if reason in ('esc', 'sigint'):
+                    run.wait(lambda: run.process.poll() is not None, 8, 'Phím thoát trong lô bị mất', alive=False)
+                    need(run.process.returncode == (0 if reason == 'esc' else 130), 'Sai mã phím thoát')
+                    final_stop(run.events())
+                    run.check_output(reason, run.process.returncode)
+                else:
+                    run.event('motor_speed', 0, mark)
+                    run.wait(lambda: ('key_' + ('space' if key == ' ' else key.lower())) in run.text(),
+                             message='Phím dừng trong lô không được xử lý')
+                    run.observe(0.15)
+                motion_quiet(run.events()[mark:], 'key_burst')
+                ordered_stop(run.events()[mark:])
+                if reason not in ('esc', 'sigint'):
+                    run.finish()
+        return
+    with running(cfg, root, args=['--no-preview', '--hold-timeout-ms', '2000'] if n == 99 else ['--no-preview']) as run:
+        run.boot()
+        run.key('?')  # Lần đọc trước có phím, không phụ thuộc thời gian Init.
+        if n == 99:
+            run.drive()
+            run.key('A')
+            run.observe(1.1)  # H/2 < im < H: vẫn CHAY, không nhầm với deadman.
+        else:
+            run.observe(0.9)  # Im > H: lô cũ từng vượt qua chốt nhấn mới.
+        mark = len(run.events())
+        run.send('wAdC')
+        run.wait(lambda: len(matched(run.events()[mark:], 'key')) >= 4,
+                 message='Chưa đọc đủ lô tty')
+        run.observe(0.15, lambda: motion_quiet(run.events()[mark:], 'key_burst'))
+        need(matched(run.events()[mark:], 'key_burst'), 'Thiếu vết key_burst', 'key_burst')
+        if n == 99:
+            ordered_stop(run.events()[mark:])
+            run.wait(lambda: 'key_burst' in run.text(), message='Thiếu nhật ký dừng lô')
+            paths = list(run.out.glob('*/stops.csv'))
+            run.wait(lambda: paths and 'key_burst' in paths[0].read_text(encoding='utf-8'),
+                     message='stops.csv thiếu key_burst')
+        else:
+            need(not matched(run.events()[mark:], 'motor_speed', 0),
+                 'Lô khi DUNG bị ghi thành sự kiện dừng')
+        held_then_fresh(run, len(run.events()))
+        run.finish()
+        records = json.loads((run.session_dir() / 'summary.json').read_text(encoding='utf-8'))['stops']
+        need(sum(r['reason'] == 'key_burst' for r in records) == (1 if n == 99 else 0),
+             'Lô DUNG/CHAY ghi sai số sự kiện dừng')
+
+
+def selftest_case(n, cfg, root):
+    modes = ('ok',) if n == 102 else ('camera', 'hang', 'jpeg', 'display', 'xauthority', 'disk',
+                                     'busy', 'output', 'stop_missing', 'stop_permission', 'args', 'git')
+    for mode in modes:
+        folder = root / mode
+        folder.mkdir(parents=True)
+        binary = folder / 'ucr_drive_collect'
+        shutil.copy2(cfg.hooks, str(binary))
+        binary.chmod(0o700)
+        stop_called = folder / 'stop_called'
+        if mode != 'stop_missing':
+            executable(folder / 'ucr_stop', '#!/bin/sh\nprintf called > ' + shlex.quote(str(stop_called)) + '\n')
+            if mode == 'stop_permission':
+                (folder / 'ucr_stop').chmod(0o600)
+        out = folder / 'out'
+        if mode == 'output':
+            out.write_text('giữ nguyên tệp này', encoding='utf-8')
+        environment = dict(DISPLAY=':99', XAUTHORITY='/tmp/selftest-authority', PATH='')
+        if mode == 'camera': environment['UCR_DRIVE_FAKE_OPEN_FAIL'] = 'camera'
+        if mode == 'hang': environment['UCR_DRIVE_FAKE_CAMERA'] = 'none'
+        if mode == 'jpeg': environment['UCR_DRIVE_FAKE_SELFTEST_JPEG_FAIL'] = '1'
+        if mode == 'display': environment['DISPLAY'] = ''
+        if mode == 'xauthority': environment['XAUTHORITY'] = ''
+        if mode == 'disk': environment['UCR_DRIVE_FAKE_FREE_MB'] = '0'
+        command = [str(binary), '--selftest', '--out-root', str(out), '--min-free-mb', '4096']
+        if mode not in ('display', 'xauthority'):
+            command.append('--no-preview')
+        if mode == 'args': command += ['--pipeline']
+        lock = folder / 'vehicle.lock'
+        with lock.open('w') as held:
+            if mode == 'busy': fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with running(cfg, folder / 'run', env=environment, command=command, pipe=True,
+                         accepted=False, lock=lock) as run:
+                started = time.monotonic()
+                run.wait(lambda: run.process.poll() is not None, 14, 'Selftest quá hạn', alive=False)
+                no_selftest_hardware(run.events())
+                need(not stop_called.exists(), 'Selftest đã chạy ucr_stop', 'selftest_hardware')
+                expected = 0 if mode in ('ok', 'git') else 2 if mode == 'args' else 1
+                need(run.process.returncode == expected,
+                     'Selftest {}: sai mã {}: {}'.format(mode, run.process.returncode, run.text()))
+                text = run.text()
+                if mode == 'ok':
+                    for item in ('camera', 'jpeg', 'DISPLAY', 'XAUTHORITY', 'disk', 'lock', 'out_root', 'ucr_stop', 'total'):
+                        need(re.search(r'^OK ' + item + ':', text, re.MULTILINE), 'Thiếu OK ' + item)
+                elif mode != 'args' and mode != 'git':
+                    item = dict(camera='camera', hang='camera', jpeg='jpeg', display='DISPLAY', xauthority='XAUTHORITY',
+                                disk='disk', busy='lock', output='out_root', stop_missing='ucr_stop',
+                                stop_permission='ucr_stop')[mode]
+                    need(re.search(r'^FAIL ' + item + ':', text, re.MULTILINE), 'Thiếu FAIL ' + item)
+                    need(re.search(r'^FAIL total:', text, re.MULTILINE), 'Tổng không ghi FAIL')
+                if mode == 'busy': need('xe đang bận' in text, 'Thiếu thông báo xe đang bận')
+                if mode == 'hang':
+                    need(time.monotonic() - started <= 10.5 + cfg.slack/1000 + cfg.tsan_slack/1000,
+                         'Selftest camera không chốt hạn 10 s')
+                if mode in ('ok', 'git'): need('WARN git: không rõ' in text, 'Git thiếu không có WARN')
+                need(not list(folder.glob('out/.ucr_selftest_*')), 'Còn thư mục/JPEG tạm sau tự kiểm')
+                if mode == 'output': need(out.read_text(encoding='utf-8') == 'giữ nguyên tệp này', 'Đã hỏng tệp có sẵn')
+            fcntl.flock(held.fileno(), fcntl.LOCK_UN)
+        with lock.open('r+') as available:
+            fcntl.flock(available.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
 def test_case(case, cfg, root):
     """Mỗi nhánh đối chiếu hàng cùng mã trong T21_test_cases_report, §8 ưu tiên."""
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n in (98, 99, 100, 101):
+        return burst_case(n, cfg, root)
+    if n in (102, 103):
+        return selftest_case(n, cfg, root)
     if n in (94, 95, 96, 97):
         return unlock_case(n, cfg, root)
     if n in (92, 93):
@@ -1230,6 +1392,7 @@ def fix4_case(n, cfg, root):
             with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
                 run.boot()
                 run.ready()
+                run.key('?')  # D85 kiểm tuổi hàng đang đọc, không phải lô cũ sau khoảng im (D98).
                 mark = len(run.events())
                 need(os.write(run.master, b'W' * 4000) == 4000, 'PTY chưa nhận trọn một lượt 4.000 W', 'setup')
                 key = run.event('key', 'W', mark)
@@ -1474,6 +1637,7 @@ def added_case(n, cfg, root):
             with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
                 run.boot()
                 run.ready()
+                run.key('?')  # D66 kiểm deadman của hàng liên tục; lô sau im được kiểm riêng ở D98.
                 mark = len(run.events())
                 run.send('W' * 64)
                 run.wait(lambda: len([e for e in run.events()[mark:] if e[1] == 'key' and
@@ -1948,7 +2112,7 @@ def wrapper_guards(n, cfg, root):
 
 def patch_mutant(case, folder):
     """Chỉ đọc/vá BẢN SAO để đặt neo; kỳ vọng lấy từ yêu cầu của phiếu."""
-    path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07') else 'options.h')
+    path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09') else 'options.h')
     source = path.read_text(encoding='utf-8')
     if case == 'M01':
         pattern, replacement = r'\bstop\("deadman",\s*deadmanAt\(\)\);', '(void)deadmanAt();'
@@ -1973,6 +2137,14 @@ def patch_mutant(case, folder):
         # §12: gọi Init hai lần trên bản sao, giữ đường khởi động thành công.
         pattern = r'if\s*\(!motor\.init\(\)\)'
         replacement = 'if (!(motor.init() && motor.init()))'
+    elif case == 'M08':
+        pattern = r'const bool burst = control\.keyBurst\(keys, previewKeys, readAt\);'
+        replacement = 'const bool burst = false;'
+    elif case == 'M09':
+        pattern = r'if \(options\.selftest\) \{\n        try \{ return selftest\(options\); \}'
+        replacement = ('if (options.selftest) {\n'
+                       '        DriveMotor forbidden; forbidden.init();\n'
+                       '        try { return selftest(options); }')
     else:
         raise SafetyFailure('mutation_setup', 'Mã mutation không biết: ' + case)
     patched, count = re.subn(pattern, replacement, source, flags=re.DOTALL if case == 'M03' else 0)
@@ -1981,8 +2153,10 @@ def patch_mutant(case, folder):
 
 
 def mutation(case, cfg, root):
-    original = dict(M01='D18', M02='D07', M03='D13', M04='D96', M05='D80', M06='D94', M07='D95')[case]
-    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='fresh_press', M05='init_once', M06='startup_stdin', M07='startup_preview')[case]
+    original = dict(M01='D18', M02='D07', M03='D13', M04='D96', M05='D80', M06='D94', M07='D95',
+                    M08='D98', M09='D102')[case]
+    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='fresh_press', M05='init_once',
+                    M06='startup_stdin', M07='startup_preview', M08='key_burst', M09='selftest_hardware')[case]
     # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
     test_case(original, cfg, root / 'baseline')
     folder = root / 'source'
@@ -2101,7 +2275,7 @@ def self_check():
                 need(error.tag == 'startup_preview', 'Sai mã kiểm xả startup')
             else:
                 raise AssertionError('Bộ kiểm xả startup bỏ lọt phím/lệnh cũ')
-        registered = re.findall(r'\b[DM]\d{2}\b', cmake.split('set(_drive_cases', 1)[1].split(')', 1)[0])
+        registered = re.findall(r'\b[DM]\d{2,3}\b', cmake.split('set(_drive_cases', 1)[1].split(')', 1)[0])
         need(len(registered) == len(set(registered)) and set(registered) == set(CASES),
              'Danh sách CLI/CMake lệch hoặc trùng ca')
         for bad, tag, checker in (
@@ -2137,18 +2311,28 @@ def self_check():
             'M04': 'if (awaitingPress_) { reject(); }',
             'M06': 'terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.',
             'M07': 'terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.\n        preview.discardKeys();',
-            'M05': 'if (!motor.init()) throw Failure(3, "motor_init_fail", "Init hỏng");'}
+            'M05': 'if (!motor.init()) throw Failure(3, "motor_init_fail", "Init hỏng");',
+            'M08': 'const bool burst = control.keyBurst(keys, previewKeys, readAt);',
+            'M09': 'if (options.selftest) {\n        try { return selftest(options); }'}
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()
-            path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07') else 'options.h')
+            path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09') else 'options.h')
             path.write_text(source, encoding='utf-8')
             patch_mutant(case, folder)
             need(path.read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
             # Kiểm neo duy nhất trên mã hiện tại, chỉ vá bản sao tạm.
             path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
             patch_mutant(case, folder)
-    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG và 7 neo hiện tại; chưa chạy binary sản phẩm')
+        no_selftest_hardware([])
+        for event in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle'):
+            try:
+                no_selftest_hardware([(0, event, 0, False)])
+            except SafetyFailure as error:
+                need(error.tag == 'selftest_hardware', 'Sai mã phép kiểm tự kiểm không động cơ')
+            else:
+                raise AssertionError('Bộ kiểm tự kiểm bỏ lọt ' + event)
+    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG, không động cơ và 9 neo hiện tại; chưa chạy binary sản phẩm')
 
 
 def main():

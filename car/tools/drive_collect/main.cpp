@@ -23,6 +23,7 @@
 #include <sys/file.h>
 #include <sys/ioctl.h>
 #include <sys/statvfs.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -214,7 +215,7 @@ public:
         }
     }
     ~Terminal() { tcsetattr(0, TCSANOW, &original_); }
-    void discard() { tcflush(0, TCIFLUSH); decoder_ = KeyDecoder(); }
+    void discard() { tcflush(0, TCIFLUSH); decoder_.discard(); }
     std::vector<int> read(int64_t) override {
         pollfd p{0, POLLIN, 0};
         const int ready = poll(&p, 1, 0);
@@ -909,22 +910,35 @@ int run(Options o) {
             }
             const auto readAt = nowMs();
             auto keys = terminal->read(readAt);
+            std::vector<int> previewKeys;
             if (!previewHandled) {
-                for (unsigned char key : preview.pollKeys()) keys.push_back(key == 'E' ? 27 : key == '3' ? 3 : key);
+                for (unsigned char key : preview.pollKeys()) previewKeys.push_back(key == 'E' ? 27 : key == '3' ? 3 : key);
             }
+            const bool burst = control.keyBurst(keys, previewKeys, readAt);
+            keys.insert(keys.end(), previewKeys.begin(), previewKeys.end());
+            if (burst) {
+                control.rejectKeyBurst(readAt);
+                journal->warn("key_burst: bỏ lô phím chuyển động, cần nhả rồi nhấn mới");
+                terminal->discard(); preview.discardKeys(); control.discardPending = false;
+            }
+            bool discardMotion = burst;
+            // Giữ vết phân loại lô dồn; chỉ bỏ ngầm đuôi sau phím dừng.
+            bool stoppedInBatch = false;
             for (int key : keys) {
+                if (!acceptBatchKey(key, stoppedInBatch)) continue;
                 trigger = nowMs();
-#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
-                hookEvent("key", key == 27 ? "ESC" : std::string(1, static_cast<char>(key)));
-#endif
                 // Kiểm lại cờ/fault trước mỗi phím, không cho W cùng lô vượt qua lỗi.
                 if (stopping.load() || capture->failure || hardwareFault) break;
                 if (key == 3) throw Failure(130, "sigint", "Ctrl+C từ cửa sổ preview");
+                if (discardMotion && motionKey(key)) continue;
                 const auto latestFrame = capture->lastFrameNs.load();
                 const bool ready = latestFrame && nowMs() - latestFrame / 1000000 <= 500;
                 control.key(key, ready, readAt);
                 if (control.discardPending || control.exiting) {
-                    terminal->discard(); preview.discardKeys(); control.discardPending = false; break;
+                    terminal->discard(); preview.discardKeys(); control.discardPending = false;
+                    discardMotion = true;
+                    stoppedInBatch = true;
+                    if (control.exiting) break;
                 }
             }
             PreviewState snapshot;
@@ -1013,6 +1027,131 @@ int run(Options o) {
     emergencyScope.active = false;
     return code;
 }
+
+// Tự kiểm chỉ dùng camera/ổ đĩa/khóa; không tạo bất kỳ đối tượng điều khiển motor/servo nào.
+int selftest(const Options& o) {
+    int failures = 0, checks = 0;
+    const auto report = [&](bool ok, const std::string& item, const std::string& detail) {
+        ++checks; if (!ok) ++failures;
+        std::cout << (ok ? "OK " : "FAIL ") << item << ": " << detail << std::endl;
+    };
+    for (const char* name : {"DISPLAY", "XAUTHORITY"}) {
+        const char* value = std::getenv(name);
+        report(o.preview.no_preview || (value && *value), name,
+               value && *value ? value : (o.preview.no_preview ? "bỏ qua vì --no-preview" : "rỗng"));
+    }
+    bool lockOK = false;
+    try { { VehicleLock lock; } lockOK = true; report(true, "lock", "giữ được khóa và nhả ngay"); }
+    catch (const Failure& e) { report(false, "lock", e.code == 6 ? "xe đang bận (mã 6)" : e.what()); }
+    fs::path temporary;
+    bool outputOK = false;
+    try {
+        fs::create_directories(o.outRoot);
+        auto pattern = (o.outRoot / ".ucr_selftest_XXXXXX").string();
+        if (!mkdtemp(&pattern[0])) throw std::runtime_error("không tạo được thư mục tạm");
+        temporary = pattern;
+        std::ofstream probe;
+        probe.exceptions(std::ios::badbit | std::ios::failbit);
+        probe.open((temporary / "write_probe").string()); probe << "ucr_selftest\n"; probe.close();
+        outputOK = true;
+        report(true, "out_root", fs::absolute(o.outRoot).string());
+    } catch (const std::exception& e) { report(false, "out_root", e.what()); }
+    try {
+        const double free = freeMB(o.outRoot);
+        report(free >= o.minFree, "disk", std::to_string(free) + " MiB; cần >= " + std::to_string(o.minFree));
+    } catch (const std::exception& e) { report(false, "disk", e.what()); }
+    std::array<char, 4096> executable{};
+    const auto length = readlink("/proc/self/exe", executable.data(), executable.size()-1);
+    const fs::path stop = length > 0 && static_cast<size_t>(length) < executable.size()-1 ?
+        fs::path(std::string(executable.data(), static_cast<size_t>(length))).parent_path() / "ucr_stop" : fs::path();
+    try {
+        report(!stop.empty() && fs::is_regular_file(stop) && access(stop.c_str(), X_OK) == 0,
+               "ucr_stop", stop.empty() ? "không xác định được tệp thực thi" : stop.string());
+    } catch (const std::exception& e) { report(false, "ucr_stop", e.what()); }
+
+    // VideoCapture::open/read có thể treo trong driver; con riêng cho phép chốt hạn 10 giây.
+    const auto waitChild = [](pid_t child, Clock::time_point deadline) {
+        if (child < 0) return -1;
+        int status = 0;
+        while (Clock::now() < deadline && !stopping.load()) {
+            const auto result = waitpid(child, &status, WNOHANG);
+            if (result == child) return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            if (result < 0 && errno != EINTR) return -1;
+            poll(nullptr, 0, 10);
+        }
+        kill(child, SIGKILL);
+        while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+        return -1;
+    };
+    const auto cameraDeadline = Clock::now() + 10s;
+    const pid_t camera = lockOK ? fork() : -1;
+    if (camera == 0) {
+        int result = 1;
+        try {
+            cv::VideoCapture capture;
+            cv::Mat frame;
+            bool synthetic = false;
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+            const char* fake = std::getenv("UCR_DRIVE_FAKE_CAMERA");
+            synthetic = fake && std::string(fake) == "ok";
+            if (fake && std::string(fake) == "none") for (;;) pause();
+            if (fakeOpenFail("camera")) _exit(1);
+#endif
+            if (synthetic || capture.open(o.pipeline, cv::CAP_GSTREAMER)) {
+                int frames = 0;
+                while (frames < 5 && Clock::now() < cameraDeadline) {
+                    if (synthetic) frame = cv::Mat(720, 1280, CV_8UC3, cv::Scalar(80,120,160));
+                    else if (!capture.read(frame) || frame.empty()) { poll(nullptr, 0, 10); continue; }
+                    ++frames;
+                }
+                if (frames == 5) {
+                    result = 2;
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+                    if (std::getenv("UCR_DRIVE_FAKE_SELFTEST_JPEG_FAIL")) _exit(2);
+#endif
+                    if (outputOK && cv::imwrite((temporary / "probe.jpg").string(), frame,
+                                               {cv::IMWRITE_JPEG_QUALITY, 90}) &&
+                        fs::file_size(temporary / "probe.jpg") > 0) result = 0;
+                }
+            }
+        } catch (...) {}
+        _exit(result);
+    }
+    const int cameraResult = waitChild(camera, cameraDeadline);
+    report(cameraResult == 0 || cameraResult == 2, "camera", cameraResult == 0 || cameraResult == 2 ?
+           "đã lấy 5 khung trong hạn 10 s" : "không mở/lấy đủ 5 khung trong hạn 10 s");
+    report(cameraResult == 0, "jpeg", cameraResult == 0 ? "đã ghi một JPEG thử" : "không ghi được JPEG thử");
+    try { if (!temporary.empty()) fs::remove_all(temporary); report(true, "cleanup", "đã xóa thư mục thử"); }
+    catch (const std::exception& e) { report(false, "cleanup", e.what()); }
+
+    int gitPipe[2];
+    std::string revision;
+    if (pipe(gitPipe) == 0) {
+        const auto source = fs::absolute(fs::path(__FILE__)).parent_path().string();
+        const pid_t git = fork();
+        if (git == 0) {
+            dup2(gitPipe[1], STDOUT_FILENO);
+            const int null = open("/dev/null", O_WRONLY);
+            if (null >= 0) dup2(null, STDERR_FILENO);
+            close(gitPipe[0]); close(gitPipe[1]);
+            execlp("git", "git", "-C", source.c_str(), "rev-parse", "--short", "HEAD", static_cast<char*>(nullptr));
+            _exit(127);
+        }
+        close(gitPipe[1]);
+        if (waitChild(git, Clock::now() + 1s) == 0) {
+            char buffer[128]; const auto count = read(gitPipe[0], buffer, sizeof(buffer));
+            if (count > 0) revision.assign(buffer, static_cast<size_t>(count));
+            while (!revision.empty() && (revision.back() == '\n' || revision.back() == '\r')) revision.pop_back();
+        }
+        close(gitPipe[0]);
+    }
+    if (revision.empty()) std::cout << "WARN git: không rõ" << std::endl;
+    else report(true, "git", revision);
+    report(!stopping.load(), "signal", stopping.load() ? "đã nhận yêu cầu dừng" : "không có tín hiệu dừng");
+    std::cout << (failures ? "FAIL " : "OK ") << "total: " << checks - failures << '/' << checks
+              << " mục OK, " << failures << " FAIL" << std::endl;
+    return failures ? 1 : 0;
+}
 }
 int main(int argc, char** argv) {
     // Giữ OpenCV một luồng để giảm tải Nano và tránh nhóm luồng TBB.
@@ -1029,6 +1168,7 @@ int main(int argc, char** argv) {
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
+                  << "  --selftest [--out-root DIR] [--pipeline CHUỖI]: tự kiểm không động cơ, không cần tty\n"
                   << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"
                   << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; ảnh luôn được ghi.\n"
                   << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới để chạy lại.\n"
@@ -1038,8 +1178,12 @@ int main(int argc, char** argv) {
     Options options;
     try {
         options = parse(argc, argv);
-        if (!isatty(0)) throw std::runtime_error("stdin không phải tty (terminal trực tiếp); không chạy qua pipe");
+        if (!options.selftest && !isatty(0)) throw std::runtime_error("stdin không phải tty (terminal trực tiếp); không chạy qua pipe");
     } catch (const std::exception& e) { std::cerr << "Lỗi tham số: " << e.what() << '\n'; return 2; }
+    if (options.selftest) {
+        try { return selftest(options); }
+        catch (const std::exception& e) { std::cerr << "FAIL total: " << e.what() << '\n'; return 1; }
+    }
     std::cerr << "CANH BAO: KHONG CO PHANH ToF; người giám sát phải ở sẵn bên xe.\n"
               << "Mở là DUNG; W tiến; A/D lái; C trả lái; S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát.\n"
               << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới.\n"

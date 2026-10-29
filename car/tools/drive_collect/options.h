@@ -43,7 +43,7 @@ struct Options {
     double speed = 5;
     int steerStep = 5, maxSteer = 10;
     uint64_t holdTimeout = 800, interval = 1000, minFree = 1024;
-    bool accepted = false;
+    bool accepted = false, selftest = false;
 };
 
 inline uint64_t number(const std::string& text, const std::string& name) {
@@ -84,6 +84,7 @@ inline Options parse(int argc, char** argv) {
         if (preview == PreviewOptionResult::Error) throw std::runtime_error(error);
         if (preview == PreviewOptionResult::Parsed) continue;
         const std::string key = argv[i];
+        if (key == "--selftest") { o.selftest = true; continue; }
         if (key == "--accept-no-obstacle-brake") { o.accepted = true; continue; }
         if (key != "--out-root" && key != "--label" && key != "--pipeline" &&
             key != "--speed-cms" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
@@ -123,7 +124,7 @@ inline Options parse(int argc, char** argv) {
             } else o.minFree = n;
         }
     }
-    if (!o.accepted) throw std::runtime_error("Thiếu --accept-no-obstacle-brake: công cụ không có phanh ToF");
+    if (!o.accepted && !o.selftest) throw std::runtime_error("Thiếu --accept-no-obstacle-brake: công cụ không có phanh ToF");
     return o;
 }
 
@@ -150,6 +151,8 @@ class KeyDecoder {
     enum class Escape { None, Pending, Sequence } escape_ = Escape::None;
     int64_t escapeAt_ = 0;
 public:
+    // Xả lô phím không được hủy Esc đơn đang chờ đủ 50 ms.
+    void discard() { if (escape_ == Escape::Sequence) escape_ = Escape::None; }
     std::vector<int> decode(const unsigned char* bytes, size_t size, int64_t now) {
         std::vector<int> keys;
         // Chỉ bỏ CSI/SS3 cụt khi lượt đọc rỗng; đuôi đang chờ phải được nuốt trước.
@@ -163,10 +166,12 @@ public:
         }
         for (size_t i = 0; i < size; ++i) {
             const int b = bytes[i];
-            if (b == 27) { escape_ = Escape::Pending; escapeAt_ = now; }
+            if (b == 3) keys.push_back(b);
+            else if (b == 27) { escape_ = Escape::Pending; escapeAt_ = now; }
             else if (escape_ == Escape::Pending) {
                 // Phím giữ W có thể chen giữa Esc và phần còn lại của mũi tên.
                 if (b == '[' || b == 'O') { escape_ = Escape::Sequence; escapeAt_ = now; }
+                else if (b == 'x' || b == 'X' || b == 's' || b == 'S' || b == ' ') keys.push_back(b);
             } else if (escape_ == Escape::Sequence) {
                 if (b >= 0x40 && b <= 0x7e) escape_ = Escape::None;
                 escapeAt_ = now;
@@ -175,6 +180,25 @@ public:
         return keys;
     }
 };
+constexpr int kBurstKeyCount = 4;
+inline bool motionKey(int key) {
+    if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+    return key == 'w' || key == 'a' || key == 'd' || key == 'c';
+}
+class KeyBurstGuard {
+    uint64_t hold_;
+    int64_t lastRead_;
+public:
+    KeyBurstGuard(uint64_t hold, int64_t started) : hold_(hold), lastRead_(started) {}
+    bool reject(const std::vector<int>& tty, const std::vector<int>& preview, int64_t readAt) {
+        if (tty.empty() && preview.empty()) return false;
+        const bool quiet = readAt - lastRead_ >= static_cast<int64_t>((hold_+1)/2);
+        lastRead_ = readAt;
+        return quiet && (std::count_if(tty.begin(), tty.end(), motionKey) >= kBurstKeyCount ||
+                         std::count_if(preview.begin(), preview.end(), motionKey) >= kBurstKeyCount);
+    }
+};
+
 enum class State { DUNG, CHAY };
 inline const char* stateName(State s) {
     return s == State::DUNG ? "DUNG" : "CHAY";
@@ -188,12 +212,21 @@ struct StopRecord {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
 void hookEvent(const char* event, const std::string& value);
 #endif
+inline bool acceptBatchKey(int key, bool stoppedInBatch) {
+    // Đuôi chuyển động sau phím dừng phải bị bỏ trước cả ghi vết.
+    if (stoppedInBatch && motionKey(key)) return false;
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+    hookEvent("key", key == 27 ? "ESC" : std::string(1, static_cast<char>(key)));
+#endif
+    return true;
+}
 
 class Control {
     const Options& o_;
     IMotor& motor_;
     IServo& servo_;
     IClock& clock_;
+    KeyBurstGuard burstGuard_;
     bool awaitingPress_ = false;
     int64_t lastHeld_ = 0, lastW_ = 0, motor0Done_ = 0;
     void requireFreshPress() {
@@ -245,13 +278,24 @@ public:
     bool latched_error = false, discardPending = false;
     // Gọi sau khi xả phím lúc khởi động: W đang giữ từ trước không được tính là lần nhấn mới.
     void requireFreshStart() { requireFreshPress(); }
+    bool keyBurst(const std::vector<int>& tty, const std::vector<int>& preview, int64_t readAt) {
+        return burstGuard_.reject(tty, preview, readAt);
+    }
+    void rejectKeyBurst(int64_t readAt) {
+        requireFreshPress();
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+        hookEvent("key_burst", "");
+#endif
+        if (state == State::CHAY) stop("key_burst", readAt, true);
+    }
     std::array<StopRecord, 100> stops;
     size_t stopCount = 0;
     // Camera chờ công bố lệnh đang ghi rồi tra lịch sử theo mốc chụp trước đó.
     std::mutex commandMutex;
     std::function<void(int64_t, float, int, State)> onCommand;
     std::function<void(const StopRecord&)> onStop;
-    Control(const Options& o, IMotor& m, IServo& s, IClock& c) : o_(o), motor_(m), servo_(s), clock_(c) {
+    Control(const Options& o, IMotor& m, IServo& s, IClock& c)
+        : o_(o), motor_(m), servo_(s), clock_(c), burstGuard_(o.holdTimeout, c.nowMs()) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
         hookEvent("state", "DUNG");
 #endif
@@ -338,7 +382,6 @@ public:
     void key(int k, bool cameraReady = true, int64_t readAt = -1) {
         const auto stopsBeforeTick = stopCount;
         tick();
-        if (stopCount != stopsBeforeTick) return;
         if (k >= 'A' && k <= 'Z') k += 'a' - 'A';
         if (k != 27 && (k < 0 || k > 127 || std::string("wads cx").find(static_cast<char>(k)) == std::string::npos)) return;
         if (k == 27) { stop("key_esc", clock_.nowMs(), true); exiting = true; return; }
@@ -346,6 +389,7 @@ public:
         if (k == 's' || k == ' ') {
             stop(k == 's' ? "key_s" : "key_space", clock_.nowMs()); return;
         }
+        if (stopCount != stopsBeforeTick) return;
         if (latched_error || exiting) return;
         const auto received = readAt >= 0 ? readAt : clock_.nowMs();
         if (received > clock_.nowMs() || clock_.nowMs() - received >= static_cast<int64_t>(o_.holdTimeout)) return;

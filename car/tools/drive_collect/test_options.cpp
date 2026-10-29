@@ -1,5 +1,13 @@
+#define UCR_DRIVE_TEST_HOOKS 1
 #include "options.h"
 #include <iostream>
+
+namespace drive {
+std::vector<std::string> keyTrace;
+void hookEvent(const char* event, const std::string& value) {
+    if (std::string(event) == "key") keyTrace.push_back(value);
+}
+}
 
 using namespace drive;
 namespace {
@@ -47,6 +55,9 @@ struct ServoStub : IServo {
     }
 };
 void parserTests() {
+    check(parseArgs({"--selftest"}).selftest, "Tự kiểm không cần cờ chấp nhận hay tty");
+    reject({"--selftest", "--pipeline"});
+    reject({"--selftest", "--speed-cms", "6"});
     auto o = parseArgs({"--accept-no-obstacle-brake"});
     check(o.speed == 5 && o.maxSteer == 10 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
           "Sai giá trị mặc định");
@@ -133,6 +144,26 @@ void decoderTests() {
     check(decoder.decode(unlock, 1, 1452) == std::vector<int>{'R'}, "CSI cụt hết hạn 50 ms không được nuốt R");
     decoder.decode(cut, sizeof(cut), 1500);
     check(decoder.decode(arrow, 1, 1510).empty(), "CSI phân mảnh trong 10 ms phải nuốt cả A");
+    for (const unsigned char stop : std::vector<unsigned char>{3, 'X', 'x', 'S', 's', ' '}) {
+        KeyDecoder pending;
+        pending.decode(esc, 1, 0);
+        check(pending.decode(&stop, 1, 10) == std::vector<int>{stop}, "Phím dừng sau Esc đang chờ bị nuốt");
+        pending.discard();
+        check(pending.decode(nullptr, 0, 50) == std::vector<int>{27}, "Phím dừng/xả lô làm mất Esc đang chờ");
+    }
+    KeyDecoder interrupted;
+    interrupted.decode(cut, sizeof(cut), 0);
+    const unsigned char ctrlC[] = {3};
+    check(interrupted.decode(ctrlC, 1, 10) == std::vector<int>{3}, "CSI cụt không được nuốt Ctrl+C");
+    for (size_t position = 0; position <= 8; ++position) {
+        KeyDecoder burst;
+        std::string input = "wAdCWWWW";
+        input.insert(position, 1, char(27));
+        burst.decode(reinterpret_cast<const unsigned char*>(input.data()), input.size(), 0);
+        burst.discard(); // Như Terminal sau khi chặn lô hoặc xử lý phím dừng.
+        check(burst.decode(nullptr, 0, 49).empty(), "Xả lô làm Esc thoát sớm");
+        check(burst.decode(nullptr, 0, 50) == std::vector<int>{27}, "Esc trong lô dồn bị mất sau xả");
+    }
 }
 // T24/overnight A: DUNG, W mới, phím cũ và đường dừng theo đồng hồ giả.
 void controlTests() {
@@ -235,6 +266,85 @@ void revisedSafetyTests() {
     check(signal.stopCount == 1 && notices == 1 && signal.stops[0].done == 1007, "Sai mốc ghi motor 0");
     check(events == std::vector<std::string>({"motor:0.000000", "servo:0"}), "Nhật ký đảo thứ tự dừng");
 }
+void burstTests() {
+    for (const uint64_t hold : {700u, 701u, 800u, 2000u}) {
+        const auto half = (hold+1)/2;
+        KeyBurstGuard guard(hold, 0);
+        check(!guard.reject({'w','A','d','C'}, {}, half - 1), "Không được chặn khi chưa im H/2");
+        check(!guard.reject({'w','a','d'}, {}, hold - 1), "Ba phím chưa phải lô dồn");
+        check(guard.reject({}, {'w','A','d','C'}, hold + half - 1), "Phải chặn bốn phím preview tại biên H/2");
+        check(!guard.reject({'w','a','d'}, {'C'}, hold*2), "Không cộng hai lần đọc tty/preview thành bốn");
+        check(!guard.reject({'W'}, {}, hold*4), "Nhấn đơn sau im vẫn nhận");
+        check(!guard.reject({'w','w','w','w'}, {}, hold*4 + 10), "Giữ phím liên tục vẫn nhận");
+        check(guard.reject({'X','w','A','d','C',' ',27,3}, {}, hold*5), "Phím dừng không làm lọt lô dồn");
+        Options o; o.holdTimeout = hold;
+        FakeClock clock;
+        std::vector<std::string> events;
+        MotorStub motor(events); ServoStub servo(events);
+        Control c(o, motor, servo, clock);
+        c.rejectKeyBurst(clock.time);
+        check(events.empty() && c.stopCount == 0, "Lô khi DUNG chỉ ghi vết, không có sự kiện dừng");
+        clock.time = hold - 1; c.key('w');
+        check(c.speed == 0, "Lô khi DUNG phải yêu cầu nhấn mới");
+        clock.time += hold; c.key('w');
+        check(c.speed == 5, "W mới sau H không được mất");
+        events.clear(); clock.time += hold/2; c.rejectKeyBurst(clock.time);
+        check(c.speed == 0 && c.state == State::DUNG && c.stops[c.stopCount-1].reason == "key_burst",
+              "Lô khi CHAY phải dừng và ghi key_burst");
+        check(events == std::vector<std::string>({"motor:0.000000", "servo:0"}), "Lô phải motor 0 trước servo 0");
+        clock.time += hold; c.key('w'); check(c.speed == 5, "Nhấn mới sau lô CHAY không được mất");
+    }
+    for (const int key : std::vector<int>{27, 'X', 'S', ' '}) {
+        Options o;
+        FakeClock clock;
+        std::vector<std::string> events;
+        MotorStub motor(events); ServoStub servo(events);
+        Control c(o, motor, servo, clock);
+        c.key('w');
+        clock.time = o.holdTimeout;
+        c.key(key);
+        check(c.speed == 0 && c.state == State::DUNG, "Phím an toàn tại hạn deadman không dừng");
+        check(c.stops[c.stopCount-1].reason == (key == 27 ? "key_esc" : key == 'X' ? "key_x" :
+                                              key == 'S' ? "key_s" : "key_space"),
+              "Deadman nuốt phím dừng/thoát cùng lượt");
+        check(c.exiting == (key == 27) && c.emergencyStops == (key == 'X' ? 1u : 0u),
+              "Thiếu thoát/bộ đếm dừng khẩn tại hạn deadman");
+    }
+}
+void batchKeyTests() {
+    keyTrace.clear();
+    for (const int key : std::string("wAdC"))
+        check(acceptBatchKey(key, false), "Lô chưa gặp phím dừng phải giữ vết để kiểm D98/D99/D101");
+    check(keyTrace == std::vector<std::string>({"w", "A", "d", "C"}), "Mất vết phân loại lô dồn");
+    for (const int stop : std::vector<int>{'s', 'S', ' ', 'x', 'X'}) {
+        Options o;
+        FakeClock clock;
+        std::vector<std::string> events;
+        MotorStub motor(events); ServoStub servo(events);
+        Control c(o, motor, servo, clock);
+        c.key('w'); c.key('a');
+        check(acceptBatchKey(stop, false), "Phím dừng đầu lô phải được nhận");
+        c.key(stop);
+        check(c.discardPending && c.speed == 0, "Phím dừng chưa yêu cầu bỏ đuôi lô");
+        events.clear(); keyTrace.clear();
+        for (const int key : std::string("wWaAdDcC")) {
+            if (acceptBatchKey(key, true)) c.key(key);
+        }
+        check(keyTrace.empty(), "Đuôi chuyển động sau dừng vẫn phát sự kiện key");
+        check(events.empty(), "Đuôi chuyển động sau dừng vẫn ghi motor/servo");
+        for (const int key : std::vector<int>{'s', 'S', ' ', 'x', 'X', 27, 3}) {
+            check(acceptBatchKey(key, true), "Quét đuôi lô làm mất phím an toàn");
+            if (key != 3) c.key(key); // Ctrl+C được main xử lý bằng đường thoát riêng.
+        }
+        check(keyTrace == std::vector<std::string>({"s", "S", " ", "x", "X", "ESC", std::string(1, char(3))}),
+              "Vết phím an toàn sau dừng bị thiếu hoặc lẫn phím chuyển động");
+        check(c.exiting && c.emergencyStops >= 2 && c.angle == 0,
+              "Phím an toàn sau dừng chưa thoát/dừng khẩn/trả lái");
+    }
+    keyTrace.clear();
+    check(acceptBatchKey('W', false) && keyTrace == std::vector<std::string>{"W"},
+          "Lô mới sau dừng vẫn bị bỏ ngầm");
+}
 void commandCompletionTests() {
     Options o;
     FakeClock clock;
@@ -274,6 +384,6 @@ void commandCompletionTests() {
 
 }
 int main() {
-    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
+    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
