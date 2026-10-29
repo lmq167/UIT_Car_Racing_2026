@@ -18,6 +18,7 @@ namespace fs = std::filesystem;
 #endif
 #include <iomanip>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -183,12 +184,42 @@ class Control {
     IClock& clock_;
     bool confirming_ = false;
     int64_t confirmAt_ = 0, lastW_ = 0, motor0Done_ = 0;
+    float completedSpeed_ = 0;
+    int completedAngle_ = 0;
+    static int64_t commandNs() {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
+    void publishCommand(int64_t ns) {
+        const auto appliedState = latched_error ? State::KHOA :
+            (completedSpeed_ > 0 ? State::CHAY : (state == State::CHAY ? State::SAN_SANG : state));
+        if (onCommand) onCommand(ns, completedSpeed_, completedAngle_, appliedState);
+    }
+    bool writeSpeed(float v) {
+        std::lock_guard<std::mutex> guard(commandMutex);
+        motor_.SetSpeedCms(v);
+        const auto ns = commandNs();
+        if (v == 0) motor0Done_ = clock_.nowMs();
+        if (!motor_.ok()) return false;
+        completedSpeed_ = v;
+        publishCommand(ns);
+        return true;
+    }
+    void emergencyStop() {
+        std::lock_guard<std::mutex> guard(commandMutex);
+        const bool ok = motor_.EmergencyStop();
+        const auto ns = commandNs();
+        if (ok) { completedSpeed_ = 0; publishCommand(ns); }
+    }
     void transition(State next) {
+        std::lock_guard<std::mutex> guard(commandMutex);
         if (state == next) return;
         state = next;
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
         hookEvent("state", stateName(state));
 #endif
+        // CHAY chỉ có hiệu lực khi lệnh tiến đã hoàn tất.
+        if (next != State::CHAY) publishCommand(commandNs());
     }
 public:
     State state = State::KHOA;
@@ -199,6 +230,9 @@ public:
     bool latched_error = false, discardPending = false;
     std::array<StopRecord, 100> stops;
     size_t stopCount = 0;
+    // Camera chờ công bố lệnh đang ghi rồi tra lịch sử theo mốc chụp trước đó.
+    std::mutex commandMutex;
+    std::function<void(int64_t, float, int, State)> onCommand;
     std::function<void(const StopRecord&)> onStop;
     Control(const Options& o, IMotor& m, IServo& s, IClock& c) : o_(o), motor_(m), servo_(s), clock_(c) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
@@ -208,16 +242,15 @@ public:
     void setSpeed(float v) {
         if (v > 0 && (state != State::CHAY || latched_error)) return;
         const auto trigger = clock_.nowMs();
-        motor_.SetSpeedCms(v);
-        if (v == 0) motor0Done_ = clock_.nowMs();
+        const bool written = writeSpeed(v);
         speed = v;
-        if (!motor_.ok()) {
+        if (!written) {
             latched_error = true;
             speed = 0;
-            if (v != 0) { motor_.SetSpeedCms(0); motor0Done_ = clock_.nowMs(); }
+            if (v != 0) writeSpeed(0);
             for (int i = 0; i < 3; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                motor_.EmergencyStop();
+                emergencyStop();
             }
             if (!stopCount || stops[(stopCount - 1) % stops.size()].reason != "motor_fail")
                 recordStop("motor_fail", trigger, motor0Done_);
@@ -226,7 +259,14 @@ public:
         maxSpeed = std::max(maxSpeed, v);
     }
     void setAngle(int v) {
-        if (!servo_.SetAngle(v)) {
+        bool written;
+        {
+            std::lock_guard<std::mutex> guard(commandMutex);
+            written = servo_.SetAngle(v);
+            const auto ns = commandNs();
+            if (written) { completedAngle_ = v; publishCommand(ns); }
+        }
+        if (!written) {
             latched_error = true;
             const auto trigger = clock_.nowMs();
             setSpeed(0);
@@ -234,7 +274,7 @@ public:
                 recordStop("servo_fail", trigger, motor0Done_);
             for (int i = 0; i < 3; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                motor_.EmergencyStop();
+                emergencyStop();
             }
             throw ServoError();
         }
@@ -275,7 +315,7 @@ public:
             stop("deadman", deadmanAt());
         }
     }
-    void key(int k, bool cameraReady = true) {
+    void key(int k, bool cameraReady = true, int64_t readAt = -1) {
         const auto stopsBeforeTick = stopCount;
         tick();
         if (stopCount != stopsBeforeTick) return;
@@ -295,7 +335,11 @@ public:
             return;
         }
         if (k == 'w' && cameraReady) {
-            transition(State::CHAY); setSpeed(static_cast<float>(o_.speed)); lastW_ = clock_.nowMs();
+            const auto received = readAt >= 0 ? readAt : clock_.nowMs();
+            if (clock_.nowMs() - received >= static_cast<int64_t>(o_.holdTimeout)) return;
+            // Cả lô phím dùng chung mốc đọc; W tồn không được gia hạn theo lúc xử lý.
+            if (state == State::CHAY && lastW_ == received) return;
+            transition(State::CHAY); setSpeed(static_cast<float>(o_.speed)); lastW_ = received;
         } else if (k == 'a') setAngle(static_cast<int>(std::min<int64_t>(o_.maxSteer, static_cast<int64_t>(angle) + o_.steerStep)));
         else if (k == 'd') setAngle(static_cast<int>(std::max<int64_t>(-o_.maxSteer, static_cast<int64_t>(angle) - o_.steerStep)));
         else if (k == 'c') setAngle(0);

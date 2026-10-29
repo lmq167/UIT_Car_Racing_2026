@@ -39,8 +39,12 @@ struct MotorStub : IMotor {
 struct ServoStub : IServo {
     std::vector<std::string>& events;
     bool failing = false;
+    std::function<void(int)> beforeWrite;
     explicit ServoStub(std::vector<std::string>& e) : events(e) {}
-    bool SetAngle(int v) override { events.push_back("servo:" + std::to_string(v)); return !failing; }
+    bool SetAngle(int v) override {
+        if (beforeWrite) beforeWrite(v);
+        events.push_back("servo:" + std::to_string(v)); return !failing;
+    }
 };
 void parserTests() {
     auto o = parseArgs({"--accept-no-obstacle-brake"});
@@ -189,8 +193,55 @@ void revisedSafetyTests() {
     check(events.size() == 2 && events[0] == "motor:0.000000" && events[1] == "servo:0",
           "Nhật ký không được đảo thứ tự motor 0 trước servo 0");
 }
+void commandCompletionTests() {
+    Options o;
+    FakeClock clock;
+    std::vector<std::string> events;
+    MotorStub motor(events); ServoStub servo(events);
+    Control c(o, motor, servo, clock);
+    struct Applied { int64_t ns; float speed; int angle; State state; };
+    std::vector<Applied> applied;
+    c.onCommand = [&](int64_t ns, float speed, int angle, State state) {
+        applied.push_back({ns, speed, angle, state});
+    };
+    c.key('r'); c.key('y');
+    check(applied.size() == 1 && applied.back().state == State::SAN_SANG,
+          "Mở khóa phải công bố trạng thái khi motor vẫn dừng");
+    c.key('w'); c.key('a');
+    check(applied.back().speed == 5 && applied.back().angle == 5 && applied.back().state == State::CHAY,
+          "Phải công bố từng lệnh tiến/lái đã hoàn tất");
+    servo.beforeWrite = [&](int angle) {
+        check(angle == 0 && applied.back().speed == 0 && applied.back().angle == 5 &&
+              applied.back().state != State::CHAY,
+              "Motor 0 phải có nhãn mới trước khi bắt đầu trả servo");
+    };
+    c.key(27);
+    check(applied.back().speed == 0 && applied.back().angle == 0 && applied.back().state == State::KHOA,
+          "Esc phải công bố dừng/khóa/trả lái trước khi key trả về");
+    servo.beforeWrite = {};
+    const auto beforeHalt = applied.size();
+    c.halt();
+    check(applied.size() == beforeHalt + 2, "Dừng cuối phải công bố cả motor 0 và servo 0");
+    c.key('r'); c.key('y'); clock.time = 1; c.key('w');
+    clock.time = 801; c.tick();
+    check(applied.back().speed == 0 && applied.back().state == State::SAN_SANG,
+          "Deadman phải đổi nhãn ngay, không cần phím tiếp theo");
+    clock.time = 802; c.key('w'); servo.failing = true;
+    const auto beforeFailure = applied.size();
+    bool failed = false;
+    try { c.key('a'); } catch (const ServoError&) { failed = true; }
+    check(failed && applied.size() > beforeFailure && applied.back().speed == 0 &&
+          applied.back().angle == 0 && applied.back().state == State::KHOA,
+          "Lỗi servo phải công bố dừng dự phòng, giữ góc đã ghi thành công gần nhất");
+    for (size_t i = 1; i < applied.size(); ++i)
+        check(applied[i].ns >= applied[i - 1].ns, "Lịch sử lệnh phải tăng theo đồng hồ đơn điệu");
+    motor.failing = true;
+    const auto beforeMotorFailure = applied.size();
+    try { c.setSpeed(0); } catch (const MotorError&) {}
+    check(applied.size() == beforeMotorFailure, "Không công bố lệnh motor ghi thất bại như thành công");
+}
 }
 int main() {
-    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
+    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

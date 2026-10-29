@@ -38,7 +38,7 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {42, 52, 54, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 85)]
+CASES += ['D{:02d}'.format(n) for n in range(65, 94)]
 CASES += ['M01', 'M02', 'M03', 'M04', 'M05']
 
 
@@ -209,7 +209,7 @@ def read_jpeg(path):
 
 class Run:
     def __init__(self, cfg, root, args=(), env=None, pipe=False, lock=None,
-                 accepted=True, command=None, out_root=None):
+                 accepted=True, command=None, out_root=None, stderr=None):
         self.cfg, self.root = cfg, root
         root.mkdir(parents=True, exist_ok=True)
         self.out = Path(out_root) if out_root is not None else root / 'out'
@@ -251,7 +251,7 @@ class Run:
         try:
             self.process = subprocess.Popen(command or argv, cwd=str(root), env=child_env,
                                             stdin=subprocess.PIPE if pipe else self.slave,
-                                            stdout=self.log, stderr=self.log,
+                                            stdout=self.log, stderr=self.log if stderr is None else stderr,
                                             preexec_fn=child_setup)
         except BaseException:
             os.close(self.master)
@@ -516,6 +516,10 @@ def test_case(case, cfg, root):
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n in (92, 93):
+        return init_write_failure(n, cfg, root)
+    if n >= 85:
+        return fix4_case(n, cfg, root)
     if n >= 80:
         return init_case(n, cfg, root)
     if n >= 65:
@@ -767,7 +771,8 @@ def test_case(case, cfg, root):
                 run.observe(0.3, lambda: limits(run.events(), moving=False))
             run.finish('camera_no_frame')
             limits(run.events(), moving=False)
-            need(monotonic_ms() - camera_start <= 5500 + cfg.slack, 'Khung đầu chờ quá hạn 5 s sau Init')
+            need(monotonic_ms() - camera_start <= 5500 + cfg.slack + cfg.tsan_slack,
+                 'Khung đầu chờ quá hạn 5 s sau Init')
             return
         if n == 33:
             # §12.4: ghi lệnh 0 ngay sau Init hỏng là lỗi khởi tạo, không còn mã 5.
@@ -956,7 +961,7 @@ def test_case(case, cfg, root):
 
 
 def init_case(n, cfg, root):
-    """§12–§13: cận thời gian Init riêng, không nới thêm theo sanitizer."""
+    """§12–§13: giữ cận Init; chỉ chờ thoát sau tín hiệu có dung sai TSan."""
     if n == 84:
         return wrapper_preflight(cfg, root)
     if n == 80:
@@ -981,17 +986,19 @@ def init_case(n, cfg, root):
                 need(stamp - event[0] < 1000, 'Không còn đủ cửa sổ gửi tín hiệu trong Init', 'setup')
                 run.process.send_signal(sig)
                 run.send('RYW')
-                deadline = event[0] + 1500 + 300
+                deadline = event[0] + 1500 + 300 + cfg.tsan_slack
                 run.wait(lambda: run.process.poll() is not None,
                          max(0.01, (deadline - monotonic_ms()) / 1000),
                          'Tín hiệu trong Init thoát quá hạn', alive=False)
-                need(monotonic_ms() <= deadline, 'Quá Init còn lại +300 ms')
+                need(monotonic_ms() <= deadline, 'Quá Init còn lại +300 ms + dung sai TSan')
                 need(run.process.returncode == REASONS[reason], 'Sai mã tín hiệu trong Init: ' + run.text())
                 events = run.events()
                 init_sequence(events, required=True, complete=True)
                 first_zero = matched(events, 'motor_speed', 0)[0][1]
                 need(first_zero[0] >= event[0] + 1495,
                      'Tín hiệu đã bỏ dở Init trước 1500 ms (dung sai mốc vết 5 ms)')
+                need(matched(events, 'servo_angle', 0)[0][1][0] <= event[0] + 1500 + 300,
+                     'Cặp dừng sau Init quá hạn; không áp dung sai TSan')
                 need(not matched(events, 'key'), 'Đã xử lý phím dù có tín hiệu trong Init')
                 limits(events, moving=False)
                 final_stop(events)
@@ -1011,6 +1018,273 @@ def init_case(n, cfg, root):
         init_sequence(events, required=True)
         limits(events, moving=False)
         need(not matched(events, 'key'), 'Xử lý phím khi Init hỏng/treo')
+
+
+def burst_deadman(events, hold, slack):
+    """fix4 H2: đo từ W ĐẦU của lượt gửi duy nhất, tránh hàng tồn tự gia hạn."""
+    keys = matched(events, 'key', 'W')
+    need(keys and matched(events, 'motor_speed', 5), 'Lượt W chưa làm xe chạy', 'setup')
+    tail = events[keys[0][0]:]
+    stops = matched(tail, 'motor_speed', 0)
+    need(stops and stops[0][1][0] <= keys[0][1][0] + hold + 200 + slack,
+         'Hàng W tồn kéo dài deadman quá hold+200 ms từ lượt đọc đầu', 'burst_deadman')
+    no_restart(tail)
+
+
+@contextmanager
+def stderr_pipe():
+    """Giữ bên đọc mở nhưng không đọc: write bị chặn thay vì nhận EPIPE."""
+    reader, writer = os.pipe()
+    try:
+        yield reader, writer
+    finally:
+        os.close(reader)
+        os.close(writer)
+
+
+def fill_pipe(writer):
+    flags = fcntl.fcntl(writer, fcntl.F_GETFL)
+    fcntl.fcntl(writer, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        for size in (4096, 1):
+            while True:
+                try:
+                    os.write(writer, b'!' * size)
+                except BlockingIOError:
+                    break
+    finally:
+        fcntl.fcntl(writer, fcntl.F_SETFL, flags)
+
+
+def drain_pipe(reader):
+    # Chỉ tháo nghẽn SAU khi con đã thoát; trình bao còn cần in cảnh báo.
+    flags = fcntl.fcntl(reader, fcntl.F_GETFL)
+    fcntl.fcntl(reader, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    try:
+        while True:
+            try:
+                if not os.read(reader, 65536):
+                    break
+            except BlockingIOError:
+                break
+    finally:
+        fcntl.fcntl(reader, fcntl.F_SETFL, flags)
+
+
+def init_write_failure(n, cfg, root):
+    """N3/§12.4–6: lỗi ghi đầu/giữa Init không bị lệnh thành công sau đó che mất."""
+    env = {'UCR_DRIVE_FAKE_INIT_WRITE_FAIL': str(n - 91)}
+    with running(cfg, root / 'init_write_failure', env=env) as run:
+        deadline = run.started + 5500
+        run.wait(lambda: run.process.poll() is not None,
+                 max(0.01, (deadline - monotonic_ms()) / 1000),
+                 'Lỗi ghi Init không thoát trong 5,5 s', alive=False)
+        need(monotonic_ms() <= deadline, 'Lỗi ghi Init quá 5,5 s')
+        events = run.finish('motor_init_fail', cleanup=False, summary=False)
+        need('KIEM TRA XE, DUNG CONG TAC NGUON' in run.text(), 'Lỗi ghi Init thiếu cảnh báo')
+        init_sequence(events, required=True)
+        need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in events),
+             'Có lệnh tốc độ dương khi ghi Init thất bại')
+        for path in run.out.glob('*/summary.json'):
+            summary = json.loads(path.read_text(encoding='utf-8'))
+            need(summary.get('exit_reason') == 'motor_init_fail',
+                 'Sai lý do trong summary khi ghi Init thất bại: ' + repr(summary))
+
+
+def fix4_case(n, cfg, root):
+    """T21_test_fix4 H2/N1/N2/N4; N3 cần giao diện tiêm lỗi ghi giữa Init."""
+    if n == 85:
+        for hold in (100, 800):
+            with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
+                run.boot()
+                run.ready()
+                mark = len(run.events())
+                need(os.write(run.master, b'W' * 4000) == 4000, 'PTY chưa nhận trọn một lượt 4.000 W', 'setup')
+                key = run.event('key', 'W', mark)
+                stop_by(run, mark, key[0], hold, 'burst_deadman')
+                run.observe(1.2, lambda: burst_deadman(run.events()[mark:], hold, cfg.slack))
+                run.finish()
+        return
+    if n in (86, 87, 88):
+        return cleanup_deadline(n, cfg, root)
+    if n in (89, 90):
+        return wrapper_lock_order(n, cfg, root)
+    need(n == 91, 'Ca fix4 không biết')
+    # N4/§12.3: tín hiệu thật ở GIỮA Init; đủ cả SIGQUIT được bổ sung ở fix4.
+    for sig, reason in ((signal.SIGINT, 'sigint'), (signal.SIGTERM, 'sigterm'),
+                        (signal.SIGHUP, 'sighup'), (signal.SIGQUIT, 'sigterm'),
+                        (signal.SIGTSTP, 'sigtstp')):
+        with running(cfg, root / str(sig), env={'UCR_DRIVE_FAKE_INIT_MS': '1500'}) as run:
+            init = run.event('motor_init', seconds=10)
+            run.wait(lambda: monotonic_ms() >= init[0] + 650, 2, 'Không tới giữa Init')
+            need(monotonic_ms() < init[0] + 1000, 'Mất cửa sổ giữa Init', 'setup')
+            run.process.send_signal(sig)
+            run.send('RYW')
+            deadline = init[0] + 1500 + 300 + cfg.tsan_slack
+            run.wait(lambda: run.process.poll() is not None,
+                     max(0.01, (deadline - monotonic_ms()) / 1000),
+                     'Tín hiệu giữa Init thoát quá Init còn lại +300 ms + dung sai TSan', alive=False)
+            need(monotonic_ms() <= deadline, 'Quá hạn tín hiệu giữa Init')
+            need(run.process.returncode == REASONS[reason], 'Sai mã tín hiệu: ' + run.text())
+            events = run.events()
+            init_sequence(events, required=True, complete=True)
+            need(matched(events, 'motor_speed', 0)[0][1][0] >= init[0] + 1495,
+                 'Tín hiệu cắt ngắn INIT_MS (dung sai vết 5 ms)', 'init_interrupted')
+            need(matched(events, 'servo_angle', 0)[0][1][0] <= init[0] + 1500 + 300,
+                 'Cặp dừng sau Init quá hạn; không áp dung sai TSan')
+            need(not matched(events, 'key'), 'Xử lý phím dù đang chờ tín hiệu trong Init')
+            limits(events, moving=False)
+            final_stop(events)
+
+
+def check_tsan_logs(folder):
+    for path in folder.glob('tsan.*'):
+        need(b'WARNING: ThreadSanitizer' not in path.read_bytes(),
+             'TSan báo lỗi luồng trong ' + str(path), 'tsan_warning')
+
+
+def cleanup_deadline(n, cfg, root):
+    """N1: hạn 3 s sau cặp dừng; +300 ms lịch, +300 ms sanitizer, dung sai TSan theo ca."""
+    modes = ('stderr', 'json') if n == 88 else (('stderr',) if n == 86 else ('json',))
+    reasons = ('disk_low',) if n == 88 else ('disk_low', 'motor_fail', 'sigterm')
+    for mode in modes:
+        for reason in reasons:
+            folder = root / (mode + reason)
+            folder.mkdir(parents=True)
+            env, command, child_mark, journal = {}, None, folder / 'child', folder / 'journal'
+            if mode == 'stderr' and cfg.tsan_slack:
+                # TSan ghi ra tệp riêng để không bị chặn bởi pipe stderr cố ý làm đầy.
+                env['TSAN_OPTIONS'] = ':'.join(filter(None, (
+                    os.environ.get('TSAN_OPTIONS', ''), 'log_path="{}"'.format(folder / 'tsan'))))
+            if n == 88:
+                build = folder / 'build with spaces'
+                build.mkdir()
+                fake = folder / 'fake.py'
+                fake.write_text(
+                    'import json, os, sys\nfrom pathlib import Path\n'
+                    'kind = sys.argv[1]\n'
+                    'with open(os.environ["JOURNAL"], "a") as f:\n'
+                    ' f.write(json.dumps([kind]) + "\\n")\n'
+                    'if kind == "child":\n'
+                    ' Path(os.environ["CHILD_MARK"]).write_text(str(os.getpid()))\n'
+                    ' os.execv(os.environ["HOOKS"], [os.environ["HOOKS"]] + sys.argv[2:])\n',
+                    encoding='utf-8')
+                prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
+                executable(build / 'ucr_stop', prefix + 'stop "$@"\n')
+                executable(build / 'ucr_drive_collect', prefix + 'child "$@"\n')
+                env.update(UCR_BUILD_DIR=str(build), JOURNAL=str(journal), CHILD_MARK=str(child_mark), HOOKS=cfg.hooks)
+                command = [cfg.bash, isolated_wrapper(cfg, folder), '--accept-no-obstacle-brake',
+                           '--out-root', str(folder / 'run' / 'out'), '--interval-ms', '100']
+            with stderr_pipe() as (reader, writer):
+                with running(cfg, folder / 'run', env=env, command=command,
+                             args=['--interval-ms', '100'], stderr=writer if mode == 'stderr' else None) as run:
+                    moving(run)
+                    if mode == 'stderr':
+                        fill_pipe(writer)
+                    else:
+                        summary = run.session_dir() / 'summary.json'
+                        need(not summary.exists(), 'Summary đã tồn tại trước khi thoát', 'setup')
+                        os.mkfifo(str(summary))  # Không có bên đọc, open(ghi) phải đợi.
+                    run.pump = False
+                    mark = len(run.events())
+                    stamp = monotonic_ms()
+                    if reason == 'sigterm':
+                        run.process.send_signal(signal.SIGTERM)
+                    else:
+                        run.inject('free_mb 1' if reason == 'disk_low' else 'motor_fail')
+                        if reason == 'motor_fail':
+                            run.send('S')
+                    stop_by(run, mark, stamp)
+                    run.event('servo_angle', 0, mark)
+                    stopped = matched(run.events()[mark:], 'servo_angle', 0)[0][1][0]
+                    deadline = stopped + 3000 + 300 + cfg.slack + cfg.tsan_slack
+                    pid = int(child_mark.read_text()) if n == 88 else run.process.pid
+                    exited = (lambda: not Path('/proc/{}/stat'.format(pid)).exists()) if n == 88 else (
+                        lambda: run.process.poll() is not None)
+                    run.wait(exited, max(0.01, (deadline - monotonic_ms()) / 1000),
+                             'Cleanup nghẽn không thoát trong 3 s + dung sai', alive=False)
+                    need(monotonic_ms() <= deadline, 'Cleanup quá hạn 3 s + dung sai')
+                    if n == 88:
+                        run.wait(lambda: wrapper_records(journal) == [['stop'], ['child'], ['stop']],
+                                 5, 'Không gọi stop sau con khi stderr/JSON còn nghẽn', alive=False)
+                        if mode == 'stderr':
+                            drain_pipe(reader)
+                        run.wait(lambda: run.process.poll() is not None, 5,
+                                 'Trình bao không thoát sau con', alive=False)
+                        need(wrapper_records(journal) == [['stop'], ['child'], ['stop']],
+                             'Cleanup nghẽn đã bỏ stop sau con hoặc sai thứ tự')
+                    if mode == 'stderr' and cfg.tsan_slack:
+                        check_tsan_logs(folder)
+                    need(run.process.returncode == REASONS[reason], 'Cleanup đổi mã đang thoát: ' + run.text())
+                    events = run.events()
+                    init_sequence(events, required=True, complete=True)
+                    final_stop(events)
+                    no_restart(events[mark:])
+                    if reason == 'motor_fail':
+                        need(len(matched(events[mark:], 'motor_speed', 0) +
+                                 matched(events[mark:], 'motor_emergency')) >= 4, 'Thiếu 4 lần dừng lỗi')
+
+
+def wrapper_lock_order(n, cfg, root):
+    """N2: hàng rào bằng tệp, khóa thử thật, stub (chương trình giả) ghi thứ tự."""
+    for code in ((0,) if n == 89 else (0, 7)):
+        folder = root / str(code)
+        folder.mkdir(parents=True)
+        build = folder / 'build'
+        build.mkdir()
+        lock, journal = folder / 'vehicle.lock', folder / 'journal'
+        fake = folder / 'fake.py'
+        fake.write_text(
+            'import json, os, sys, time\nfrom pathlib import Path\n'
+            'root = Path(os.environ["GATES"])\n'
+            'kind = sys.argv[1]\n'
+            'stage = "child" if kind == "child" else ("post" if (root / "child_seen").exists() else "pre")\n'
+            'def record(value):\n'
+            ' with open(os.environ["JOURNAL"], "a") as f: f.write(json.dumps([value]) + "\\n")\n'
+            'record(stage + "_enter")\n'
+            'if stage == "child": (root / "child_seen").touch()\n'
+            'end = time.monotonic() + 8\n'
+            'while not (root / (stage + "_release")).exists():\n'
+            ' if time.monotonic() >= end: sys.exit(99)\n'
+            ' time.sleep(.005)\n'
+            'record(stage + "_exit")\n'
+            'sys.exit(int(os.environ["CHILD_CODE"]) if stage == "child" else 0)\n', encoding='utf-8')
+        prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
+        executable(build / 'ucr_drive_collect', prefix + 'child\n')
+        executable(build / 'ucr_stop', prefix + 'stop\n')
+        env = dict(UCR_BUILD_DIR=str(build), UCR_DRIVE_FAKE_LOCK=str(lock),
+                   JOURNAL=str(journal), GATES=str(folder), CHILD_CODE=str(code))
+        with running(cfg, folder / 'run', env=env,
+                     command=[cfg.bash, isolated_wrapper(cfg, folder)]) as run:
+            run.wait(lambda: ['pre_enter'] in wrapper_records(journal), 5, 'Không tới stop trước')
+            with lock.open('a') as probe:
+                def locked():
+                    try:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        return
+                    fcntl.flock(probe, fcntl.LOCK_UN)
+                    need(False, 'Trình bao nhả khóa trong khi ucr_stop còn chạy', 'wrapper_lock')
+                run.observe(0.2, locked)
+            need(wrapper_records(journal) == [['pre_enter']], 'Chạy con trước khi stop trước xong')
+            (folder / 'pre_release').touch()
+            run.wait(lambda: ['child_enter'] in wrapper_records(journal), 5, 'Không chạy con sau stop trước')
+            with lock.open('a') as owner:
+                # Lấy được khóa cũng chứng minh đã nhả khóa trước khi chạy con.
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if n == 89:
+                    fcntl.flock(owner, fcntl.LOCK_UN)
+                    (folder / 'post_release').touch()
+                (folder / 'child_release').touch()
+                run.wait(lambda: run.process.poll() is not None, 5, 'Cleanup không tranh khóa không chờ', alive=False)
+                expected = [['pre_enter'], ['pre_exit'], ['child_enter'], ['child_exit']]
+                if n == 89:
+                    expected += [['post_enter'], ['post_exit']]
+                need(wrapper_records(journal) == expected, 'Sai thứ tự hoặc vẫn stop khi khóa cleanup bận')
+                need(run.process.returncode == (0 if n == 89 else (6 if code == 0 else code)),
+                     'Sai mã khi cleanup bận: ' + run.text())
+                if n == 90:
+                    need(run.text().strip(), 'Cleanup bận không có lời nhắc')
 
 
 def motor_failed(events, text):
@@ -1564,11 +1838,11 @@ def wrapper_guards(n, cfg, root):
 
 
 def patch_mutant(case, folder):
-    """Chỉ đọc/vá BẢN SAO header; không mở *.cpp để chọn kỳ vọng kiểm thử."""
-    path = folder / 'options.h'
+    """Chỉ đọc/vá BẢN SAO để đặt neo; kỳ vọng lấy từ yêu cầu của phiếu."""
+    path = folder / ('main.cpp' if case == 'M05' else 'options.h')
     source = path.read_text(encoding='utf-8')
     if case == 'M01':
-        pattern, replacement = r'if\s*\(state == State::CHAY &&', 'if (false && state == State::CHAY &&'
+        pattern, replacement = r'\bstop\("deadman",\s*deadmanAt\(\)\);', '(void)deadmanAt();'
     elif case == 'M02':
         pattern, replacement = r'\|\|\s*o\.speed\s*>\s*5\b', ''
     elif case == 'M03':
@@ -1582,11 +1856,9 @@ def patch_mutant(case, folder):
         pattern = r'if\s*\(state == State::KHOA\)\s*\{'
         replacement = "if (state == State::KHOA && k == 'w') state = State::SAN_SANG;\n        if (state == State::KHOA) {"
     elif case == 'M05':
-        # §12: bỏ lần ghi motor 0 đầu tiên; chỉ vá header sao chép, không đọc .cpp.
-        pattern = r'\bmotor_\.SetSpeedCms\(v\);'
-        replacement = ('static bool skippedInitialZero = false;\n'
-                       '        if (v != 0 || skippedInitialZero) motor_.SetSpeedCms(v);\n'
-                       '        else skippedInitialZero = true;')
+        # §12: gọi Init hai lần trên bản sao, giữ đường khởi động thành công.
+        pattern = r'if\s*\(!motor\.init\(\)\)'
+        replacement = 'if (!(motor.init() && motor.init()))'
     else:
         raise SafetyFailure('mutation_setup', 'Mã mutation không biết: ' + case)
     patched, count = re.subn(pattern, replacement, source, flags=re.DOTALL if case == 'M03' else 0)
@@ -1596,7 +1868,7 @@ def patch_mutant(case, folder):
 
 def mutation(case, cfg, root):
     original = dict(M01='D18', M02='D07', M03='D13', M04='D01', M05='D80')[case]
-    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='default_lock', M05='init_order')[case]
+    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='default_lock', M05='init_once')[case]
     # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
     test_case(original, cfg, root / 'baseline')
     folder = root / 'source'
@@ -1606,10 +1878,11 @@ def mutation(case, cfg, root):
     build = root / 'mutant-build'
     build.mkdir()
     # CMake độc lập chỉ biên dịch bản hooks, không tạo/chạy phần cứng thật.
+    # main.cpp chưa dùng ký hiệu preview; thêm lại preview.cpp khi nối phần xem ảnh.
     (build / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.10)\nproject(Mutant LANGUAGES CXX)\n'
         'set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n'
-        'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio)\n'
+        'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc)\n'
         'find_package(Threads REQUIRED)\n'
         'add_executable(mutant "${SOURCE}/main.cpp")\n'
         'target_compile_definitions(mutant PRIVATE UCR_DRIVE_TEST_HOOKS=1)\n'
@@ -1620,6 +1893,7 @@ def mutation(case, cfg, root):
     # Tổng hạn build 65 s + baseline/probe nằm dưới TIMEOUT=120.
     started = time.monotonic()
     for argv in ([cfg.cmake, '-DSOURCE=' + str(folder), '-DCMAKE_BUILD_TYPE=Release',
+                  '-DCMAKE_CXX_FLAGS=-O0 -g0', '-DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG',
                   '-DCMAKE_CXX_COMPILER=' + cfg.cxx, '.'],
                  [cfg.cmake, '--build', '.', '--', '-j1']):
         remaining = 65 - (time.monotonic() - started)
@@ -1640,6 +1914,7 @@ def mutation(case, cfg, root):
     mutant = argparse.Namespace(**vars(cfg))
     mutant.hooks = str(build / 'mutant')
     mutant.slack = 0  # Bản sao vừa biên dịch Release, không áp dung sai sanitizer.
+    mutant.tsan_slack = 0
     if case == 'M02':
         with running(mutant, root / 'precondition', args=['--speed-cms', '20']) as run:
             run.boot()
@@ -1659,6 +1934,16 @@ def self_check():
     """Kiểm bộ phân tích và cổng mutation; chạy được trên Windows, không giả runtime."""
     with tempfile.TemporaryDirectory(prefix='drive_self_') as directory:
         root = Path(directory)
+        check_tsan_logs(root)  # TSan không tạo tệp nếu không có báo cáo.
+        (root / 'tsan.1').write_text('ThreadSanitizer: không có cảnh báo\n', encoding='utf-8')
+        check_tsan_logs(root)
+        (root / 'tsan.2').write_bytes(b'\xffWARNING: ThreadSanitizer: data race\n')
+        try:
+            check_tsan_logs(root)
+        except SafetyFailure as error:
+            need(error.tag == 'tsan_warning' and 'tsan.2' in str(error), 'Sai lỗi nhật ký TSan')
+        else:
+            raise AssertionError('Bộ kiểm bỏ lọt cảnh báo TSan trong tệp')
         trace = root / 'trace'
         trace.write_text('10 state KHOA\n10 motor_init\n11 key  \n12 motor_speed 0 fail\n'
                          '13 motor_emergency fail\n14 servo_angle 0\n15 key', encoding='utf-8')
@@ -1673,6 +1958,21 @@ def self_check():
         init_sequence(valid_init, required=True, complete=True)
         init_sequence([], required=False)
         init_sequence(valid_init[:2], required=True)  # Watchdog không buộc có lệnh dừng.
+        burst = [(10, 'key', 'W', False), (10, 'motor_speed', 5, False),
+                 (12, 'key', 'W', False), (310, 'motor_speed', 0, False)]
+        burst_deadman(burst, 100, 0)
+        for bad in (burst[:-1] + [(311, 'motor_speed', 0, False)],
+                    burst + [(400, 'motor_speed', 5, False)]):
+            try:
+                burst_deadman(bad, 100, 0)
+            except SafetyFailure:
+                pass
+            else:
+                raise AssertionError('Bộ kiểm hàng W bỏ lọt trễ/chạy lại')
+        cmake = Path(__file__).with_name('tests.cmake').read_text(encoding='utf-8')
+        registered = re.findall(r'\b[DM]\d{2}\b', cmake.split('set(_drive_cases', 1)[1].split(')', 1)[0])
+        need(len(registered) == len(set(registered)) and set(registered) == set(CASES),
+             'Danh sách CLI/CMake lệch hoặc trùng ca')
         for bad, tag, checker in (
                 ([(1, 'servo_angle', 0, False), (1, 'motor_speed', 0, False)], 'x_order',
                  lambda es: ordered_stop(es, 'x_order')),
@@ -1697,20 +1997,25 @@ def self_check():
         data = b'\xff\xd8\xff\xc0\x00\x0b\x08\x02\xd0\x05\x00\x01\x01\x11\x00\xff\xd9'
         need(jpeg_info(data)[0] == (1280, 720), 'Đọc cỡ JPEG sai')
         fixtures = {
-            'M01': 'if (state == State::CHAY && now - lastW_ >= timeout) {}',
+            'M01': 'if (state == State::CHAY && lastW_ == received) return;\n'
+                   'if (state == State::CHAY && now >= deadmanAt()) { stop("deadman", deadmanAt()); }',
             'M02': 'if (!finite || o.speed < 0 || o.speed > 5) throw error;',
             'M03': 'void stop(const std::string& reason, int64_t trigger, bool center = false) {\n'
                    ' std::exception_ptr failure;\n try { setSpeed(0); }\n'
                    ' catch (...) { failure = std::current_exception(); }\n}',
             'M04': 'if (state == State::KHOA) { locked(); }',
-            'M05': 'void setSpeed(float v) { motor_.SetSpeedCms(v); }'}
+            'M05': 'if (!motor.init()) throw Failure(3, "motor_init_fail", "Init hỏng");'}
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()
-            (folder / 'options.h').write_text(source, encoding='utf-8')
+            path = folder / ('main.cpp' if case == 'M05' else 'options.h')
+            path.write_text(source, encoding='utf-8')
             patch_mutant(case, folder)
-            need((folder / 'options.h').read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
-    print('ĐẠT self-check: vết/Init, cổng an toàn, JPEG và 5 điểm vá; chưa chạy binary sản phẩm')
+            need(path.read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
+            # Kiểm neo duy nhất trên mã hiện tại, chỉ vá bản sao tạm.
+            path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
+            patch_mutant(case, folder)
+    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký 92 ca, JPEG và 5 neo hiện tại; chưa chạy binary sản phẩm')
 
 
 def main():
@@ -1728,6 +2033,8 @@ def main():
     parser.add_argument('--source', default=str(Path(__file__).resolve().parent))
     parser.add_argument('--wrapper', default=str(Path(__file__).resolve().parents[2] / 'scripts' / 'run_drive.sh'))
     parser.add_argument('--slack', type=int, choices=(0, 300), default=0)
+    # Chỉ chờ thoát/cleanup; không cộng vào stop_by, deadman hoặc cặp dừng sau Init.
+    parser.add_argument('--tsan-slack', type=int, choices=(0, 1000, 2500), default=0)
     parser.add_argument('--nm', default='nm')
     parser.add_argument('--strings', default='strings')
     parser.add_argument('--ldd', default='ldd')
@@ -1745,7 +2052,8 @@ def main():
             setattr(cfg, key, str(Path(getattr(cfg, key)).resolve()))
     need(Path(cfg.hooks).is_file(), 'Thiếu binary hooks')
     need(b'UCR_DRIVE_FAKE_TRACE' in Path(cfg.hooks).read_bytes(), 'Từ chối chạy binary thiếu hook đối chứng')
-    print('{}: dung sai sanitizer +{} ms'.format(cfg.case, cfg.slack))
+    print('{}: dung sai sanitizer +{} ms, khung đầu/cleanup TSan +{} ms'.format(
+        cfg.case, cfg.slack, cfg.tsan_slack))
     with tempfile.TemporaryDirectory(prefix='ucr_drive_' + cfg.case + '_') as directory:
         test_case(cfg.case, cfg, Path(directory))
     print(cfg.case + ' ĐẠT')

@@ -25,6 +25,7 @@ public:
      * @return true nếu khởi tạo thành công, false nếu thất bại
      */
     bool Init();
+    bool InitHadWriteFailure() const { return initWriteFailed_; }
     // Chỉ mở cổng và đặt định dạng UART, không gửi lệnh tới driver.
     bool OpenPortOnly();
     // Cổng riêng, ghi không chặn; không đọc/sửa trạng thái UART hay cấu hình driver.
@@ -98,6 +99,7 @@ private:
     int _device;              ///< File descriptor quản lý cổng kết nối sau khi open()
     bool _uartLogging = false;
     bool lastWriteOk_ = false;
+    bool initializing_ = false, initWriteFailed_ = false;
     const float D = 6.5;
     const float Pi = 3.1416;
     const uint16_t PulsePerRound = 330;

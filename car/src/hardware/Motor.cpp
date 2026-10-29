@@ -54,7 +54,10 @@ bool Motor::Init()
     static std::atomic<bool> attempted{false};
     if (attempted.exchange(true)) throw std::runtime_error("Motor::Init da duoc goi");
     if (!OpenPortOnly()) return false;
-    SendInitCommand();
+    initializing_ = true;
+    try { SendInitCommand(); }
+    catch (...) { initializing_ = false; throw; }
+    initializing_ = false;
     return true;
 }
 
@@ -113,17 +116,22 @@ void Motor::SendCommand(const char *cmd, bool IsReadRes)
     lastWriteOk_ = false;
     if (_device < 0)
     {
+        if (initializing_) initWriteFailed_ = true;
         common::Logger::Error("Motor", "uart_write", "device is not open");
         return;
     }
     if (cmd == nullptr)
     {
+        if (initializing_) initWriteFailed_ = true;
         common::Logger::Error("Motor", "uart_write", "null command");
         return;
     }
 
     const size_t length = std::strlen(cmd);
     const ssize_t written = write(_device, cmd, length);
+    // Giữ lỗi của mọi lệnh Init, kể cả khi các lần ghi sau thành công.
+    if (initializing_ && (written < 0 || static_cast<size_t>(written) != length))
+        initWriteFailed_ = true;
     if (_uartLogging && written >= 0)
         LogUart("TX", cmd, static_cast<std::size_t>(written));
     if (written < 0)

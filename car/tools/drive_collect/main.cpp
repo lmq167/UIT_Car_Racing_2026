@@ -18,7 +18,9 @@
 #include <memory>
 #include <mutex>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/statvfs.h>
 #include <termios.h>
 #include <unistd.h>
@@ -42,9 +44,10 @@ std::string utcNow() {
     std::ostringstream out; out << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
     return out.str();
 }
-volatile std::sig_atomic_t stopping = 0;
+static_assert(std::atomic<int>::is_always_lock_free);
+std::atomic<int> stopping{0};
 // Chỉ đặt cờ; mọi ghi thiết bị và tài liệu nằm ngoài trình xử lý tín hiệu.
-void signalStop(int signal) { if (!stopping) stopping = signal; }
+void signalStop(int signal) { if (!stopping.load()) stopping.store(signal); }
 std::string signalReason(int signal) {
     if (signal == SIGINT) return "sigint";
     if (signal == SIGHUP) return "sighup";
@@ -64,6 +67,38 @@ void warning() noexcept {
     const auto ignored = ::write(2, text, sizeof(text) - 1); (void)ignored;
 }
 constexpr int kMotorInitTimeoutMs = 5000;
+constexpr int kCleanupTimeoutMs = 3000;
+std::atomic<int> cleanupExitCode{0};
+void armCleanupWatchdog(int code) noexcept {
+    cleanupExitCode = code;
+    try {
+        const auto deadline = Clock::now() + std::chrono::milliseconds(kCleanupTimeoutMs);
+        std::thread([deadline] {
+            std::this_thread::sleep_until(deadline);
+            const int code = cleanupExitCode.load();
+            _exit(code ? code : 4);
+        }).detach();
+    } catch (...) { _exit(code ? code : 4); }
+}
+// Tạo trước mọi luồng để chúng cũng thừa hưởng mặt nạ chặn tín hiệu lúc Init.
+class InitSignalMask {
+    sigset_t original_{};
+    bool active_ = true;
+public:
+    InitSignalMask() {
+        sigset_t blocked;
+        sigemptyset(&blocked);
+        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) sigaddset(&blocked, s);
+        if (pthread_sigmask(SIG_BLOCK, &blocked, &original_) != 0)
+            throw Failure(3, "motor_init_fail", "Không chặn được tín hiệu lúc Init");
+    }
+    void restore() {
+        if (active_ && pthread_sigmask(SIG_SETMASK, &original_, nullptr) != 0)
+            throw Failure(3, "motor_init_fail", "Không khôi phục được mặt nạ tín hiệu");
+        active_ = false;
+    }
+    ~InitSignalMask() { if (active_) pthread_sigmask(SIG_SETMASK, &original_, nullptr); }
+};
 // Init sở hữu UART tới khi trả về; hết hạn chỉ thoát, không ghi đè từ luồng khác.
 class MotorInitWatchdog {
     std::mutex mutex_;
@@ -173,7 +208,9 @@ public:
         raw.c_lflag &= ~(ICANON | ECHO);
         raw.c_lflag |= ISIG;
         raw.c_cc[VMIN] = 0; raw.c_cc[VTIME] = 0;
-        if (tcsetattr(0, TCSANOW, &raw) != 0) throw Failure(2, "not_tty", "Không đặt được terminal không-echo");
+        if (tcsetattr(0, TCSANOW, &raw) != 0) {
+            throw Failure(2, "not_tty", "Không đặt được terminal không-echo");
+        }
     }
     ~Terminal() { tcsetattr(0, TCSANOW, &original_); }
     void discard() { tcflush(0, TCIFLUSH); decoder_ = KeyDecoder(); }
@@ -184,11 +221,25 @@ public:
         if (ready < 0 || (p.revents & (POLLERR | POLLHUP | POLLNVAL)))
             throw Failure(4, "stdin_eof", "Terminal đã đóng hoặc lỗi stdin");
         if (ready > 0 && (p.revents & POLLIN)) {
-            unsigned char bytes[64];
-            const auto n = ::read(0, bytes, sizeof(bytes));
-            if (n < 0 && errno == EINTR) return {};
-            if (n <= 0) throw Failure(4, "stdin_eof", "Hết dữ liệu stdin");
-            return decoder_.decode(bytes, static_cast<size_t>(n), now);
+            std::array<unsigned char, 64 * 1024> bytes;
+            int available = 0;
+            if (ioctl(0, FIONREAD, &available) < 0 || available < 0)
+                throw Failure(4, "stdin_eof", "Không đọc được số byte stdin đang chờ");
+            // Chốt lượng byte của lượt này; VMIN/VTIME=0 giữ read không chờ byte mới.
+            const size_t limit = std::min(bytes.size(), static_cast<size_t>(std::max(available, 1)));
+            size_t total = 0;
+            while (total < limit) {
+                const auto n = ::read(0, bytes.data() + total, limit - total);
+                if (n > 0) { total += static_cast<size_t>(n); continue; }
+                if (n < 0 && errno == EINTR) continue;
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+                throw Failure(4, "stdin_eof", "Hết dữ liệu hoặc lỗi stdin");
+            }
+            if (total == bytes.size()) {
+                discard();
+                throw Failure(4, "stdin_eof", "Hàng phím đạt trần 64 KiB; dừng an toàn");
+            }
+            return decoder_.decode(bytes.data(), total, now);
         }
         return decoder_.decode(nullptr, 0, now);
     }
@@ -208,11 +259,21 @@ struct HardwareCall {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
 struct DriveMotor : IMotor {
     bool good = true;
+    std::function<void(int64_t)> onEmergencyStop;
     bool init() {
         hookEvent("motor_init", "");
         const char* delay = std::getenv("UCR_DRIVE_FAKE_INIT_MS");
         std::this_thread::sleep_for(std::chrono::milliseconds(delay ? number(delay, "Init giả") : 500));
         bool failed = fakeOpenFail("motor") || fakeOpenFail("motor_init");
+        uint64_t failAt = 0;
+        if (const char* v = std::getenv("UCR_DRIVE_FAKE_INIT_WRITE_FAIL"))
+            failAt = number(v, "Lệnh ghi Init giả");
+        // Bảy lần ghi như chuỗi Init; lỗi trước không bị lần ghi sau che mất.
+        bool initWriteFailed = false;
+        for (uint64_t n = 1; n <= 7; ++n) {
+            good = n != failAt;
+            if (!good) initWriteFailed = true;
+        }
         if (const char* path = std::getenv("UCR_DRIVE_FAKE_CTRL")) {
             std::ifstream file(path);
             std::string line;
@@ -220,7 +281,7 @@ struct DriveMotor : IMotor {
                 if (!file.eof() && line == "motor_init") failed = true;
             }
         }
-        return !failed;
+        return !failed && !initWriteFailed;
     }
     void SetSpeedCms(float v) override {
         HardwareCall call;
@@ -232,28 +293,36 @@ struct DriveMotor : IMotor {
     bool EmergencyStop() noexcept override {
         const bool ok = !failMotor();
         hookEvent("motor_emergency", ok ? "" : "fail");
+        if (ok && onEmergencyStop) onEmergencyStop(monotonicNs());
         return ok;
     }
     bool ok() const override { return good; }
 };
 struct DriveServo : IServo {
+    std::function<void(int64_t, int)> onAngle;
     bool open() { return !fakeOpenFail("servo"); }
     bool SetAngle(int v) override {
         HardwareCall call(2);
         hookEvent("servo_angle", std::to_string(v) + (hooks.servoFail ? " fail" : ""));
+        if (!hooks.servoFail && onAngle) onAngle(monotonicNs(), v);
         return !hooks.servoFail;
     }
-    bool emergencyCenter() { hookEvent("servo_angle", hooks.servoFail ? "0 fail" : "0"); return !hooks.servoFail; }
+    bool emergencyCenter() {
+        hookEvent("servo_angle", hooks.servoFail ? "0 fail" : "0");
+        if (!hooks.servoFail && onAngle) onAngle(monotonicNs(), 0);
+        return !hooks.servoFail;
+    }
 };
 #else
 struct DriveMotor : IMotor {
     Motor device;
     int readiness = -1;
     bool good = false;
+    std::function<void(int64_t)> onEmergencyStop;
     bool init() {
         const bool initialized = device.Init();
         readiness = ::open("/dev/ttyTHS1", O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
-        return initialized && readiness >= 0 && device.LastWriteOk();
+        return initialized && !device.InitHadWriteFailure() && readiness >= 0 && device.LastWriteOk();
     }
     ~DriveMotor() { if (readiness >= 0) ::close(readiness); }
     void SetSpeedCms(float v) override {
@@ -265,14 +334,28 @@ struct DriveMotor : IMotor {
         if (good && !(v > 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
         else good = false;
     }
-    bool EmergencyStop() noexcept override { return device.EmergencyStop(); }
+    bool EmergencyStop() noexcept override {
+        const bool ok = device.EmergencyStop();
+        if (ok && onEmergencyStop) onEmergencyStop(monotonicNs());
+        return ok;
+    }
     bool ok() const override { return good; }
 };
 struct DriveServo : IServo {
     Servo device;
+    std::function<void(int64_t, int)> onAngle;
     bool open() { HardwareCall call(2); return device.Init() && device.IsReady() && device.SetPWMFreq(50); }
-    bool SetAngle(int v) override { HardwareCall call(2); return device.SetAngle(static_cast<int16_t>(v)); }
-    bool emergencyCenter() { return device.SetAngle(0); }
+    bool SetAngle(int v) override {
+        HardwareCall call(2);
+        const bool ok = device.SetAngle(static_cast<int16_t>(v));
+        if (ok && onAngle) onAngle(monotonicNs(), v);
+        return ok;
+    }
+    bool emergencyCenter() {
+        const bool ok = device.SetAngle(0);
+        if (ok && onAngle) onAngle(monotonicNs(), 0);
+        return ok;
+    }
 };
 #endif
 IMotor* terminateMotor = nullptr;
@@ -420,16 +503,21 @@ void writeSession(const Options& o, const std::string& started, const std::strin
 // Chỉ luồng ghi mở tệp; hàng đợi chứa đúng một khung, thay khung cũ khi chưa xử lý.
 class Capture {
     const Options& o_;
+    Control& control_;
     std::mutex frameMutex_, commandMutex_, statsMutex_;
     std::condition_variable available_;
     cv::Mat pending_;
     Snapshot pendingCommand_, command_;
     int64_t pendingWall_ = 0;
-    std::deque<Snapshot> history_;
+    std::deque<Snapshot> history_{{}};
     Event stats_;
     std::atomic<bool> quit_{false}, cameraDone_{false}, writerDone_{false};
     std::thread camera_, writer_;
     void fail(int status) { int expected = 0; failure.compare_exchange_strong(expected, status); }
+    void rememberCommand() {
+        history_.push_back(command_);
+        while (history_.size() > 1 && history_[1].ns < command_.ns - 6000000000LL) history_.pop_front();
+    }
     void cameraLoop() noexcept {
         cv::VideoCapture cap;
         try {
@@ -454,13 +542,16 @@ class Capture {
                     ++produced;
                 } else if (!cap.read(frame) || frame.empty()) { std::this_thread::sleep_for(10ms); continue; }
                 const auto ns = monotonicNs();
+                // Không nhận ảnh mới sau khi luồng giám sát đã chốt đường dừng độc lập.
+                if (hardwareFault) break;
                 lastFrameNs.store(ns); // Ngay khi read trả khung, trước mã hoá hay bất kỳ ghi tệp nào.
                 if (frame.type() != CV_8UC3) throw std::runtime_error("Khung phải là BGR 8 bit, 3 kênh");
                 width = frame.cols; height = frame.rows;
                 Snapshot atCapture;
                 {
+                    std::lock_guard<std::mutex> commandGuard(control_.commandMutex);
                     std::lock_guard<std::mutex> guard(commandMutex_);
-                    atCapture = command_;
+                    atCapture = history_.front();
                     for (const auto& item : history_) { if (item.ns > ns) break; atCapture = item; }
                 }
                 atCapture.ns = ns;
@@ -538,17 +629,27 @@ public:
     std::atomic<int> failure{0}; // 1 ghi tệp, 2 dung lượng, 3 mở camera, 4 dữ liệu khung.
     std::atomic<int64_t> lastFrameNs{0}, writerBeat{0};
     std::atomic<int> width{0}, height{0};
-    explicit Capture(const Options& o) : o_(o) {
+    Capture(const Options& o, Control& control) : o_(o), control_(control) {
         writerBeat = nowMs();
         writer_ = std::thread([this] { writerLoop(); });
         try { camera_ = std::thread([this] { cameraLoop(); }); }
         catch (...) { quit_ = true; writer_.detach(); warning(); _exit(4); }
     }
-    void command(const Control& c) {
+    void command(int64_t ns, float speed, int angle, State state) {
         std::lock_guard<std::mutex> guard(commandMutex_);
-        command_ = {monotonicNs(), c.speed, c.angle, c.state};
-        history_.push_back(command_);
-        while (history_.size() > 1 && history_[1].ns < command_.ns - 6000000000LL) history_.pop_front();
+        command_ = {ns, speed, angle, state};
+        rememberCommand();
+    }
+    // Đường dừng độc lập không đọc Control đang kẹt trong lời gọi phần cứng.
+    void emergencyCommand(int64_t ns) {
+        std::lock_guard<std::mutex> guard(commandMutex_);
+        command_.ns = ns; command_.speed = 0; command_.state = State::KHOA;
+        rememberCommand();
+    }
+    void steeringCommand(int64_t ns, int angle) {
+        std::lock_guard<std::mutex> guard(commandMutex_);
+        command_.ns = ns; command_.angle = angle;
+        rememberCommand();
     }
     Event stats() {
         std::lock_guard<std::mutex> guard(statsMutex_);
@@ -637,6 +738,7 @@ int run(Options o) {
     std::unique_ptr<Terminal> terminal;
     std::unique_ptr<Capture> capture;
     std::unique_ptr<StopJournal> journal;
+    InitSignalMask initSignals;
     const auto reportFatal = [&](const char* reason, int code, int64_t trigger, int64_t done) {
         // Luồng điều khiển đang kẹt trong HardwareCall và bị chốt, không sửa Control nữa.
         if (hardwareKind == 1 && servoOpened) servo.emergencyCenter();
@@ -679,16 +781,17 @@ int run(Options o) {
         {
             MotorInitWatchdog initWatchdog;
             if (!motor.init()) throw Failure(3, "motor_init_fail", std::string("Khởi tạo motor thất bại; ") + busyMessage);
+            control.setSpeed(0); // Trước cả servo, camera, tạo thư mục hoặc ghi JSON.
+            if (!servo.open()) throw Failure(3, "open_fail", "Không mở được servo");
+            servoOpened = true;
+            control.setAngle(0);
+            initConfirmed = true;
+            initSignals.restore(); // Tín hiệu chờ chỉ được giao sau motor 0/servo 0.
         }
-        control.setSpeed(0); // Trước cả servo, camera, tạo thư mục hoặc ghi JSON.
-        if (!servo.open()) throw Failure(3, "open_fail", "Không mở được servo");
-        servoOpened = true;
-        control.setAngle(0);
-        initConfirmed = true;
-        if (stopping) {
+        if (const int stopSignal = stopping.load()) {
             trigger = nowMs();
-            throw Failure(stopping == SIGQUIT ? 143 : 128 + stopping,
-                          signalReason(stopping), "Đã nhận tín hiệu trong Init");
+            throw Failure(stopSignal == SIGQUIT ? 143 : 128 + stopSignal,
+                          signalReason(stopSignal), "Đã nhận tín hiệu trong Init");
         }
         terminal.reset(new Terminal());
         terminal->discard(); // Phím gõ trong Init không được mở khóa sau khởi tạo.
@@ -696,7 +799,16 @@ int run(Options o) {
         writeSession(o, o.started, "");
         journal.reset(new StopJournal(o.out));
         control.onStop = [&](const StopRecord& record) { journal->push(record); };
-        capture.reset(new Capture(o));
+        capture.reset(new Capture(o, control));
+        control.onCommand = [&](int64_t ns, float speed, int angle, State state) noexcept {
+            try { capture->command(ns, speed, angle, state); } catch (...) { capture->failure = 1; }
+        };
+        motor.onEmergencyStop = [&](int64_t ns) noexcept {
+            try { capture->emergencyCommand(ns); } catch (...) { capture->failure = 1; }
+        };
+        servo.onAngle = [&](int64_t ns, int angle) noexcept {
+            try { capture->steeringCommand(ns, angle); } catch (...) { capture->failure = 1; }
+        };
         const auto openedAt = nowMs();
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
         size_t consumed = 0;
@@ -704,8 +816,8 @@ int run(Options o) {
         // Luồng hiện tại chỉ điều khiển; camera/JPEG/CSV chạy trên hai luồng riêng.
         while (!control.exiting) {
             trigger = nowMs();
-            if (stopping) throw Failure(stopping == SIGQUIT ? 143 : 128 + stopping,
-                                        signalReason(stopping), "Đã nhận tín hiệu dừng");
+            if (const int stopSignal = stopping.load()) throw Failure(stopSignal == SIGQUIT ? 143 : 128 + stopSignal,
+                                        signalReason(stopSignal), "Đã nhận tín hiệu dừng");
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
             pollHooks(consumed);
 #endif
@@ -728,23 +840,22 @@ int run(Options o) {
             if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500);
             control.tick();
             if (control.discardPending) { terminal->discard(); control.discardPending = false; }
-            const auto keys = terminal->read(nowMs());
+            const auto readAt = nowMs();
+            const auto keys = terminal->read(readAt);
             for (int key : keys) {
                 trigger = nowMs();
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
                 hookEvent("key", key == 27 ? "ESC" : std::string(1, static_cast<char>(key)));
 #endif
                 // Kiểm lại cờ/fault trước mỗi phím, không cho W cùng lô vượt qua lỗi.
-                if (stopping || capture->failure || hardwareFault) break;
+                if (stopping.load() || capture->failure || hardwareFault) break;
                 const auto latestFrame = capture->lastFrameNs.load();
                 const bool ready = latestFrame && nowMs() - latestFrame / 1000000 <= 500;
-                control.key(key, ready);
-                capture->command(control);
-                if (control.discardPending || control.exiting || nowMs() - now >= 20) {
+                control.key(key, ready, readAt);
+                if (control.discardPending || control.exiting) {
                     terminal->discard(); control.discardPending = false; break;
                 }
             }
-            capture->command(control);
             poll(nullptr, 0, 20);
         }
     } catch (const MotorError& e) { code = initConfirmed ? 5 : 3; reason = initConfirmed ? "motor_fail" : "motor_init_fail"; error = e.what(); }
@@ -754,8 +865,6 @@ int run(Options o) {
     catch (...) { code = initConfirmed ? 4 : 3; reason = initConfirmed ? "write_error" : "motor_init_fail"; error = "Ngoại lệ không xác định"; }
     const bool initFailed = reason == "motor_init_fail";
     control.latched_error = true;
-    const bool warned = code == 5 || initFailed;
-    if (warned) warning();
     // Mọi việc chờ/ghi tài liệu sau motor 0 và servo 0.
     try {
         // Lỗi lần motor 0 đầu xảy ra trước mở servo: vẫn thử trả lái sau bốn lần dừng.
@@ -786,13 +895,17 @@ int run(Options o) {
         // setAngle đã thử dừng motor; trả lái lần cuối không lặp lại chuỗi dừng đó.
         if (servoOpened) { try { servo.SetAngle(0); } catch (...) {} }
     }
-    if ((code == 5 || initFailed) && !warned) warning();
+    // Hạn cứng bao trùm cả stderr/JSON, join, terminal và các hàm huỷ khi trả về.
+    armCleanupWatchdog(code);
+    initSignals.restore();
+    if (code == 5 || initFailed) warning();
     terminal.reset();
     if (capture) capture->requestStop();
     if (journal) journal->requestStop();
     const auto deadline = Clock::now() + 2s;
     while ((capture && !capture->finished()) || (journal && !journal->finished())) {
         if (Clock::now() >= deadline) {
+            cleanupExitCode = code ? code : 4;
             const char text[] = "Đã dừng xe; luồng I/O treo, bỏ tổng kết và thoát có hạn.\n";
             const auto ignored = ::write(2, text, sizeof(text)-1); (void)ignored;
             if (capture) capture->reapOrDetach();
@@ -811,7 +924,11 @@ int run(Options o) {
             const auto ended = utcNow();
             writeSession(o, o.started, ended, latest.width, latest.height);
             writeSummary(o, latest, control, code, reason, o.started, ended);
-        } catch (const std::exception& e) { std::cerr << "Lỗi ghi tổng kết: " << e.what() << '\n'; if (!code) code = 4; }
+        } catch (const std::exception& e) {
+            if (!code) code = 4;
+            cleanupExitCode = code;
+            std::cerr << "Lỗi ghi tổng kết: " << e.what() << '\n';
+        }
     }
     emergencyScope.active = false;
     return code;
