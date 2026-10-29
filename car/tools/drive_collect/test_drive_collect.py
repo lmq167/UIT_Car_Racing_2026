@@ -1,0 +1,1755 @@
+"""T21 §3/§4/§7–§13: kiểm hộp đen bằng PTY, chỉ chạy bản phần cứng giả.
+
+Python 3.6; mỗi ca có khóa/vết/dữ liệu riêng. Không chạy binary xe thật.
+Release (bản tối ưu) giữ trần 200 ms; sanitizer (dò lỗi bộ nhớ/luồng)
+được cộng 300 ms theo thiết kế §8.
+"""
+import argparse
+from contextlib import contextmanager
+import csv
+import json
+import math
+import os
+from pathlib import Path
+import re
+import select
+import shlex
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import tempfile
+import time
+
+if os.name == 'posix':
+    import fcntl
+    import pty
+    import resource
+    import termios
+
+
+COLUMNS = ['frame', 'monotonic_ns', 'wall_time_unix_ms', 'filename', 'width',
+           'height', 'mean_luma', 'lap_var', 'dropped_since_last',
+           'cmd_speed', 'cmd_steer', 'state']
+REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
+               lock_held=6, stdin_eof=4, camera_no_frame=4, camera_stall=4,
+               write_error=4, disk_low=4, motor_fail=5, servo_fail=5,
+               sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
+CUT = {42, 52, 54, 61, 63, 64}
+CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
+CASES += ['D{:02d}'.format(n) for n in range(65, 85)]
+CASES += ['M01', 'M02', 'M03', 'M04', 'M05']
+
+
+class SafetyFailure(AssertionError):
+    """Mã phép kiểm giúp mutation không nhận nhầm lỗi thiết lập là phát hiện."""
+    def __init__(self, tag, message):
+        self.tag = tag
+        super().__init__('{}: {}'.format(tag, message))
+
+
+def need(condition, message, tag='contract'):
+    if not condition:
+        raise SafetyFailure(tag, message)
+
+
+def monotonic_ms():
+    return time.monotonic() * 1000
+
+
+def read_trace(path):
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text(encoding='utf-8').splitlines(True):
+        if not line.endswith('\n'):
+            continue
+        fields = line.rstrip('\r\n').split(' ')
+        need(len(fields) >= 2, 'Vết không hợp lệ: ' + repr(line))
+        stamp = float(fields[0])
+        need(math.isfinite(stamp), 'Mốc vết không hữu hạn')
+        kind = fields[1]
+        need(kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'key', 'state'),
+             'Sự kiện ngoài hợp đồng: ' + repr(line))
+        value = ' '.join(fields[2:])
+        failed = value.endswith(' fail') or value == 'fail'
+        if failed:
+            value = value[:-5] if value != 'fail' else ''
+        if kind in ('motor_speed', 'servo_angle'):
+            value = float(value)
+            need(math.isfinite(value), 'Lệnh NaN/Inf')
+        events.append((stamp, kind, value, failed))
+    need(all(a[0] <= b[0] for a, b in zip(events, events[1:])), 'Vết đảo thời gian')
+    return events
+
+
+def matched(events, kind, value=None):
+    return [(i, e) for i, e in enumerate(events)
+            if e[1] == kind and (value is None or e[2] == value)]
+
+
+def init_sequence(events, required=False, complete=False):
+    """§12: kiểm toàn vết, kể cả lỗi muộn/thử dừng; lỗi trước Init được phép không gọi."""
+    inits = matched(events, 'motor_init')
+    required = required or any(e[1] in ('motor_speed', 'motor_emergency', 'key') for e in events)
+    need(len(inits) == 1 if required else len(inits) <= 1,
+         'Init phải đúng một lần sau khi bắt đầu dùng motor/phím', 'init_once')
+    if not inits:
+        return
+    start = inits[0][0]
+    need(not matched(events[:start], 'motor_speed'), 'Có lệnh tốc độ trước Init', 'init_order')
+    states = matched(events[:start], 'state')
+    need(states and states[-1][1][2] == 'KHOA', 'Init không ở trạng thái KHOA', 'init_order')
+    zero_motor = None
+    pair_done = None
+    for index, event in enumerate(events):
+        _, kind, value, failed = event
+        if index > start and kind == 'motor_speed' and value == 0 and not failed:
+            zero_motor = index
+        if zero_motor is not None and index > zero_motor and kind == 'servo_angle' and value == 0 and not failed:
+            pair_done = index
+        if kind == 'key' or (kind == 'motor_speed' and value > 0):
+            need(pair_done is not None and index > pair_done,
+                 'Xử lý phím/lệnh tiến trước cặp dừng thành công sau Init', 'init_order')
+    if complete:
+        need(pair_done is not None, 'Thiếu motor 0 rồi servo 0 thành công sau Init', 'init_order')
+
+
+def limits(events, moving=True):
+    for _, kind, value, _ in events:
+        if kind == 'motor_speed':
+            need(0 <= value <= (5 if moving else 0), 'Tốc độ bị cấm: ' + str(value),
+                 'default_lock' if not moving else 'speed_limit')
+        if kind == 'servo_angle':
+            need(abs(value) <= (10 if moving else 0), 'Góc bị cấm: ' + str(value),
+                 'default_lock' if not moving else 'steer_limit')
+
+
+def ordered_stop(events, tag='stop_order'):
+    motors = matched(events, 'motor_speed', 0) + matched(events, 'motor_emergency')
+    servos = matched(events, 'servo_angle', 0)
+    need(motors and servos, 'Thiếu cặp dừng motor/servo', tag)
+    # X kiểm cặp ĐẦU sau thao tác, không dùng cặp cleanup cuối để che lỗi.
+    need(min(i for i, _ in motors) < servos[0][0], 'Servo về 0 trước motor', tag)
+
+
+def final_stop(events):
+    hardware = [e for e in events if e[1] in ('motor_speed', 'motor_emergency', 'servo_angle')]
+    need(hardware, 'Không có vết phần cứng khi thoát')
+    motors = [i for i, e in enumerate(hardware) if e[1] in ('motor_speed', 'motor_emergency')]
+    servos = [i for i, e in enumerate(hardware) if e[1] == 'servo_angle']
+    need(motors and servos and motors[-1] < servos[-1], 'Thứ tự dừng cuối sai')
+    need(hardware[motors[-1]][1] == 'motor_emergency' or hardware[motors[-1]][2] == 0,
+         'Lệnh motor cuối khác 0')
+    need(hardware[servos[-1]][2] == 0, 'Lệnh servo cuối khác 0')
+
+
+def jpeg_info(data):
+    """Đọc marker JPEG, không phụ thuộc cv2; trả cỡ và bảng lượng tử."""
+    need(data[:2] == b'\xff\xd8' and data[-2:] == b'\xff\xd9', 'JPEG dở dang')
+    pos, size, tables = 2, None, {}
+    while pos < len(data) - 2:
+        need(data[pos] == 255, 'Marker JPEG sai')
+        while data[pos] == 255:
+            pos += 1
+        marker = data[pos]
+        pos += 1
+        if marker == 0xda:
+            break
+        if marker in (0xd8, 0xd9) or 0xd0 <= marker <= 0xd7:
+            continue
+        length = struct.unpack('>H', data[pos:pos + 2])[0]
+        need(length >= 2 and pos + length <= len(data), 'Độ dài marker sai')
+        payload = data[pos + 2:pos + length]
+        if marker in (0xc0, 0xc1, 0xc2):
+            height, width = struct.unpack('>HH', payload[1:5])
+            size = (width, height)
+        if marker == 0xdb:
+            offset = 0
+            while offset < len(payload):
+                spec = payload[offset]
+                count = 64 * (2 if spec >> 4 else 1)
+                table = payload[offset + 1:offset + 1 + count]
+                need(len(table) == count, 'Bảng lượng tử JPEG thiếu byte')
+                tables[spec & 15] = (spec >> 4, tuple(table))
+                offset += count + 1
+        pos += length
+    need(size is not None and all(size), 'Không có cỡ JPEG')
+    return size, tables
+
+
+def quality90(tables):
+    # Bảng JPEG chuẩn ở thứ tự zigzag; Q=90 dùng scale=20.
+    luma = [16,11,10,16,24,40,51,61,12,12,14,19,26,58,60,55,
+            14,13,16,24,40,57,69,56,14,17,22,29,51,87,80,62,
+            18,22,37,56,68,109,103,77,24,35,55,64,81,104,113,92,
+            49,64,78,87,103,121,120,101,72,92,95,98,112,100,103,99]
+    chroma = [17,18,24,47,99,99,99,99,18,21,26,66,99,99,99,99,
+              24,26,56,99,99,99,99,99,47,66,99,99,99,99,99,99] + [99] * 32
+    zigzag = [0,1,8,16,9,2,3,10,17,24,32,25,18,11,4,5,12,19,26,33,40,
+              48,41,34,27,20,13,6,7,14,21,28,35,42,49,56,57,50,43,36,29,
+              22,15,23,30,37,44,51,58,59,52,45,38,31,39,46,53,60,61,54,47,55,62,63]
+    for index, base in enumerate((luma, chroma)):
+        expected = tuple(max(1, min(255, (base[i] * 20 + 50) // 100)) for i in zigzag)
+        need(tables.get(index) == (0, expected), 'JPEG không dùng chất lượng 90')
+
+
+def read_jpeg(path):
+    info = jpeg_info(path.read_bytes())
+    try:
+        import cv2
+    except ImportError:
+        return info
+    frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    need(frame is not None and frame.size > 0, 'cv2 không giải mã được JPEG')
+    need((frame.shape[1], frame.shape[0]) == info[0], 'Cỡ giải mã khác header JPEG')
+    return info
+
+
+class Run:
+    def __init__(self, cfg, root, args=(), env=None, pipe=False, lock=None,
+                 accepted=True, command=None, out_root=None):
+        self.cfg, self.root = cfg, root
+        root.mkdir(parents=True, exist_ok=True)
+        self.out = Path(out_root) if out_root is not None else root / 'out'
+        self.trace = root / 'trace'
+        self.ctrl = root / 'ctrl'
+        self.ctrl.touch()
+        self.master, self.slave = pty.openpty()
+        self.before = termios.tcgetattr(self.slave)
+        self.log = tempfile.TemporaryFile()
+        self.next_w = 0
+        self.pump = False
+        self.command_speed = 5
+        for index, value in enumerate(args[:-1]):
+            if value == '--speed-cms':
+                try:
+                    self.command_speed = float(args[index + 1])
+                except ValueError:
+                    pass  # Ca đầu vào hỏng không gọi drive().
+        child_env = {k: v for k, v in os.environ.items() if not k.startswith('UCR_DRIVE_FAKE_')}
+        child_env.update(LC_ALL='C.UTF-8', LANG='C.UTF-8',
+                         UCR_DRIVE_FAKE_TRACE=str(self.trace),
+                         UCR_DRIVE_FAKE_CTRL=str(self.ctrl),
+                         UCR_DRIVE_FAKE_CAMERA='ok', UCR_DRIVE_FAKE_FREE_MB='4096',
+                         UCR_DRIVE_FAKE_LOCK=str(lock or root / 'vehicle.lock'))
+        child_env.update(env or {})
+        argv = [cfg.hooks, '--out-root', str(self.out), '--label', 'test']
+        if accepted:
+            argv.append('--accept-no-obstacle-brake')
+        argv += list(args)
+        self.started = monotonic_ms()
+
+        def child_setup():
+            os.setsid()
+            resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+            if not pipe:
+                fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+                os.tcsetpgrp(0, os.getpgrp())
+
+        try:
+            self.process = subprocess.Popen(command or argv, cwd=str(root), env=child_env,
+                                            stdin=subprocess.PIPE if pipe else self.slave,
+                                            stdout=self.log, stderr=self.log,
+                                            preexec_fn=child_setup)
+        except BaseException:
+            os.close(self.master)
+            os.close(self.slave)
+            self.log.close()
+            raise
+
+    def events(self):
+        return read_trace(self.trace)
+
+    def text(self):
+        return os.pread(self.log.fileno(), os.fstat(self.log.fileno()).st_size, 0).decode(
+            'utf-8', errors='replace')
+
+    def wait(self, predicate, seconds=5, message='Hết giờ đợi điều kiện', alive=True):
+        deadline = time.monotonic() + seconds
+        while True:
+            value = predicate()
+            if value:
+                return value
+            if alive:
+                need(self.process.poll() is None, message + ': con đã thoát; ' + self.text())
+            remaining = deadline - time.monotonic()
+            need(remaining > 0, message)
+            self.pulse()
+            select.select([], [], [], min(0.01, remaining))
+
+    def observe(self, seconds, assertion=lambda: None):
+        end = time.monotonic() + seconds
+        while time.monotonic() < end:
+            need(self.process.poll() is None, 'Tiến trình thoát trong cửa sổ quan sát: ' + self.text())
+            assertion()
+            self.pulse()
+            select.select([], [], [], min(0.01, max(0, end - time.monotonic())))
+        assertion()
+
+    def send(self, data):
+        if isinstance(data, str):
+            data = data.encode('ascii')
+        need(self.master is not None, 'PTY đã đóng')
+        os.write(self.master, data)
+
+    def pulse(self):
+        if self.pump and self.process.poll() is None and time.monotonic() >= self.next_w:
+            self.send('W')
+            self.next_w = time.monotonic() + 0.10
+
+    def key(self, key):
+        mark = len(self.events())
+        self.send(key)
+        wanted = 'ESC' if key == '\x1b' else key.upper()
+        return self.wait(lambda: next((e for e in self.events()[mark:]
+                                      if e[1] == 'key' and str(e[2]).upper() == wanted), None),
+                         message='Không thấy phím ' + repr(key), alive=key != '\x1b')
+
+    def event(self, kind, value=None, mark=0, seconds=5):
+        return self.wait(lambda: next((e for e in self.events()[mark:]
+                                      if e[1] == kind and (value is None or e[2] == value)), None),
+                         seconds, 'Không thấy {} {}'.format(kind, value))
+
+    def boot(self, images=True):
+        first = self.event('state', 'KHOA', seconds=10)
+        need(self.started - 5 <= first[0] <= monotonic_ms() + 5,
+             'Vết không cùng miền CLOCK_MONOTONIC với test', 'setup')
+        need(self.events()[0][1:] == ('state', 'KHOA', False) or
+             matched(self.events(), 'state')[0][1][2] == 'KHOA',
+             'Trạng thái đầu khác KHOA', 'default_lock')
+        self.wait(lambda: not (termios.tcgetattr(self.slave)[3] & (termios.ICANON | termios.ECHO)),
+                  message='Terminal chưa raw/no-echo')
+        if images:
+            self.wait(lambda: self.rows(), seconds=10, message='Không có ảnh đầu')
+        init_sequence(self.events(), required=True, complete=True)
+
+    def ready(self):
+        self.key('R')
+        self.key('Y')
+        self.event('state', 'SAN_SANG')
+
+    def drive(self):
+        mark = len(self.events())
+        self.key('W')
+        event = self.event('motor_speed', self.speed(), mark)
+        self.wait(lambda: matched(self.events(), 'state')[-1][1][2] == 'CHAY',
+                  message='Trạng thái gần nhất không phải CHAY')
+        return event
+
+    def speed(self):
+        return self.command_speed
+
+    def keep_driving(self):
+        self.drive()
+        self.pump = True
+        self.next_w = time.monotonic() + 0.1
+
+    def inject(self, command):
+        with self.ctrl.open('a', encoding='utf-8') as stream:
+            stream.write(command + '\n')
+            stream.flush()
+        return monotonic_ms()
+
+    def rows(self):
+        paths = list(self.out.glob('*/metadata.csv'))
+        if not paths:
+            return []
+        lines = paths[0].read_text(encoding='utf-8').splitlines(True)
+        reader = csv.DictReader([line for line in lines if line.endswith('\n')])
+        if reader.fieldnames is None:
+            return []
+        need(reader.fieldnames == COLUMNS, 'Sai cột/thứ tự CSV: ' + repr(reader.fieldnames))
+        rows = list(reader)
+        need(all(None not in row and None not in row.values() for row in rows), 'CSV thiếu/thừa cột')
+        return rows
+
+    def session_dir(self):
+        paths = list(self.out.glob('*/session.json'))
+        need(len(paths) == 1, 'Cần đúng một session.json: ' + repr(paths))
+        return paths[0].parent
+
+    def finish(self, reason='esc', codes=None, cleanup=True, summary=True):
+        if reason == 'esc':
+            self.pump = False
+            mark = len(self.events())
+            key = self.key('\x1b')
+            stop_by(self, mark, key[0])
+        self.wait(lambda: self.process.poll() is not None, seconds=8,
+                  message='Không thoát: ' + reason, alive=False)
+        code = self.process.returncode
+        expected = {REASONS[reason]} if codes is None else set(codes)
+        need(code in expected, 'Mã thoát {} cần {}: {}'.format(code, expected, self.text()))
+        events = self.events()
+        limits(events)
+        if cleanup:
+            final_stop(events)
+        if reason != 'esc' and hasattr(self, 'stop_mark'):
+            no_restart(events[self.stop_mark:])
+        if summary:
+            self.check_output(reason, code)
+        return events
+
+    def check_output(self, reason, code):
+        folder = self.session_dir()
+        session = json.loads((folder / 'session.json').read_text(encoding='utf-8'))
+        summary = json.loads((folder / 'summary.json').read_text(encoding='utf-8'))
+        need({'started_utc', 'argv', 'width', 'height', 'speed_cms', 'max_steer_deg',
+              'hold_timeout_ms'} <= set(session), 'Thiếu khóa session theo G5')
+        need({'started_utc', 'ended_utc', 'images', 'exit_reason', 'exit_code',
+              'emergency_stops', 'max_speed_cmd', 'max_steer_abs_cmd'} <= set(summary),
+             'Thiếu khóa summary theo G5')
+        need(summary['started_utc'] and summary['ended_utc'], 'Thiếu thời gian phiên')
+        need(summary['exit_reason'] == reason and summary['exit_code'] == code,
+             'Sai lý do/mã trong summary: ' + repr(summary))
+        events = self.events()
+        xs = sum(1 for e in events if e[1] == 'key' and str(e[2]).upper() == 'X')
+        need(summary['emergency_stops'] == xs, 'Sai bộ đếm X')
+        if reason not in ('motor_fail', 'servo_fail'):
+            max_speed = max([0] + [e[2] for e in events if e[1] == 'motor_speed' and not e[3]])
+            max_steer = max([0] + [abs(e[2]) for e in events if e[1] == 'servo_angle' and not e[3]])
+            need(summary['max_speed_cmd'] == max_speed and summary['max_steer_abs_cmd'] == max_steer,
+                 'Sai cực đại tốc độ/góc: ' + repr(summary))
+        rows = self.rows()
+        images = list(folder.glob('*.jpg'))
+        need(summary['images'] == len(rows) == len(images), 'Lệch số ảnh/CSV/summary')
+        need(not list(folder.rglob('*.tmp')), 'Còn tệp ảnh tạm sau thoát')
+        previous, filenames = -1, set()
+        for index, row in enumerate(rows, 1):
+            need(int(row['frame']) == index, 'Số khung không liên tục')
+            stamp = int(row['monotonic_ns'])
+            need(stamp > previous, 'Mốc ảnh không tăng')
+            previous = stamp
+            name = row['filename']
+            need(Path(name).name == name and name not in filenames, 'Tên ảnh sai/lặp')
+            filenames.add(name)
+            size, _ = read_jpeg(folder / name)
+            need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
+            need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= 10,
+                 'Lệnh CSV ngoài giới hạn')
+            need(row['state'] in ('KHOA', 'SAN_SANG', 'CHAY'), 'Trạng thái CSV sai')
+        return summary, rows
+
+    def close(self):
+        self.pump = False
+        try:
+            os.killpg(self.process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        self.process.wait(timeout=5)
+        if self.process.stdin:
+            self.process.stdin.close()
+        try:
+            if self.master is not None:
+                termios.tcsetattr(self.slave, termios.TCSANOW, self.before)
+        finally:
+            if self.master is not None:
+                os.close(self.master)
+            os.close(self.slave)
+            self.log.close()
+
+
+@contextmanager
+def running(cfg, root, **kwargs):
+    run = Run(cfg, root, **kwargs)
+    try:
+        yield run
+        if kwargs.get('command') is None:
+            init_sequence(run.events())
+    except BaseException:
+        print('LOG CON:\n' + run.text()[-6000:], file=sys.stderr)
+        print('VẾT CUỐI: ' + repr(run.events()[-25:]), file=sys.stderr)
+        raise
+    finally:
+        run.close()
+
+
+def steer(run, key, target):
+    mark = len(run.events())
+    run.key(key)
+    run.event('servo_angle', target, mark)
+
+
+def moving(run):
+    run.boot()
+    run.ready()
+    run.keep_driving()
+    steer(run, 'A', 5)
+
+
+def stop_by(run, mark, start_ms, allowance=0, tag='fault_stop'):
+    run.stop_mark = mark
+    deadline = start_ms + allowance + 200 + run.cfg.slack
+    try:
+        run.wait(lambda: matched(run.events()[mark:], 'motor_speed', 0) or
+                 matched(run.events()[mark:], 'motor_emergency'),
+                 max(0.01, (deadline - monotonic_ms()) / 1000), 'Không dừng trước hạn', alive=False)
+    except SafetyFailure as error:
+        raise SafetyFailure(tag, str(error))
+    stops = [e for e in run.events()[mark:] if e[1] == 'motor_emergency' or
+             (e[1] == 'motor_speed' and e[2] == 0)]
+    need(stops and stops[0][0] <= deadline, 'Dừng quá hạn {:.1f} ms'.format(deadline), tag)
+    after = run.events()[mark:]
+    first = next(i for i, e in enumerate(after) if e == stops[0])
+    need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in after[first + 1:]),
+         'Tự chạy lại sau lỗi')
+    return stops[0]
+
+
+def rejected(cfg, root, args, code=2, accepted=True, env=None, pipe=False):
+    with running(cfg, root, args=args, accepted=accepted, env=env, pipe=pipe) as run:
+        try:
+            run.wait(lambda: run.process.poll() is not None, 10, 'Không từ chối đầu vào', alive=False)
+        except SafetyFailure as error:
+            if '--speed-cms' in args:
+                raise SafetyFailure('speed_reject', str(error))
+            raise
+        need(run.process.returncode == code, 'Cần mã {} thay vì {}: {}'.format(
+            code, run.process.returncode, run.text()), 'speed_reject' if '--speed-cms' in args else 'contract')
+        need(run.text().strip(), 'Không giải thích lý do từ chối')
+        limits(run.events(), moving=False)
+
+
+def test_case(case, cfg, root):
+    """Mỗi nhánh đối chiếu hàng cùng mã trong T21_test_cases_report, §8 ưu tiên."""
+    n = int(case[1:])
+    if case.startswith('M'):
+        return mutation(case, cfg, root)
+    if n >= 80:
+        return init_case(n, cfg, root)
+    if n >= 65:
+        return added_case(n, cfg, root)
+    if n in (7, 8, 10, 38, 39, 60):
+        if n == 7:
+            variants = [('--speed-cms', '20'), ('--speed-cms', '5.01')]
+        elif n == 8:
+            variants = [('--speed-cms', v) for v in ('-1', 'nan', 'inf', '-inf')]
+        elif n == 10:
+            variants = [('--max-steer-deg', '30'), ('--max-steer-deg', '10.01')]
+        elif n == 60:
+            variants = [('--unknown',), ('--speed-cms',), ('--speed-cms', 'rác'),
+                        ('--hold-timeout-ms', '0'), ('--interval-ms', '-1'),
+                        ('--hold-timeout-ms', '99'), ('--hold-timeout-ms', '2001'),
+                        ('--steer-step-deg', '0'),
+                        ('--hold-timeout-ms', '999999999999999999999999999999')]
+        else:
+            variants = [()]
+        for index, args in enumerate(variants):
+            rejected(cfg, root / str(index), args, accepted=n != 38, pipe=n == 39)
+        if n == 60:
+            with running(cfg, root / 'step11', args=['--steer-step-deg', '11']) as run:
+                run.boot()
+                run.ready()
+                run.keep_driving()
+                for key, target in (('A', 10), ('A', 10), ('D', -1), ('D', -10), ('D', -10)):
+                    steer(run, key, target)
+                run.finish()
+        if n == 10:
+            with running(cfg, root / 'valid', args=['--max-steer-deg', '7', '--steer-step-deg', '3']) as run:
+                run.boot()
+                run.ready()
+                for target in (3, 6, 7, 7):
+                    steer(run, 'A', target)
+                for target in (4, 1, -2, -5, -7, -7):
+                    steer(run, 'D', target)
+                run.finish()
+        if n == 8:
+            with running(cfg, root / 'keys') as run:
+                moving(run)
+                for key in ('W', 'S', ' ', 'C', 'A', 'D', 'X', 'S'):
+                    run.key(key)
+                run.finish()
+        return
+
+    if n in (21, 22, 23, 24):
+        signals = [(signal.SIGINT, 'sigint'), (signal.SIGTERM, 'sigterm'), (signal.SIGHUP, 'sighup')]
+        for state in (('KHOA', 'SAN_SANG') if n == 24 else ('CHAY',)):
+            for sig, reason in signals if n == 24 else [signals[n - 21]]:
+                with running(cfg, root / (state + reason)) as run:
+                    run.boot()
+                    if state != 'KHOA':
+                        run.ready()
+                    if state == 'CHAY':
+                        run.keep_driving()
+                        steer(run, 'A', 5)
+                    mark, stamp = len(run.events()), monotonic_ms()
+                    run.process.send_signal(sig)
+                    stop_by(run, mark, stamp)
+                    run.finish(reason)
+        return
+
+    if n in (29, 30, 31, 34, 35):
+        faults = {29: [('jpeg_fail', 'write_error')], 30: [('csv_fail', 'write_error')],
+                  31: [('free_mb 1023', 'disk_low')],
+                  34: [('motor_fail', 'esc'), ('motor_fail', 'sigterm'),
+                       ('motor_fail', 'camera_stall'), ('motor_fail', 'disk_low')],
+                  35: [('throw', 'exception')]}
+        for index, (fault, reason) in enumerate(faults[n]):
+            with running(cfg, root / str(index), args=['--interval-ms', '100']) as run:
+                moving(run)
+                if n == 34:
+                    run.pump = False
+                mark = len(run.events())
+                stamp = run.inject(fault)
+                if n == 34:
+                    # Hai phím qua hai vòng: motor_fail đã được poll trước
+                    # khi tạo sự kiện Esc/tín hiệu/lỗi dữ liệu kết hợp.
+                    run.key('C')
+                    run.key('C')
+                if reason == 'esc':
+                    run.pump = False
+                    run.key('\x1b')
+                elif reason == 'sigterm':
+                    run.process.send_signal(signal.SIGTERM)
+                elif n == 34:
+                    run.inject('camera_stall' if reason == 'camera_stall' else 'free_mb 1')
+                if n == 35:
+                    run.wait(lambda: run.process.poll() is not None, 5, 'terminate không abort', alive=False)
+                    need(run.process.returncode == -signal.SIGABRT, 'Ngoại lệ phải kết thúc SIGABRT')
+                    need(matched(run.events()[mark:], 'motor_emergency'), 'terminate thiếu EmergencyStop')
+                else:
+                    stop_by(run, mark, stamp, allowance=500 if reason == 'camera_stall' else
+                            (100 if n in (29, 30) else 0))
+                    run.finish('motor_fail' if n == 34 else reason)
+                    no_restart(run.events()[mark:])
+                    if n == 34:
+                        motor_failed(run.events()[mark:], run.text())
+        if n == 31:
+            with running(cfg, root / 'startup', env={'UCR_DRIVE_FAKE_FREE_MB': '1023'}) as run:
+                run.finish('disk_low')
+                limits(run.events(), moving=False)
+        return
+
+    if n == 37:
+        for device in ('camera', 'motor', 'servo'):
+            with running(cfg, root / device, env={'UCR_DRIVE_FAKE_OPEN_FAIL': device}) as run:
+                run.finish('motor_init_fail' if device == 'motor' else 'open_fail',
+                           cleanup=False, summary=False)
+                limits(run.events(), moving=False)
+                if device == 'motor':
+                    need('KIEM TRA XE, DUNG CONG TAC NGUON' in run.text(), 'Lỗi Init thiếu cảnh báo')
+                elif device == 'camera':
+                    need('test_motor/test_servo/main/ucr_collect_cam' in run.text(), 'Thiếu lời nhắc đóng chương trình')
+                if matched(run.events(), 'servo_angle'):
+                    final_stop(run.events())
+        return
+
+    if n == 40:
+        for reason in ('esc', 'sigterm', 'write_error'):
+            with running(cfg, root / reason, args=['--interval-ms', '100']) as run:
+                moving(run)
+                if reason == 'sigterm':
+                    run.process.send_signal(signal.SIGTERM)
+                elif reason == 'write_error':
+                    run.inject('csv_fail')
+                run.finish(reason)
+                need(termios.tcgetattr(run.slave) == run.before, 'Không khôi phục termios: ' + reason)
+        return
+
+    if n in (49, 50, 51, 55):
+        return artifacts(n, cfg)
+    if n in (56, 57, 58):
+        return wrapper_case(n, cfg, root)
+
+    if n in (5, 16, 17, 53, 59):
+        return key_variants(n, cfg, root)
+
+    if n == 36:
+        lock = root / 'shared.lock'
+        with running(cfg, root / 'owner', lock=lock) as owner:
+            owner.boot()
+            with running(cfg, root / 'contender', lock=lock) as other:
+                other.finish('lock_held', cleanup=False, summary=False)
+                need(not any(e[1] in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle')
+                             for e in other.events()), 'Tiến trình tranh khóa can thiệp phần cứng')
+                need('test_motor/test_servo/main/ucr_collect_cam' in other.text(), 'Thiếu cảnh báo khóa')
+            owner.ready()
+            owner.drive()
+            owner.finish()
+        with running(cfg, root / 'successor', lock=lock) as run:
+            run.boot()
+            run.finish()
+        return
+
+    if n == 62:
+        for fault, reason in (('camera_stall', 'camera_stall'), ('motor_fail', 'motor_fail')):
+            lock = root / (fault + '.lock')
+            with running(cfg, root / (fault + '1'), lock=lock) as run:
+                moving(run)
+                run.inject(fault)
+                if fault == 'motor_fail':
+                    run.inject('free_mb 1')
+                run.finish(reason)
+            with running(cfg, root / (fault + '2'), lock=lock) as run:
+                run.boot()
+                run.observe(0.2, lambda: limits(run.events(), moving=False))
+                run.finish()
+        return
+
+    if n == 6:
+        for speed in (5, 3):
+            with running(cfg, root / str(speed), args=['--speed-cms', str(speed)]) as run:
+                run.boot()
+                run.ready()
+                for _ in range(5):
+                    run.drive()
+                need(all(e[2] in (0, speed) for e in run.events() if e[1] == 'motor_speed'),
+                     'W tích lũy tốc độ')
+                run.finish()
+        return
+
+    if n == 28:
+        blocked = root / 'blocked'
+        blocked.mkdir(mode=0o500)
+        try:
+            try:
+                (blocked / 'probe').write_text('x')
+            except PermissionError:
+                pass
+            else:
+                raise SafetyFailure('setup', 'Tài khoản vẫn ghi được thư mục cấm; chạy không dùng root')
+            with running(cfg, root / 'run', out_root=blocked) as run:
+                run.finish('write_error', cleanup=False, summary=False)
+                limits(run.events(), moving=False)
+                if matched(run.events(), 'servo_angle'):
+                    final_stop(run.events())
+        finally:
+            blocked.chmod(0o700)
+        return
+
+    if n == 32:
+        for free, minimum in ((1024, 1024), (1025, 1024), (2000, 2000)):
+            with running(cfg, root / str(free), env={'UCR_DRIVE_FAKE_FREE_MB': str(free)},
+                         args=['--min-free-mb', str(minimum)]) as run:
+                moving(run)
+                run.finish()
+        return
+
+    if n == 19:
+        for hold in (800, 400):
+            with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
+                run.boot()
+                run.ready()
+                run.keep_driving()
+                run.observe((hold + 300) / 1000, lambda: need(
+                    matched(run.events(), 'state')[-1][1][2] == 'CHAY', 'Dừng khi W vẫn còn được cấp'))
+                run.pump = False
+                mark = len(run.events())
+                key = [e for e in run.events() if e[1] == 'key' and str(e[2]).upper() == 'W'][-1]
+                stop_by(run, mark, key[0], hold, 'deadman')
+                run.event('state', 'SAN_SANG', mark)
+                run.drive()
+                run.finish()
+        return
+
+    if n == 48:
+        # Mọi finish() kiểm G5; ca này tạo đủ cực đại âm/dương và bộ đếm X.
+        with running(cfg, root / 'summary', args=['--interval-ms', '100']) as run:
+            moving(run)
+            for target in (0, -5, -10):
+                steer(run, 'D', target)
+            run.key('X')
+            run.pump = False
+            run.finish()
+        return
+
+    env = {'UCR_DRIVE_FAKE_CAMERA': 'none'} if n == 26 else (
+          {'UCR_DRIVE_FAKE_MOTOR_FAIL': '1'} if n == 33 else None)
+    args = ['--interval-ms', '100'] if n in (43, 44, 45, 47) else []
+    with running(cfg, root / 'run', env=env, args=args) as run:
+        if n == 26:
+            run.boot(images=False)
+            camera_start = matched(run.events(), 'servo_angle', 0)[0][1][0]
+            # R/Y bị bỏ khi chưa từng có khung, kể cả liên tục cấp phím.
+            for _ in range(10):
+                run.send('RYW')
+                run.observe(0.3, lambda: limits(run.events(), moving=False))
+            run.finish('camera_no_frame')
+            limits(run.events(), moving=False)
+            need(monotonic_ms() - camera_start <= 5500 + cfg.slack, 'Khung đầu chờ quá hạn 5 s sau Init')
+            return
+        if n == 33:
+            # §12.4: ghi lệnh 0 ngay sau Init hỏng là lỗi khởi tạo, không còn mã 5.
+            run.finish('motor_init_fail', summary=False)
+            motor_failed(run.events(), run.text())
+            return
+        if n in (1, 2):
+            # Quan sát ảnh trước: M04 phải bị bắt ở trạng thái đầu hoặc W tự chạy.
+            run.wait(lambda: run.rows(), seconds=10, message='Thiếu ảnh trước kiểm khóa')
+            states = matched(run.events(), 'state')
+            need(states and states[0][1][2] == 'KHOA', 'Không khởi động KHOA', 'default_lock')
+            for key in ('W', 'W', 'Y', 'A', 'D', 'C', 'w', 'y', 'a', 'd') if n == 2 else ('W',):
+                run.key(key)
+            run.observe(1, lambda: limits(run.events(), moving=False))
+            need(all(row['state'] == 'KHOA' for row in run.rows()), 'CSV không ghi KHOA')
+            run.finish()
+            return
+        run.boot()
+        if n == 4:
+            event = run.key('R')
+            run.observe(max(0, (event[0] + 5300 - monotonic_ms()) / 1000),
+                        lambda: limits(run.events(), moving=False))
+            run.key('Y')
+            run.key('W')
+            run.observe(0.3, lambda: limits(run.events(), moving=False))
+        elif n == 14:
+            for _ in range(2):
+                mark = len(run.events())
+                run.key('X')
+                run.event('servo_angle', 0, mark)
+                ordered_stop(run.events()[mark:])
+                run.key('W')
+            limits(run.events(), moving=False)
+        elif n == 25:
+            run.ready()
+            run.keep_driving()
+            mark, stamp = len(run.events()), monotonic_ms()
+            run.pump = False
+            os.close(run.master)
+            run.master = None
+            stop_by(run, mark, stamp)
+            run.wait(lambda: run.process.poll() is not None, 5, alive=False)
+            reason = 'sighup' if run.process.returncode == 129 else 'stdin_eof'
+            run.finish(reason, codes={4, 129})
+            # Lỗi đọc riêng có tên điều khiển, không bị nhầm với HUP.
+            with running(cfg, root / 'stdin_error') as other:
+                moving(other)
+                mark = len(other.events())
+                stamp = other.inject('stdin_error')
+                stop_by(other, mark, stamp)
+                other.finish('stdin_eof')
+            return
+        elif n == 27:
+            run.ready()
+            run.keep_driving()
+            mark = len(run.events())
+            stamp = run.inject('camera_stall')
+            stop_by(run, mark, stamp, 500)
+            run.finish('camera_stall')
+            no_restart(run.events()[mark:])
+            return
+        elif n == 41:
+            text = run.text().lower()
+            need('tof' in text and ('không' in text or 'khong' in text), 'Thiếu cảnh báo không phanh ToF')
+            need('giám sát' in text or 'giam sat' in text, 'Thiếu cảnh báo người giám sát')
+            need('ctrl+c' in text and ('một' in text or 'mot' in text), 'Thiếu cảnh báo Ctrl+C')
+            run.ready()
+            run.drive()
+        elif n == 47:
+            folder = run.session_dir()
+            sentinel = folder / 'sentinel'
+            sentinel.write_bytes(b'GIU NGUYEN')
+            run.finish()
+            with running(cfg, root / 'again', out_root=run.out) as other:
+                other.wait(lambda: len(list(run.out.glob('*/session.json'))) == 2, 10)
+                other.key('\x1b')
+                other.wait(lambda: other.process.poll() is not None, 5, alive=False)
+                need(other.process.returncode == 0, 'Phiên sau không thoát sạch')
+                final_stop(other.events())
+                need(sentinel.read_bytes() == b'GIU NGUYEN', 'Ghi đè phiên cũ')
+            return
+        elif n in (44, 45, 46):
+            count = 3 if n == 46 else 2
+            run.wait(lambda: len(run.rows()) >= count, seconds=10)
+            rows = run.rows()
+            for row in rows:
+                size, tables = read_jpeg(run.session_dir() / row['filename'])
+                need(size == (1280, 720), 'Ảnh giả sai cỡ nguồn')
+                if n == 45:
+                    quality90(tables)
+            if n == 45:
+                def check_committed():
+                    for path in run.session_dir().glob('*.jpg'):
+                        read_jpeg(path)
+                    for row in run.rows():
+                        read_jpeg(run.session_dir() / row['filename'])
+                run.observe(0.4, check_committed)
+            if n == 46:
+                times = [int(row['monotonic_ns']) for row in rows]
+                need(all(b - a >= 1000000000 for a, b in zip(times, times[1:])),
+                     'Chu kỳ mặc định ngắn hơn 1000 ms')
+                session = json.loads((run.session_dir() / 'session.json').read_text(encoding='utf-8'))
+                # G5 không hứa trường pipeline_used; chuỗi mặc định kiểm ở hiện vật.
+                data = Path(cfg.real).read_bytes()
+                for part in (b'sensor-mode=5', b'wbmode=0', b'width=1280,height=720', b'framerate=60/1'):
+                    need(part in data, 'Thiếu thành phần pipeline mặc định: ' + repr(part))
+                need(session['width'] == 1280 and session['height'] == 720, 'Session sai cỡ')
+        else:
+            run.ready()
+            if n == 3:
+                mark = len(run.events())
+                run.observe(1, lambda: limits(run.events()[mark:], moving=False))
+            elif n in (9, 11):
+                if n == 11:
+                    for key, target in (('A', 5), ('C', 0), ('D', -5), ('C', 0)):
+                        steer(run, key, target)
+                run.keep_driving()
+                for target in (5, 10, 10, 10):
+                    steer(run, 'A', target)
+                if n == 11:
+                    steer(run, 'C', 0)
+                for target in ((-5, -10, -10) if n == 11 else (5, 0, -5, -10, -10)):
+                    steer(run, 'D', target)
+                if n == 11:
+                    steer(run, 'C', 0)
+            elif n == 12:
+                for stop_key, turn, angle in (('S', 'A', 5), (' ', 'D', -5)):
+                    run.keep_driving()
+                    steer(run, turn, angle)
+                    run.pump = False
+                    mark = len(run.events())
+                    key = run.key(stop_key)
+                    stop_by(run, mark, key[0])
+                    run.observe(1, lambda: need(not any(e[1] == 'servo_angle' and e[2] != angle
+                                                                     for e in run.events()[mark:]),
+                                               'S/Space đổi góc lái'))
+                    steer(run, 'C', 0)
+            elif n == 13:
+                run.keep_driving()
+                steer(run, 'A', 5)
+                run.pump = False
+                mark = len(run.events())
+                key = run.key('X')
+                stop_by(run, mark, key[0])
+                run.event('servo_angle', 0, mark)
+                ordered_stop(run.events()[mark:], 'x_order')
+                run.event('state', 'KHOA', mark)
+                after = len(run.events())
+                run.key('W')
+                run.observe(0.3, lambda: limits(run.events()[after:], moving=False))
+            elif n == 15:
+                run.keep_driving()
+                steer(run, 'A', 5)
+            elif n in (18, 20):
+                mark = len(run.events())
+                key = run.key('W')
+                run.event('motor_speed', 5, mark)
+                stop_mark = len(run.events())
+                if n == 20:
+                    for key_name in ('A', 'D', 'C', '?'):
+                        run.key(key_name)
+                        run.observe(0.15)
+                stop_by(run, stop_mark, key[0], 800, 'deadman')
+                run.event('state', 'SAN_SANG', stop_mark)
+            elif n == 43:
+                run.wait(lambda: any(r['state'] == 'SAN_SANG' for r in run.rows()))
+                run.keep_driving()
+                steer(run, 'A', 5)
+                run.wait(lambda: any(r['state'] == 'CHAY' and float(r['cmd_speed']) == 5 and
+                                     float(r['cmd_steer']) == 5 for r in run.rows()))
+                check_capture_states(run)
+            else:
+                raise AssertionError('Chưa cài đặt ' + case)
+        run.finish()
+        if n == 46:
+            pipeline = 'videotestsrc is-live=true ! video/x-raw,width=320,height=240 ! videoconvert ! appsink'
+            with running(cfg, root / 'override', args=['--interval-ms', '250', '--pipeline', pipeline]) as other:
+                other.boot()
+                other.wait(lambda: len(other.rows()) >= 3, 5)
+                stamps = [int(row['monotonic_ns']) for row in other.rows()]
+                need(all(b - a >= 250000000 for a, b in zip(stamps, stamps[1:])), 'Không giữ interval 250 ms')
+                need(stamps[2] - stamps[0] < 1800000000, 'Bỏ qua interval ghi đè, vẫn dùng 1000 ms')
+                other.finish()
+                session = json.loads((other.session_dir() / 'session.json').read_text(encoding='utf-8'))
+                need(pipeline in str(session['argv']), 'Không lưu argv pipeline ghi đè')
+
+
+def init_case(n, cfg, root):
+    """§12–§13: cận thời gian Init riêng, không nới thêm theo sanitizer."""
+    if n == 84:
+        return wrapper_preflight(cfg, root)
+    if n == 80:
+        with running(cfg, root / 'sequence') as run:
+            run.boot()
+            for _ in range(2):
+                run.ready()
+                run.drive()
+                mark = len(run.events())
+                run.key('X')
+                run.pump = False
+                run.event('state', 'KHOA', mark)
+            run.finish()
+            init_sequence(run.events(), required=True, complete=True)
+        return
+    if n == 81:
+        for sig, reason in ((signal.SIGTERM, 'sigterm'), (signal.SIGINT, 'sigint'),
+                            (signal.SIGHUP, 'sighup'), (signal.SIGTSTP, 'sigtstp')):
+            with running(cfg, root / reason, env={'UCR_DRIVE_FAKE_INIT_MS': '1500'}) as run:
+                event = run.event('motor_init', seconds=10)
+                stamp = monotonic_ms()
+                need(stamp - event[0] < 1000, 'Không còn đủ cửa sổ gửi tín hiệu trong Init', 'setup')
+                run.process.send_signal(sig)
+                run.send('RYW')
+                deadline = event[0] + 1500 + 300
+                run.wait(lambda: run.process.poll() is not None,
+                         max(0.01, (deadline - monotonic_ms()) / 1000),
+                         'Tín hiệu trong Init thoát quá hạn', alive=False)
+                need(monotonic_ms() <= deadline, 'Quá Init còn lại +300 ms')
+                need(run.process.returncode == REASONS[reason], 'Sai mã tín hiệu trong Init: ' + run.text())
+                events = run.events()
+                init_sequence(events, required=True, complete=True)
+                first_zero = matched(events, 'motor_speed', 0)[0][1]
+                need(first_zero[0] >= event[0] + 1495,
+                     'Tín hiệu đã bỏ dở Init trước 1500 ms (dung sai mốc vết 5 ms)')
+                need(not matched(events, 'key'), 'Đã xử lý phím dù có tín hiệu trong Init')
+                limits(events, moving=False)
+                final_stop(events)
+        return
+    env = {'UCR_DRIVE_FAKE_OPEN_FAIL': 'motor_init'} if n == 82 else {
+        'UCR_DRIVE_FAKE_INIT_MS': '8000'}
+    with running(cfg, root / 'failure', env=env) as run:
+        event = run.event('motor_init', seconds=10)
+        # Pha Init không thuộc mốc 200 ms; TSan thoát chậm hơn nên thêm 1 s riêng cho sanitizer.
+        deadline = event[0] + 5500 + (1000 if cfg.slack else 0)
+        run.wait(lambda: run.process.poll() is not None,
+                 max(0.01, (deadline - monotonic_ms()) / 1000), 'Init không thoát có hạn', alive=False)
+        need(monotonic_ms() <= deadline, 'Init quá 5,5 s')
+        need(run.process.returncode == 3, 'Lỗi/watchdog Init phải mã 3: ' + run.text())
+        need('KIEM TRA XE, DUNG CONG TAC NGUON' in run.text(), 'Lỗi/watchdog Init thiếu cảnh báo')
+        events = run.events()
+        init_sequence(events, required=True)
+        limits(events, moving=False)
+        need(not matched(events, 'key'), 'Xử lý phím khi Init hỏng/treo')
+
+
+def motor_failed(events, text):
+    attempts = [e for e in events if e[1] == 'motor_emergency' or (e[1] == 'motor_speed' and e[2] == 0)]
+    need(len(attempts) >= 4, 'Cần lần đầu + 3 thử lại')
+    need(all(e[3] for e in attempts), 'Vết motor lỗi thiếu đuôi fail')
+    need(20 <= attempts[3][0] - attempts[0][0] <= 400,
+         'Ba lần thử lại không có khoảng cách xấp xỉ 20 ms (dung sai tổng 20–400 ms)')
+    need('KIEM TRA XE, DUNG CONG TAC NGUON' in text, 'Thiếu cảnh báo lớn motor')
+    final_stop(events)
+
+
+def check_capture_states(run):
+    events = run.events()
+    changes, latest = [], {}
+    for event in events:
+        if event[1] in ('state', 'motor_speed', 'servo_angle') and latest.get(event[1]) != event[2]:
+            changes.append(event)
+            latest[event[1]] = event[2]
+    checked = set()
+    for row in run.rows():
+        ms = int(row['monotonic_ns']) / 1000000
+        # Bỏ ảnh cùng ms chuyển trạng thái: vết chỉ có độ phân giải ms.
+        if any(abs(e[0] - ms) <= 1 for e in changes):
+            continue
+        prior = [e for e in events if e[0] < ms]
+        for kind, column in (('motor_speed', 'cmd_speed'), ('servo_angle', 'cmd_steer'), ('state', 'state')):
+            values = matched(prior, kind)
+            if values:
+                expected = values[-1][1][2]
+                actual = row[column] if kind == 'state' else float(row[column])
+                need(actual == expected, 'CSV khác lệnh/trạng thái tại lúc chụp: ' + column)
+        checked.add(row['state'])
+    need({'KHOA', 'SAN_SANG', 'CHAY'} <= checked, 'Thiếu ảnh có mốc ổn định ở đủ ba trạng thái')
+
+
+def no_restart(events):
+    stops = matched(events, 'motor_speed', 0) + matched(events, 'motor_emergency')
+    need(stops, 'Không có dừng để kiểm chốt lỗi')
+    first = min(i for i, _ in stops)
+    need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in events[first + 1:]),
+         'Lệnh tiến xuất hiện sau khi đã dừng lỗi')
+
+
+def added_case(n, cfg, root):
+    """Ca bổ sung từ thiết kế §9–§11; không suy kỳ vọng từ triển khai."""
+    if n == 65:
+        with running(cfg, root / 'before_camera', env={'UCR_DRIVE_FAKE_OPEN_FAIL': 'camera'}) as run:
+            run.finish('open_fail', summary=False)
+            ordered_stop(run.events())
+            limits(run.events(), moving=False)
+        return
+    if n == 66:
+        for hold in (100, 2000):
+            with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
+                run.boot()
+                run.ready()
+                mark = len(run.events())
+                run.send('W' * 64)
+                run.wait(lambda: len([e for e in run.events()[mark:] if e[1] == 'key' and
+                                      str(e[2]).upper() == 'W']) >= 64)
+                run.event('motor_speed', 5, mark)
+                last_w = [e for e in run.events() if e[1] == 'key' and str(e[2]).upper() == 'W'][-1]
+                stop_by(run, len(run.events()), last_w[0], hold, 'deadman')
+                run.finish()
+        return
+    if n == 67:
+        for key in ('S', ' ', 'X'):
+            with running(cfg, root / str(ord(key))) as run:
+                moving(run)
+                run.pump = False
+                mark = len(run.events())
+                run.send(key + 'W' * 40)
+                run.event('motor_speed', 0, mark)
+                run.observe(1.1, lambda: no_restart(run.events()[mark:]))
+                run.finish()
+        return
+    if n in (68, 74):
+        for fault in ('jpeg_hang', 'csv_hang'):
+            signals = [(None, 'camera_stall')] if n == 68 else [
+                (signal.SIGINT, 'sigint'), (signal.SIGTERM, 'sigterm'),
+                (signal.SIGHUP, 'sighup'), (signal.SIGQUIT, 'sigterm'),
+                (signal.SIGTSTP, 'sigtstp')]
+            for sig, reason in signals:
+                folder = fault + reason if sig is None else fault + '_' + str(sig)
+                with running(cfg, root / folder, args=['--interval-ms', '100']) as run:
+                    moving(run)
+                    mark = len(run.events())
+                    stamp = run.inject(fault)
+                    if sig is not None:
+                        # Phím C qua hai vòng là hàng rào: tệp CTRL đã được poll
+                        # trong ít nhất một vòng trước lúc gửi tín hiệu.
+                        run.key('C')
+                        run.key('C')
+                        run.observe(0.3, lambda: need(not matched(run.events()[mark:], 'motor_speed', 0),
+                                                    'Đã dừng trước khi tiêm tín hiệu'))
+                        stamp = monotonic_ms()
+                        run.process.send_signal(sig)
+                    stop_by(run, mark, stamp, 2000 if sig is None else 0)
+                    run.finish(reason, summary=False)
+                    no_restart(run.events()[mark:])
+                    summaries = list(run.out.glob('*/summary.json'))
+                    if summaries:
+                        run.check_output(reason, REASONS[reason])
+        return
+    if n == 69:
+        for byte, reason in ((b'\x03', 'sigint'), (b'\x1c', 'sigterm'), (b'\x1a', 'sigtstp')):
+            with running(cfg, root / reason) as run:
+                moving(run)
+                need(termios.tcgetattr(run.slave)[3] & termios.ISIG, 'Terminal đã tắt ISIG')
+                mark, stamp = len(run.events()), monotonic_ms()
+                run.send(byte)
+                stop_by(run, mark, stamp)
+                run.finish(reason)
+                need(termios.tcgetattr(run.slave) == run.before, 'Không khôi phục terminal sau Ctrl')
+        return
+    if n == 70:
+        with running(cfg, root / 'servo') as run:
+            moving(run)
+            mark = len(run.events())
+            stamp = run.inject('servo_fail')
+            # Đổi góc khác 0 để phép kiểm không phụ thuộc tối ưu bỏ lệnh lặp.
+            run.key('D')
+            stop_by(run, mark, stamp)
+            run.finish('servo_fail')
+            events = run.events()[mark:]
+            attempts = matched(events, 'motor_speed', 0) + matched(events, 'motor_emergency')
+            need(len(attempts) >= 4, 'Servo lỗi thiếu 4 lần yêu cầu dừng motor')
+            need('KIEM TRA XE, DUNG CONG TAC NGUON' in run.text(), 'Servo lỗi thiếu cảnh báo nguồn')
+            no_restart(events)
+        return
+    if n == 71:
+        return test_case('D27', cfg, root)
+    if n == 72:
+        with running(cfg, root / 'slow', args=['--interval-ms', '100']) as run:
+            moving(run)
+            mark = len(run.events())
+            run.inject('jpeg_slow')
+            run.observe(3.4, lambda: need(not matched(run.events()[mark:], 'motor_speed', 0),
+                                         'JPEG chậm làm báo nhầm mất khung'))
+            need(matched(run.events()[mark:], 'motor_speed', 5), 'Không duy trì W khi JPEG chậm')
+            run.finish()
+        return
+    if n == 73:
+        with running(cfg, root / 'pause') as run:
+            moving(run)
+            mark = len(run.events())
+            stamp = run.inject('camera_pause_600ms')
+            stop_by(run, mark, stamp, 500)
+            run.event('state', 'SAN_SANG', mark)
+            # Dừng cấp W ngay khi dừng; W đã gửi lúc mất khung không được lưu lại.
+            run.pump = False
+            run.observe(0.5, lambda: no_restart(run.events()[mark:]))
+            run.drive()  # Khung đã về, W mới mới được chạy lại.
+            run.finish()
+        return
+    if n == 75:
+        with running(cfg, root / 'motor_hang') as run:
+            moving(run)
+            mark = len(run.events())
+            stamp = run.inject('motor_hang')
+            run.wait(lambda: run.process.poll() is not None, (1500 + cfg.slack) / 1000,
+                     'Motor ghi treo không thoát trước 1,5 s', alive=False)
+            need(monotonic_ms() - stamp <= 1500 + cfg.slack, 'Motor treo quá hạn')
+            run.finish('motor_fail', summary=False)
+            need('KIEM TRA XE, DUNG CONG TAC NGUON' in run.text(), 'Motor treo thiếu cảnh báo')
+            no_restart(run.events()[mark:])
+        return
+    if n in (76, 77):
+        return wrapper_guards(n, cfg, root)
+    if n == 78:
+        return stop_journal(cfg, root)
+    if n == 79:
+        rejected(cfg, root / 'cli', ['--lock-file', str(root / 'other.lock')])
+        data = Path(cfg.real).read_bytes()
+        need(b'--lock-file' not in data, 'Bản xe còn cờ đổi khóa')
+        need(b'/tmp/ucr_vehicle.lock' in data, 'Không có khóa xe cố định trong hiện vật')
+        return
+    raise AssertionError('Chưa cài đặt D' + str(n))
+
+
+def stop_journal(cfg, root):
+    with running(cfg, root / 'journal', args=['--interval-ms', '100']) as run:
+        moving(run)
+        run.pump = False
+        run.key('S')
+        run.event('state', 'SAN_SANG')
+        run.drive()
+        mark = len(run.events())
+        key = run.key('W')
+        stop_by(run, mark, key[0], 800, 'deadman')
+        run.keep_driving()
+        run.key('X')
+        run.pump = False
+        run.ready()
+        run.keep_driving()
+        mark, stamp = len(run.events()), monotonic_ms()
+        run.process.send_signal(signal.SIGTERM)
+        stop_by(run, mark, stamp)
+        run.finish('sigterm')
+        folder = run.session_dir()
+        with (folder / 'stops.csv').open(encoding='utf-8', newline='') as stream:
+            rows = list(csv.DictReader(stream))
+        required = {'reason', 't_trigger_ms', 't_motor0_done_ms', 'latency_ms'}
+        need(rows and all(required <= set(row) for row in rows), 'Nhật ký dừng thiếu cột')
+        for reason in ('key_s', 'key_x', 'deadman', 'sigterm'):
+            selected = [row for row in rows if row['reason'] == reason]
+            need(len(selected) == 1, 'Cần đúng 1 dòng dừng cho ' + reason)
+            row = selected[0]
+            trigger, done, latency = (float(row[key]) for key in
+                                      ('t_trigger_ms', 't_motor0_done_ms', 'latency_ms'))
+            need(all(math.isfinite(value) for value in (trigger, done, latency)) and latency >= 0,
+                 'Độ trễ dừng không hữu hạn/âm')
+            need(abs(done - trigger - latency) <= 5, 'Độ trễ không khớp hai mốc')
+            zeros = matched(run.events(), 'motor_speed', 0)
+            need(any(abs(event[0] - done) <= 5 for _, event in zeros), 'Nhật ký lệch vết >5 ms')
+            need('DUNG ' + reason in run.text(), 'Thiếu dòng độ trễ trên terminal: ' + reason)
+        summary = json.loads((folder / 'summary.json').read_text(encoding='utf-8'))
+        need(isinstance(summary.get('stops'), list) and len(summary['stops']) <= 100,
+             'Summary thiếu/sai mảng stops')
+        for reason in ('key_s', 'key_x', 'deadman', 'sigterm'):
+            need(sum(row.get('reason') == reason for row in summary['stops']) == 1,
+                 'Summary thiếu/lặp lý do dừng ' + reason)
+
+
+def key_variants(n, cfg, root):
+    if n == 5:
+        for key in ('A', 'W', 'D', 'R'):
+            with running(cfg, root / key) as run:
+                run.boot()
+                run.key('R')
+                run.key(key)
+                run.key('Y')
+                run.key('W')
+                run.observe(0.25, lambda: limits(run.events(), moving=False))
+                run.finish()
+    elif n in (16, 17):
+        for state in ('KHOA', 'CHAY'):
+            with running(cfg, root / state) as run:
+                run.boot()
+                if state == 'CHAY':
+                    run.ready()
+                    run.keep_driving()
+                for seq in (b'\x1b[A', b'\x1b[B', b'\x1b[C', b'\x1b[D',
+                            b'\x1bOA', b'\x1bOB', b'\x1bOC', b'\x1bOD'):
+                    mark = len(run.events())
+                    if n == 17:
+                        run.send(seq[:1])
+                        begin = time.monotonic()
+                        run.observe(0.01)
+                        need(time.monotonic() - begin < 0.04, 'Thiết lập escape phân mảnh quá trễ', 'setup')
+                        run.send(seq[1:])
+                    else:
+                        run.send(seq)
+                    run.observe(0.15, lambda: need(not matched(run.events()[mark:], 'servo_angle'),
+                                                  'Đuôi mũi tên biến thành phím lái'))
+                for truncated in (b'\x1b[', b'\x1bO', b'\xff', b'?'):
+                    mark = len(run.events())
+                    run.send(truncated)
+                    run.observe(0.3, lambda: need(not matched(run.events()[mark:], 'servo_angle'),
+                                                 'Chuỗi cụt/byte lạ thành lái'))
+                if state == 'KHOA':
+                    run.ready()
+                    run.drive()
+                else:
+                    run.drive()
+                # Esc đơn có cửa sổ rộng; không kiểm sát biên 50 ms.
+                run.pump = False
+                run.send(b'\x1b')
+                run.wait(lambda: run.process.poll() is not None, 5, alive=False)
+                need(matched(run.events(), 'key', 'ESC'), 'Esc đơn không được ghi nhận')
+                need(run.process.returncode == 0, 'Esc đơn sai mã thoát')
+                final_stop(run.events())
+                run.check_output('esc', 0)
+    elif n == 53:
+        for lower in (False, True):
+            with running(cfg, root / str(lower)) as run:
+                run.boot()
+                keys = 'rywadcsx' if lower else 'RYWADCSX'
+                for key in keys:
+                    run.key(key)
+                    if key.upper() == 'W':
+                        run.event('motor_speed', 5)
+                    elif key.upper() == 'A':
+                        run.event('servo_angle', 5)
+                    elif key.upper() == 'D':
+                        run.event('servo_angle', 0)
+                run.finish()
+    elif n == 59:
+        for key in ('X', 'S', ' ', '\x1b'):
+            with running(cfg, root / str(ord(key))) as run:
+                run.boot()
+                run.key('R')
+                mark = len(run.events())
+                if key == '\x1b':
+                    run.finish()
+                    continue
+                run.key(key)
+                if key == 'X':
+                    run.event('servo_angle', 0, mark)
+                    ordered_stop(run.events()[mark:])
+                run.key('Y')
+                run.key('W')
+                run.observe(0.3, lambda: limits(run.events(), moving=False))
+                run.finish()
+
+
+def tool_output(argv):
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=25)
+    need(result.returncode == 0, 'Lỗi công cụ {}: {}'.format(argv[0], result.stderr.decode(errors='replace')))
+    text = result.stdout.decode(errors='replace')
+    need(text.strip(), 'Công cụ trả dữ liệu rỗng: ' + argv[0])
+    return text
+
+
+def artifacts(n, cfg):
+    binary = cfg.cam if n == 49 else cfg.real
+    need(binary and Path(binary).is_file(), 'Thiếu hiện vật binary cần kiểm')
+    data = Path(binary).read_bytes()
+    need(data[:4] == b'\x7fELF', 'Hiện vật phải là ELF Linux')
+    if n == 51:
+        hooks = Path(cfg.hooks).read_bytes()
+        need(data != hooks, 'Bản xe và hooks giống nhau')
+        need(b'UCR_DRIVE_FAKE_' not in data, 'Hook lọt vào bản xe')
+        for name in ('TRACE', 'CTRL', 'CAMERA', 'MOTOR_FAIL', 'FREE_MB', 'OPEN_FAIL', 'LOCK', 'INIT_MS'):
+            need(('UCR_DRIVE_FAKE_' + name).encode('ascii') in hooks, 'Thiếu hook đối chứng ' + name)
+        return
+    symbols = tool_output([cfg.nm, '-C', binary])
+    strings = tool_output([cfg.strings, binary])
+    deps = tool_output([cfg.ldd, binary])
+    need('not found' not in deps.lower(), 'Thiếu thư viện động')
+    forbidden = (r'\b(?:Motor|Servo)::' if n == 49 else
+                 r'\b(?:ToF|TOF|IMU|BNO055|SH1106|Backend|App|Safety)::|app_core|tof_backend')
+    need(not re.search(forbidden, symbols), 'Binary chứa lớp/thư viện bị cấm')
+    libraries = '\n'.join(line.strip().split()[0] for line in deps.splitlines() if line.strip())
+    need(not re.search(r'(?i)bno055|vl53|sh1106|app_core|tof_backend', libraries),
+         'Kéo thư viện cảm biến/app')
+    if n == 49:
+        need(not re.search(r'(?i)motor|servo|libi2c|uart', libraries), 'Cam kéo thư viện cơ cấu')
+    if n in (50, 55):
+        # §12 cho phép chuỗi Init nguyên bản; chỉ AutoTunePid vẫn bị cấm.
+        for name in ('AutoTunePid',):
+            need(name not in symbols and name not in strings,
+                 'Có ký hiệu cấu hình driver bị cấm: ' + name)
+
+
+def executable(path, source):
+    path.write_text(source, encoding='utf-8')
+    path.chmod(0o700)
+
+
+def isolated_wrapper(cfg, folder):
+    # Bản sao nguyên byte có gốc tạm: bỏ qua UCR_BUILD_DIR cũng không thể
+    # rơi về build/ucr_stop thật trong cây sản phẩm.
+    root = folder / 'isolated_vehicle'
+    (root / 'scripts').mkdir(parents=True)
+    (root / 'config.yaml').write_text('MO PHONG', encoding='utf-8')
+    copied = root / 'scripts' / 'run_drive.sh'
+    text = Path(cfg.wrapper).read_text(encoding='utf-8')
+    # Bản xe có đúng một dòng khóa cố định; chỉ bản sao test mới đổi sang khóa riêng của ca.
+    need(text.count('lock_file=/tmp/ucr_vehicle.lock') == 1, 'run_drive.sh phải có đúng một dòng lock_file=/tmp/ucr_vehicle.lock')
+    copied.write_bytes(text.replace('lock_file=/tmp/ucr_vehicle.lock', 'lock_file="$UCR_DRIVE_FAKE_LOCK"').encode('utf-8'))
+    return str(copied)
+
+
+def wrapper_records(path):
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines(True)
+            if line.endswith('\n')]
+
+
+def wrapper_preflight(cfg, root):
+    """§13.3: giữ khóa thật trong ca bận; chỉ chạy bản sao script và executable giả."""
+    for mode in ('free', 'busy', 'pre_fail'):
+        folder = root / mode
+        folder.mkdir()
+        build = folder / 'build with spaces'
+        build.mkdir()
+        config = folder / 'config with spaces.yaml'
+        config.write_text('MO PHONG', encoding='utf-8')
+        journal, lock = folder / 'journal', folder / 'vehicle.lock'
+        fake = folder / 'fake.py'
+        fake.write_text(
+            'import json, os, sys\n'
+            'kind = sys.argv[1]\n'
+            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            ' f.write(json.dumps([kind, sys.argv[2:]]) + "\\n")\n'
+            'sys.exit(9 if kind == "stop" and os.environ["MODE"] == "pre_fail" else 0)\n',
+            encoding='utf-8')
+        prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
+        executable(build / 'ucr_stop', prefix + 'stop "$@"\n')
+        executable(build / 'ucr_drive_collect', prefix + 'child "$@"\n')
+        with lock.open('w') as owner:
+            if mode == 'busy':
+                fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with running(cfg, folder / 'run', env=dict(UCR_BUILD_DIR=str(build),
+                         UCR_DRIVE_FAKE_LOCK=str(lock), JOURNAL=str(journal), MODE=mode),
+                         command=[cfg.bash, isolated_wrapper(cfg, folder), '--config', str(config)]) as run:
+                run.wait(lambda: run.process.poll() is not None, 5, 'Trình bao không kết thúc', alive=False)
+                records = wrapper_records(journal)
+                kinds = [record[0] for record in records]
+                expected = {'free': ['stop', 'child', 'stop'], 'busy': [], 'pre_fail': ['stop']}[mode]
+                need(kinds == expected, 'Sai thứ tự/số lần gọi nhánh {}: {}'.format(mode, kinds))
+                need(run.process.returncode == {'free': 0, 'busy': 6, 'pre_fail': 1}[mode],
+                     'Sai mã nhánh ' + mode + ': ' + run.text())
+                for kind, argv in records:
+                    if kind == 'stop':
+                        need(argv == ['--config', str(config)], 'Stop trước/sau gọi sai config')
+                if mode != 'free':
+                    need(run.text().strip(), 'Thiếu cảnh báo khóa hoặc dừng trước thất bại')
+
+
+def wrapper_case(n, cfg, root):
+    """G6: chỉ hai executable giả trong UCR_BUILD_DIR, không có đường tới ucr_stop thật."""
+    variants = [('kill', 0)] if n == 56 else ([('ctrlc', 0)] if n == 57 else
+               [('clean', 0), ('error', 0), ('term', 0), ('clean', 9)])
+    for index, (mode, stop_status) in enumerate(variants):
+        folder = root / str(index)
+        folder.mkdir()
+        build = folder / 'build with spaces'
+        build.mkdir()
+        config = folder / 'config with spaces.yaml'
+        config.write_text('MO PHONG', encoding='utf-8')
+        child_trace, stop_trace = folder / 'child.json', folder / 'stop.json'
+        journal = folder / 'journal'
+        fake = folder / 'fake.py'
+        fake.write_text(
+            'import json, os, signal, sys, termios, time\n'
+            'from pathlib import Path\n'
+            'kind = sys.argv[1]\n'
+            'alive = False\n'
+            'if kind == "stop" and Path(os.environ["CHILD_TRACE"]).exists():\n'
+            ' try:\n'
+            '  os.kill(json.loads(Path(os.environ["CHILD_TRACE"]).read_text())["pid"], 0)\n'
+            '  alive = True\n'
+            ' except ProcessLookupError: pass\n'
+            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            ' f.write(json.dumps([kind, sys.argv[2:], alive]) + "\\n")\n'
+            'if kind == "stop":\n'
+            ' Path(os.environ["STOP_TRACE"]).write_text(json.dumps(sys.argv[2:]))\n'
+            ' sys.exit(int(os.environ["STOP_STATUS"]) if Path(os.environ["CHILD_TRACE"]).exists() else 0)\n'
+            'fd = sys.stdin.fileno()\n'
+            'attrs = termios.tcgetattr(fd)\n'
+            'attrs[3] &= ~(termios.ICANON | termios.ECHO)\n'
+            'termios.tcsetattr(fd, termios.TCSANOW, attrs)\n'
+            'mark = Path(os.environ["CHILD_TRACE"])\n'
+            'pending = mark.with_suffix(".tmp")\n'
+            'pending.write_text(json.dumps(dict(\n'
+            ' pid=os.getpid(), pgid=os.getpgrp(), fg=os.tcgetpgrp(fd), tty=os.isatty(fd))))\n'
+            'pending.rename(mark)\n'
+            'signal.signal(signal.SIGINT, lambda s,f: sys.exit(130))\n'
+            'signal.signal(signal.SIGTERM, lambda s,f: sys.exit(143))\n'
+            'while True:\n'
+            ' key = os.read(fd, 1)\n'
+            ' if key == b"q": sys.exit(0)\n'
+            ' if key == b"e": sys.exit(7)\n', encoding='utf-8')
+        prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
+        executable(build / 'ucr_drive_collect', prefix + 'drive "$@"\n')
+        executable(build / 'ucr_stop', prefix + 'stop "$@"\n')
+        env = dict(UCR_BUILD_DIR=str(build), CHILD_TRACE=str(child_trace), STOP_TRACE=str(stop_trace),
+                   STOP_STATUS=str(stop_status), JOURNAL=str(journal))
+        with running(cfg, folder / 'run', env=env,
+                     command=[cfg.bash, isolated_wrapper(cfg, folder), '--config', str(config)]) as run:
+            run.wait(lambda: child_trace.exists(), 5, 'Trình bao không chạy con từ UCR_BUILD_DIR')
+            need([record[0] for record in wrapper_records(journal)] == ['stop', 'drive'],
+                 'Cần đúng một stop trước con')
+            child = json.loads(child_trace.read_text(encoding='utf-8'))
+            need(child['tty'] and child['pgid'] == child['fg'], 'Con mất TTY/nhóm tiền cảnh')
+            if mode == 'kill':
+                os.kill(child['pid'], signal.SIGKILL)
+            elif mode == 'term':
+                os.kill(child['pid'], signal.SIGTERM)
+            elif mode == 'ctrlc':
+                run.send(b'\x03')
+            else:
+                run.send('e' if mode == 'error' else 'q')
+            run.wait(lambda: run.process.poll() is not None, 5, 'Trình bao không kết thúc', alive=False)
+            need(stop_trace.exists(), 'Không gọi ucr_stop giả')
+            need([record[0] for record in wrapper_records(journal)] == ['stop', 'drive', 'stop'],
+                 'Cần đúng một stop sau con, ngoài stop trước con')
+            need(wrapper_records(journal)[-1][2] is False, 'Stop sau gọi khi con vẫn còn sống')
+            need(all(record[1] == ['--config', str(config)] for record in wrapper_records(journal)
+                     if record[0] == 'stop'), 'Một lần gọi stop dùng sai config')
+            need(json.loads(stop_trace.read_text(encoding='utf-8')) == ['--config', str(config)],
+                 'Gọi stop sai config')
+            if stop_status or mode != 'clean':
+                need(run.process.returncode != 0, 'Trình bao che lỗi con/stop')
+            else:
+                need(run.process.returncode == 0, 'Trình bao thoát sạch sai mã')
+
+
+def wrapper_guards(n, cfg, root):
+    modes = ('lock', 'open') if n == 76 else ('missing', 'not_executable', 'pre_hang', 'post_hang')
+    for mode in modes:
+        folder = root / mode
+        folder.mkdir()
+        build = folder / 'build'
+        build.mkdir()
+        child_mark, stop_mark = folder / 'child', folder / 'stop'
+        journal = folder / 'journal'
+        fake = folder / 'fake.py'
+        fake.write_text(
+            'import json, os, signal, sys\nfrom pathlib import Path\n'
+            'kind, mode = sys.argv[1:3]\n'
+            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            ' f.write(json.dumps([kind]) + "\\n")\n'
+            'Path(os.environ["CHILD_MARK"] if kind == "child" else os.environ["STOP_MARK"]).write_text(\n'
+            ' json.dumps(dict(pid=os.getpid(), pgid=os.getpgrp())))\n'
+            'if kind == "child": sys.exit(6 if mode == "lock" else 3 if mode == "open" else 0)\n'
+            'if mode == "pre_hang" or (mode == "post_hang" and Path(os.environ["CHILD_MARK"]).exists()):\n'
+            ' while True: signal.pause()\n', encoding='utf-8')
+        prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
+        executable(build / 'ucr_drive_collect', prefix + 'child ' + mode + '\n')
+        if mode != 'missing':
+            executable(build / 'ucr_stop', prefix + 'stop ' + mode + '\n')
+            if mode == 'not_executable':
+                (build / 'ucr_stop').chmod(0o600)
+        with running(cfg, folder / 'run', env=dict(UCR_BUILD_DIR=str(build),
+                     CHILD_MARK=str(child_mark), STOP_MARK=str(stop_mark), JOURNAL=str(journal)),
+                     command=[cfg.bash, isolated_wrapper(cfg, folder)]) as run:
+            try:
+                run.wait(lambda: run.process.poll() is not None, 14 if mode.endswith('hang') else 5,
+                         'Trình bao không giữ hạn stop', alive=False)
+                if mode in ('missing', 'not_executable'):
+                    need(run.process.returncode == 1 and not child_mark.exists(),
+                         'Vẫn chạy con khi thiếu ucr_stop thực thi được')
+                elif mode == 'lock':
+                    need(run.process.returncode == 6 and wrapper_records(journal) == [['stop'], ['child']],
+                         'Con trả 6: đã stop trước khi con tranh khóa, không được stop sau')
+                    need(run.text().strip(), 'Thiếu lời nhắc tranh khóa')
+                elif mode == 'pre_hang':
+                    need(run.process.returncode == 1 and not child_mark.exists() and
+                         wrapper_records(journal) == [['stop']], 'Stop trước treo vẫn chạy con hoặc sai mã')
+                else:
+                    need(child_mark.exists() and stop_mark.exists(), 'Không chạy con/stop giả')
+                    need(wrapper_records(journal) == [['stop'], ['child'], ['stop']], 'Sai thứ tự stop/con/stop')
+                    need(run.process.returncode != 0, 'Che lỗi mở hoặc stop treo')
+            finally:
+                # timeout có thể tạo nhóm riêng; dọn đúng PID/nhóm stub đã ghi.
+                if stop_mark.exists():
+                    record = json.loads(stop_mark.read_text(encoding='utf-8'))
+                    try:
+                        if os.getpgid(record['pid']) == record['pgid']:
+                            if record['pgid'] not in (os.getpgrp(), run.process.pid):
+                                os.killpg(record['pgid'], signal.SIGKILL)
+                            else:
+                                os.kill(record['pid'], signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+
+
+def patch_mutant(case, folder):
+    """Chỉ đọc/vá BẢN SAO header; không mở *.cpp để chọn kỳ vọng kiểm thử."""
+    path = folder / 'options.h'
+    source = path.read_text(encoding='utf-8')
+    if case == 'M01':
+        pattern, replacement = r'if\s*\(state == State::CHAY &&', 'if (false && state == State::CHAY &&'
+    elif case == 'M02':
+        pattern, replacement = r'\|\|\s*o\.speed\s*>\s*5\b', ''
+    elif case == 'M03':
+        # X nay dùng stop(), không dùng halt(); chỉ làm sai X, giữ đường Init.
+        pattern = (r'(void stop\([^\n]+\)\s*\{.*?std::exception_ptr failure;\s*)'
+                   r'(try\s*\{\s*setSpeed\(0\);\s*\}\s*catch\s*\(\.\.\.\)\s*'
+                   r'\{\s*failure = std::current_exception\(\);\s*\})')
+        replacement = (r'\1if (reason == "key_x" && center) setAngle(0);\n        \2')
+    elif case == 'M04':
+        # Cho W đầu vượt khóa, kể cả nếu khởi động có một lần halt() riêng.
+        pattern = r'if\s*\(state == State::KHOA\)\s*\{'
+        replacement = "if (state == State::KHOA && k == 'w') state = State::SAN_SANG;\n        if (state == State::KHOA) {"
+    elif case == 'M05':
+        # §12: bỏ lần ghi motor 0 đầu tiên; chỉ vá header sao chép, không đọc .cpp.
+        pattern = r'\bmotor_\.SetSpeedCms\(v\);'
+        replacement = ('static bool skippedInitialZero = false;\n'
+                       '        if (v != 0 || skippedInitialZero) motor_.SetSpeedCms(v);\n'
+                       '        else skippedInitialZero = true;')
+    else:
+        raise SafetyFailure('mutation_setup', 'Mã mutation không biết: ' + case)
+    patched, count = re.subn(pattern, replacement, source, flags=re.DOTALL if case == 'M03' else 0)
+    need(count == 1 and patched != source, 'Điểm vá mutation không khớp duy nhất: ' + case, 'mutation_setup')
+    path.write_text(patched, encoding='utf-8')
+
+
+def mutation(case, cfg, root):
+    original = dict(M01='D18', M02='D07', M03='D13', M04='D01', M05='D80')[case]
+    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='default_lock', M05='init_order')[case]
+    # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
+    test_case(original, cfg, root / 'baseline')
+    folder = root / 'source'
+    shutil.copytree(cfg.source, str(folder), ignore=shutil.ignore_patterns(
+        'build*', '__pycache__', '*.pyc', 'test_drive_collect.py', 'tests.cmake'))
+    patch_mutant(case, folder)
+    build = root / 'mutant-build'
+    build.mkdir()
+    # CMake độc lập chỉ biên dịch bản hooks, không tạo/chạy phần cứng thật.
+    (build / 'CMakeLists.txt').write_text(
+        'cmake_minimum_required(VERSION 3.10)\nproject(Mutant LANGUAGES CXX)\n'
+        'set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n'
+        'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio)\n'
+        'find_package(Threads REQUIRED)\n'
+        'add_executable(mutant "${SOURCE}/main.cpp")\n'
+        'target_compile_definitions(mutant PRIVATE UCR_DRIVE_TEST_HOOKS=1)\n'
+        'target_include_directories(mutant PRIVATE ${OpenCV_INCLUDE_DIRS})\n'
+        'target_link_libraries(mutant PRIVATE ${OpenCV_LIBS} Threads::Threads)\n'
+        'if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)\n'
+        ' target_link_libraries(mutant PRIVATE stdc++fs)\nendif()\n', encoding='utf-8')
+    # Tổng hạn build 65 s + baseline/probe nằm dưới TIMEOUT=120.
+    started = time.monotonic()
+    for argv in ([cfg.cmake, '-DSOURCE=' + str(folder), '-DCMAKE_BUILD_TYPE=Release',
+                  '-DCMAKE_CXX_COMPILER=' + cfg.cxx, '.'],
+                 [cfg.cmake, '--build', '.', '--', '-j1']):
+        remaining = 65 - (time.monotonic() - started)
+        need(remaining > 0, 'Hết hạn build mutation', 'mutation_setup')
+        process = subprocess.Popen(argv, cwd=str(build), stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            output, _ = process.communicate(timeout=remaining)
+            result = subprocess.CompletedProcess(argv, process.returncode, output)
+        finally:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=5)
+        need(result.returncode == 0, 'Build mutation lỗi: ' + result.stdout.decode(errors='replace')[-4000:],
+             'mutation_setup')
+    mutant = argparse.Namespace(**vars(cfg))
+    mutant.hooks = str(build / 'mutant')
+    mutant.slack = 0  # Bản sao vừa biên dịch Release, không áp dung sai sanitizer.
+    if case == 'M02':
+        with running(mutant, root / 'precondition', args=['--speed-cms', '20']) as run:
+            run.boot()
+            run.ready()
+            run.drive()
+            need(matched(run.events(), 'motor_speed', 20), 'Bản vá chưa bỏ trần tốc độ', 'mutation_setup')
+    try:
+        test_case(original, mutant, root / 'probe')
+    except SafetyFailure as error:
+        need(error.tag == expected, 'Mutation hỏng sai phép kiểm: ' + str(error), 'mutation_setup')
+        print('{} PHÁT HIỆN: {}'.format(case, error))
+    else:
+        raise SafetyFailure('mutation_survived', case + ' không bị test phát hiện')
+
+
+def self_check():
+    """Kiểm bộ phân tích và cổng mutation; chạy được trên Windows, không giả runtime."""
+    with tempfile.TemporaryDirectory(prefix='drive_self_') as directory:
+        root = Path(directory)
+        trace = root / 'trace'
+        trace.write_text('10 state KHOA\n10 motor_init\n11 key  \n12 motor_speed 0 fail\n'
+                         '13 motor_emergency fail\n14 servo_angle 0\n15 key', encoding='utf-8')
+        events = read_trace(trace)
+        need(len(events) == 6 and events[1][1] == 'motor_init' and events[2][2] == ' ' and events[3][3],
+             'Bộ đọc vết sai')
+        final_stop(events)
+        ordered_stop(events)
+        valid_init = [(1, 'state', 'KHOA', False), (2, 'motor_init', '', False),
+                      (3, 'motor_speed', 0, False), (4, 'servo_angle', 0, False),
+                      (5, 'key', 'R', False), (6, 'motor_speed', 5, False)]
+        init_sequence(valid_init, required=True, complete=True)
+        init_sequence([], required=False)
+        init_sequence(valid_init[:2], required=True)  # Watchdog không buộc có lệnh dừng.
+        for bad, tag, checker in (
+                ([(1, 'servo_angle', 0, False), (1, 'motor_speed', 0, False)], 'x_order',
+                 lambda es: ordered_stop(es, 'x_order')),
+                ([(1, 'motor_speed', 6, False)], 'speed_limit', limits),
+                ([(1, 'motor_speed', -1, False)], 'speed_limit', limits),
+                ([(1, 'motor_speed', 5, False)], 'default_lock', lambda es: limits(es, False)),
+                (valid_init + [(7, 'motor_init', '', False)], 'init_once', init_sequence),
+                (valid_init[:1] + valid_init[2:], 'init_once', init_sequence),
+                (valid_init[:1] + [valid_init[2]] + valid_init[1:2], 'init_order', init_sequence),
+                (valid_init[:2] + valid_init[3:], 'init_order', init_sequence),
+                (valid_init[:3] + valid_init[4:], 'init_order', init_sequence),
+                (valid_init[:2] + [(3, 'motor_speed', 0, True)] + valid_init[3:],
+                 'init_order', init_sequence),
+                (valid_init[:2] + [valid_init[4]], 'init_order', init_sequence),
+                (valid_init[:2], 'init_order', lambda es: init_sequence(es, complete=True))):
+            try:
+                checker(bad)
+            except SafetyFailure as error:
+                need(error.tag == tag, 'Sai mã phép kiểm tự kiểm')
+            else:
+                raise AssertionError('Bộ kiểm bỏ lọt vết lỗi')
+        data = b'\xff\xd8\xff\xc0\x00\x0b\x08\x02\xd0\x05\x00\x01\x01\x11\x00\xff\xd9'
+        need(jpeg_info(data)[0] == (1280, 720), 'Đọc cỡ JPEG sai')
+        fixtures = {
+            'M01': 'if (state == State::CHAY && now - lastW_ >= timeout) {}',
+            'M02': 'if (!finite || o.speed < 0 || o.speed > 5) throw error;',
+            'M03': 'void stop(const std::string& reason, int64_t trigger, bool center = false) {\n'
+                   ' std::exception_ptr failure;\n try { setSpeed(0); }\n'
+                   ' catch (...) { failure = std::current_exception(); }\n}',
+            'M04': 'if (state == State::KHOA) { locked(); }',
+            'M05': 'void setSpeed(float v) { motor_.SetSpeedCms(v); }'}
+        for case, source in fixtures.items():
+            folder = root / case
+            folder.mkdir()
+            (folder / 'options.h').write_text(source, encoding='utf-8')
+            patch_mutant(case, folder)
+            need((folder / 'options.h').read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
+    print('ĐẠT self-check: vết/Init, cổng an toàn, JPEG và 5 điểm vá; chưa chạy binary sản phẩm')
+
+
+def main():
+    # Python 3.6 chốt mã hóa đường dẫn khi khởi động; cần UTF-8 cho CLI tiếng Việt.
+    if os.name == 'posix' and sys.getfilesystemencoding().lower().replace('-', '') != 'utf8':
+        need(os.environ.get('UCR_DRIVE_TEST_UTF8') != '1', 'Không bật được UTF-8')
+        os.environ.update(LC_ALL='C.UTF-8', LANG='C.UTF-8', UCR_DRIVE_TEST_UTF8='1')
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--case', choices=CASES)
+    parser.add_argument('--self-check', action='store_true')
+    parser.add_argument('--hooks')
+    parser.add_argument('--real')
+    parser.add_argument('--cam')
+    parser.add_argument('--source', default=str(Path(__file__).resolve().parent))
+    parser.add_argument('--wrapper', default=str(Path(__file__).resolve().parents[2] / 'scripts' / 'run_drive.sh'))
+    parser.add_argument('--slack', type=int, choices=(0, 300), default=0)
+    parser.add_argument('--nm', default='nm')
+    parser.add_argument('--strings', default='strings')
+    parser.add_argument('--ldd', default='ldd')
+    parser.add_argument('--bash', default='bash')
+    parser.add_argument('--cmake', default='cmake')
+    parser.add_argument('--cxx', default='g++')
+    cfg = parser.parse_args()
+    if cfg.self_check:
+        self_check()
+        return
+    need(os.name == 'posix', 'Ca PTY cần Linux/POSIX; không kết luận đạt trên Windows')
+    need(cfg.case and cfg.hooks and cfg.real, 'Thiếu --case/--hooks/--real')
+    for key in ('hooks', 'real', 'cam', 'source', 'wrapper'):
+        if getattr(cfg, key):
+            setattr(cfg, key, str(Path(getattr(cfg, key)).resolve()))
+    need(Path(cfg.hooks).is_file(), 'Thiếu binary hooks')
+    need(b'UCR_DRIVE_FAKE_TRACE' in Path(cfg.hooks).read_bytes(), 'Từ chối chạy binary thiếu hook đối chứng')
+    print('{}: dung sai sanitizer +{} ms'.format(cfg.case, cfg.slack))
+    with tempfile.TemporaryDirectory(prefix='ucr_drive_' + cfg.case + '_') as directory:
+        test_case(cfg.case, cfg, Path(directory))
+    print(cfg.case + ' ĐẠT')
+
+
+if __name__ == '__main__':
+    main()
