@@ -80,7 +80,7 @@ void seqlock() {
     std::cout << "seqlock: " << reads << " lần đọc\n";
 }
 void frames() {
-    auto shared = std::unique_ptr<PreviewShared>(new PreviewShared{});
+    auto shared = std::unique_ptr<PreviewShared>(new PreviewShared);
     cv::Mat original(72, 128, CV_8UC3, cv::Scalar(12, 34, 56));
     // Kiểm cả ảnh không liền bộ đệm.
     cv::Mat roi = original(cv::Rect(1, 1, 61, 33));

@@ -188,7 +188,7 @@ PreviewStartResult PreviewHost::start() {
 #endif
     void* memory = mmap(nullptr, sizeof(PreviewShared), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED) { unavailable("không tạo được bộ nhớ preview"); return PreviewStartResult::Unavailable; }
-    shared_ = new (memory) PreviewShared{};
+    shared_ = new (memory) PreviewShared;
     shared_->state.write(PreviewState{});
     int pipe_fd[2];
     if (pipe2(pipe_fd, O_NONBLOCK | O_CLOEXEC) != 0) {

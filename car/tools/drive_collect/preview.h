@@ -108,7 +108,9 @@ struct PreviewFrameHeader {
 struct PreviewShared {
     std::atomic<uint32_t> frame_sequence{0};
     std::atomic<unsigned char> header[sizeof(PreviewFrameHeader)]{};
-    std::atomic<unsigned char> pixels[kPreviewMaxBytes]{};
+    // Không dùng {}: khởi tạo mảng 2,7 triệu phần tử atomic làm GCC ngốn >6 GB RAM ở pha phân tích cú pháp.
+    // Vùng nhớ đến từ mmap nên đã bằng 0; đối tượng PreviewShared phải tạo bằng default-init (không dùng {}).
+    std::atomic<unsigned char> pixels[kPreviewMaxBytes];
     PreviewSlot<PreviewState> state;
     std::atomic<uint32_t> ready{0}, shown{0}, stop{0};
 };
