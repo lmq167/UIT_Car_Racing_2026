@@ -443,7 +443,7 @@ struct Snapshot {
     int64_t ns = 0;
     float speed = 0;
     int angle = 0;
-    State state = State::KHOA;
+    State state = State::DUNG;
 };
 // BT.601 và Laplacian 4 láng giềng, biên phản chiếu; không cần thêm thư viện imgproc.
 std::pair<double, double> imageQuality(const cv::Mat& frame) {
@@ -487,7 +487,8 @@ void makeOutput(Options& o) {
             throw std::runtime_error("Không tạo được thư mục đầu ra mới: " + error.message());
     }
 }
-void writeSession(const Options& o, const std::string& started, const std::string& ended, int width = 0, int height = 0) {
+void writeSession(const Options& o, const std::string& started, const std::string& ended,
+                  int width = 0, int height = 0, PreviewMonitor monitor = {}) {
     std::ofstream file;
     file.exceptions(std::ios::badbit | std::ios::failbit);
     file.open((o.out / "session.json.tmp").string());
@@ -495,7 +496,12 @@ void writeSession(const Options& o, const std::string& started, const std::strin
          << ",\n\"ended_utc\":" << jsonString(ended) << ",\n\"pipeline_used\":" << jsonString(o.pipeline)
          << ",\n\"width\":" << width << ",\n\"height\":" << height << ",\n\"argv\":[";
     for (size_t i = 0; i < o.argv.size(); ++i) { if (i) file << ','; file << jsonString(o.argv[i]); }
-    file << "],\n\"version\":\"ucr_drive_collect/1\",\n\"speed_cms\":" << o.speed
+    std::ostringstream values;
+    values << "AUTOSIZE:" << monitor.autosize << ",VISIBLE:" << monitor.visible;
+    file << "],\n\"preview_monitor\":" << jsonString(previewMonitorName(monitor.property))
+         << ",\n\"preview_monitor_values\":" << jsonString(values.str())
+         << ",\n\"preview_monitor_calibrated\":" << (monitor.calibrated ? "true" : "false")
+         << ",\n\"version\":\"ucr_drive_collect/1\",\n\"speed_cms\":" << o.speed
          << ",\"steer_step_deg\":" << o.steerStep << ",\"max_steer_deg\":" << o.maxSteer
          << ",\"hold_timeout_ms\":" << o.holdTimeout << ",\"interval_ms\":" << o.interval
          << ",\"min_free_mb\":" << o.minFree << ",\"jpeg_quality\":90,\"accept_no_obstacle_brake\":true\n}\n";
@@ -576,7 +582,7 @@ class Capture {
             csv.open((o_.out / "metadata.csv").string());
             csv << "frame,monotonic_ns,wall_time_unix_ms,filename,width,height,mean_luma,lap_var,dropped_since_last,cmd_speed,cmd_steer,state\n" << std::flush;
             int64_t nextSave = 0, checkedSpace = 0;
-            bool sessionWritten = false;
+            bool sessionWritten = false, monitorWritten = false;
             uint64_t dropped = 0;
             Event stats;
             while (!quit_) {
@@ -599,8 +605,10 @@ class Capture {
                     if (pending_.empty()) continue;
                     frame = std::move(pending_); command = pendingCommand_; wall = pendingWall_;
                 }
-                if (!sessionWritten) {
-                    writeSession(o_, o_.started, "", frame.cols, frame.rows); sessionWritten = true;
+                const auto monitor = preview_.monitor();
+                if (!sessionWritten || (monitor.calibrated && !monitorWritten)) {
+                    writeSession(o_, o_.started, "", frame.cols, frame.rows, monitor);
+                    sessionWritten = true; monitorWritten = monitor.calibrated;
                 }
                 if (command.ns < nextSave) { ++dropped; continue; }
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
@@ -647,7 +655,7 @@ public:
     // Đường dừng độc lập không đọc Control đang kẹt trong lời gọi phần cứng.
     void emergencyCommand(int64_t ns) {
         std::lock_guard<std::mutex> guard(commandMutex_);
-        command_.ns = ns; command_.speed = 0; command_.state = State::KHOA;
+        command_.ns = ns; command_.speed = 0; command_.state = State::DUNG;
         rememberCommand();
     }
     void steeringCommand(int64_t ns, int angle) {
@@ -704,7 +712,8 @@ public:
     }
     void warn(const std::string& diagnostic) {
         std::lock_guard<std::mutex> guard(mutex_);
-        diagnostic_ = diagnostic;
+        if (!diagnostic_.empty()) diagnostic_ += '\n';
+        diagnostic_ += diagnostic;
     }
     void requestStop() { quit_ = true; }
     bool finished() const { return done_; }
@@ -742,6 +751,8 @@ int run(Options o) {
     bool previewHandled = previewStart != PreviewStartResult::Started;
     bool previewUnavailable = previewStart == PreviewStartResult::Unavailable;
     if (previewUnavailable) std::cerr << preview.diagnostic() << '\n';
+    if (previewStart != PreviewStartResult::Started)
+        std::cerr << "preview_monitor=none values=AUTOSIZE:0,VISIBLE:0 calibrated=false\n";
     o.started = utcNow();
     SteadyClock clock;
     DriveMotor motor;
@@ -812,11 +823,21 @@ int run(Options o) {
         if (previewUnavailable && o.preview.require_preview)
             throw Failure(7, "preview_unavailable", preview.diagnostic());
         terminal.reset(new Terminal());
-        terminal->discard(); // Phím gõ trong Init không được mở khóa sau khởi tạo.
+        terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.
         preview.discardKeys();
         makeOutput(o);
         writeSession(o, o.started, "");
         journal.reset(new StopJournal(o.out));
+        bool monitorLogged = previewStart != PreviewStartResult::Started;
+        const auto logMonitor = [&] {
+            const auto monitor = preview.monitor();
+            std::ostringstream line;
+            line << "preview_monitor=" << previewMonitorName(monitor.property)
+                 << " values=AUTOSIZE:" << monitor.autosize << ",VISIBLE:" << monitor.visible
+                 << " calibrated=" << (monitor.calibrated ? "true" : "false");
+            journal->warn(line.str());
+            monitorLogged = true;
+        };
         control.onStop = [&](const StopRecord& record) { journal->push(record); };
         capture.reset(new Capture(o, control, preview));
         control.onCommand = [&](int64_t ns, float speed, int angle, State state) noexcept {
@@ -838,11 +859,13 @@ int run(Options o) {
             if (const int stopSignal = stopping.load()) throw Failure(stopSignal == SIGQUIT ? 143 : 128 + stopSignal,
                                         signalReason(stopSignal), "Đã nhận tín hiệu dừng");
             const auto childStatus = preview.pollChild();
+            if (!monitorLogged && (preview.monitor().calibrated || childStatus == PreviewChildStatus::Died)) logMonitor();
+            if (preview.takeWindowWarning()) journal->warn(kPreviewWindowWarning);
             if (!previewHandled && (childStatus == PreviewChildStatus::Closed || childStatus == PreviewChildStatus::Died)) {
                 previewHandled = true;
                 if (preview.wasShown()) {
                     control.stop(childStatus == PreviewChildStatus::Closed ? "preview_closed" : "preview_died",
-                                 trigger, true, true);
+                                 trigger, true);
                 } else {
                     previewUnavailable = true;
                     if (o.preview.require_preview)
@@ -869,7 +892,7 @@ int run(Options o) {
                 throw Failure(4, "camera_stall", "Luồng ghi ảnh mất nhịp sống");
             }
             const bool fresh = frameNs && now - lastFrame <= 500;
-            if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500);
+            if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500, true);
             control.tick();
             if (control.discardPending) {
                 terminal->discard(); preview.discardKeys(); control.discardPending = false;
@@ -925,7 +948,7 @@ int run(Options o) {
                 if (!servoOpened) servoOpened = servo.open();
                 if (servoOpened) control.setAngle(0);
             }
-            else if (code && !recorded) control.stop(reason, trigger, servoOpened, true);
+            else if (code && !recorded) control.stop(reason, trigger, servoOpened);
             else if (servoOpened) control.halt();
             else control.setSpeed(0);
         } else {
@@ -961,6 +984,7 @@ int run(Options o) {
     }
     Event latest;
     if (capture) { capture->join(); latest = capture->stats(); }
+    const auto finalMonitor = preview.monitor();
     preview.shutdown(); // Camera đã dừng; motor 0/servo 0 đã gửi, vẫn trong hạn cứng 3 s.
     if (journal) journal->join();
     if (!error.empty()) std::cerr << error << '\n';
@@ -968,7 +992,7 @@ int run(Options o) {
         try {
             if (o.out.empty()) makeOutput(o);
             const auto ended = utcNow();
-            writeSession(o, o.started, ended, latest.width, latest.height);
+            writeSession(o, o.started, ended, latest.width, latest.height, finalMonitor);
             writeSummary(o, latest, control, code, reason, o.started, ended);
         } catch (const std::exception& e) {
             if (!code) code = 4;
@@ -992,8 +1016,9 @@ int main(int argc, char** argv) {
                   << "  --hold-timeout-ms 800 [100..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
-                  << "R rồi Y trong 5 giây sau khung đầu; giữ W để tiến; A trái, D phải; C trả lái.\n"
-                  << "S/Space dừng, X dừng khẩn và khóa lại, Esc thoát; ảnh luôn được ghi.\n"
+                  << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"
+                  << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; ảnh luôn được ghi.\n"
+                  << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới để chạy lại.\n"
                   << "Chạy qua scripts/run_drive.sh để có đường dừng độc lập.\n";
         return 0;
     }
@@ -1003,6 +1028,8 @@ int main(int argc, char** argv) {
         if (!isatty(0)) throw std::runtime_error("stdin không phải tty (terminal trực tiếp); không chạy qua pipe");
     } catch (const std::exception& e) { std::cerr << "Lỗi tham số: " << e.what() << '\n'; return 2; }
     std::cerr << "CANH BAO: KHONG CO PHANH ToF; người giám sát phải ở sẵn bên xe.\n"
+              << "Mở là DUNG; W tiến; A/D lái; C trả lái; S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát.\n"
+              << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới.\n"
               << "Ctrl+C chỉ là một cách dừng. Nếu mất điều khiển: DUNG CONG TAC NGUON motor.\n";
     try { return run(options); }
     catch (const Failure& e) { std::cerr << e.what() << '\n'; return e.code; }

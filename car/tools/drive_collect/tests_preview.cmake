@@ -19,7 +19,9 @@ set(_preview_cam "${CMAKE_BINARY_DIR}/tools/cam_collect/ucr_collect_cam")
 if(TARGET ucr_collect_cam)
     set(_preview_cam "$<TARGET_FILE:ucr_collect_cam>")
 endif()
-set(_preview_cases P01 P02 P03 P04 P05 P06 P07 P08 P09 P10 P11 P12 P13 P14 P15 P16 P17 P18)
+# P20 cần giao diện X: chưa có chế độ giả thu nhỏ/mất focus được công bố.
+set(_preview_cases P01 P02 P03 P04 P05 P06 P07 P08 P09 P10 P11 P12 P13 P14 P15 P16 P17 P18
+    P19 P21 P22 P23)
 foreach(_preview_case IN LISTS _preview_cases)
     add_test(NAME acc_drive_preview_${_preview_case}
         COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_preview.py"
@@ -32,6 +34,9 @@ foreach(_preview_case IN LISTS _preview_cases)
     set(_preview_labels "acceptance;threads")
     if(_preview_case MATCHES "^P(16|17|18)$")
         set(_preview_labels "acceptance;slow")
+    endif()
+    if(_preview_case STREQUAL "P19")
+        set(_preview_labels "acceptance;threads;slow")
     endif()
     set_tests_properties(acc_drive_preview_${_preview_case} PROPERTIES
         LABELS "${_preview_labels}" TIMEOUT 120)

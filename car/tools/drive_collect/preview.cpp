@@ -13,6 +13,7 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <new>
+#include <limits>
 #include <poll.h>
 #include <pthread.h>
 #include <sstream>
@@ -33,7 +34,7 @@ char decodeKey(int key) {
     if (key == 27) return 'E';
     if (key == 3) return '3';
     if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
-    return key < 128 && std::strchr("wasdcxry ", key) && key != 0 ? char(key) : 0;
+    return key < 128 && std::strchr("wasdcx ", key) && key != 0 ? char(key) : 0;
 }
 [[maybe_unused]] void sendKey(int fd, int key) {
     const char decoded = decodeKey(key);
@@ -57,11 +58,23 @@ void closeInherited(int keep) {
     }
     ::close(STDIN_FILENO);
 }
+// Khóa liên tiến trình có hạn: không quay chờ; hàm hủy nhả cả khi Mat ném ngoại lệ.
+struct FrameAccess {
+    PreviewShared& shared;
+    bool owned;
+    explicit FrameAccess(PreviewShared& value) : shared(value), owned(false) {
+        uint32_t expected = 0;
+        owned = shared.frame_busy.compare_exchange_strong(expected, 1, std::memory_order_acquire);
+    }
+    ~FrameAccess() { if (owned) shared.frame_busy.store(0, std::memory_order_release); }
+};
 }
 
 bool writePreviewFrame(PreviewShared& shared, const cv::Mat& bgr, int64_t captured_ms) noexcept {
     if (bgr.empty() || bgr.type() != CV_8UC3 || bgr.cols > kPreviewMaxWidth || bgr.rows > kPreviewMaxHeight)
         return false;
+    FrameAccess access(shared);
+    if (!access.owned) return false;
     PreviewFrameHeader header{};
     header.width = bgr.cols; header.height = bgr.rows; header.captured_ms = captured_ms;
     shared.frame_sequence.fetch_add(1, std::memory_order_relaxed);
@@ -71,13 +84,14 @@ bool writePreviewFrame(PreviewShared& shared, const cv::Mat& bgr, int64_t captur
     const size_t row_bytes = size_t(bgr.cols) * 3;
     for (int y = 0; y < bgr.rows; ++y) {
         const auto* row = bgr.ptr<unsigned char>(y);
-        for (size_t x = 0; x < row_bytes; ++x)
-            shared.pixels[size_t(y) * row_bytes + x].store(row[x], std::memory_order_relaxed);
+        std::memcpy(shared.pixels + size_t(y) * row_bytes, row, row_bytes);
     }
     shared.frame_sequence.fetch_add(1, std::memory_order_release);
     return true;
 }
-bool readPreviewFrame(const PreviewShared& shared, PreviewFrame& frame) {
+bool readPreviewFrame(PreviewShared& shared, PreviewFrame& frame) {
+    FrameAccess access(shared);
+    if (!access.owned) return false;
     const auto sequence = shared.frame_sequence.load(std::memory_order_acquire);
     if (sequence == 0 || (sequence & 1) || sequence == frame.sequence) return false;
     PreviewFrameHeader header{};
@@ -87,7 +101,7 @@ bool readPreviewFrame(const PreviewShared& shared, PreviewFrame& frame) {
         return false;
     cv::Mat copy(header.height, header.width, CV_8UC3);
     const size_t count = size_t(header.width) * header.height * 3;
-    for (size_t i = 0; i < count; ++i) copy.data[i] = shared.pixels[i].load(std::memory_order_relaxed);
+    std::memcpy(copy.data, shared.pixels, count);
     std::atomic_thread_fence(std::memory_order_acquire);
     if (sequence != shared.frame_sequence.load(std::memory_order_relaxed)) return false;
     frame.bgr = std::move(copy); frame.captured_ms = header.captured_ms; frame.sequence = sequence;
@@ -108,6 +122,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
         const auto sequence = shared.frame_sequence.load(std::memory_order_acquire);
         if (sequence && !(sequence & 1)) {
             shared.shown.store(1, std::memory_order_release);
+            shared.monitor.write(PreviewMonitor{true, PreviewWindowProperty::Autosize, 1, -1});
             if (mode == "die_after_frame") { ::kill(getpid(), SIGKILL); return 12; }
             if (mode == "close_after_frame") return 10;
         }
@@ -126,10 +141,44 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
         shared.ready.store(1, std::memory_order_release);
         PreviewFrame frame;
         PreviewState state{};
+        PreviewWindowTracker window_tracker;
+        bool warned = false, monitor_reported = false;
+        auto next_measure = Clock::now();
         auto next_redraw = Clock::now();
         while (!shared.stop.load(std::memory_order_acquire)) {
+            sendKey(key_fd, cv::waitKey(1));
+            if (shared.shown.load(std::memory_order_acquire) && Clock::now() >= next_measure) {
+                const auto measure = [&](int property) {
+                    try { return cv::getWindowProperty(window, property); }
+                    catch (...) { return std::numeric_limits<double>::quiet_NaN(); }
+                };
+                // Chỉ đo thuộc tính đã chọn sau hiệu chuẩn; không đổi sang thuộc tính khác khi lỗi.
+                const auto property = window_tracker.property();
+                const double autosize = property == PreviewWindowProperty::Visible ? 0 : measure(cv::WND_PROP_AUTOSIZE);
+                const double visible = property == PreviewWindowProperty::Autosize ? 0 : measure(cv::WND_PROP_VISIBLE);
+                if (window_tracker.sample(nowMs(), autosize, visible)) {
+                    std::fprintf(stderr, "preview: cua so dong (prop=%s gia tri=%g)\n",
+                                 property == PreviewWindowProperty::Autosize ? "AUTOSIZE" : "VISIBLE",
+                                 window_tracker.lastValue());
+                    return 10;
+                }
+                if (window_tracker.calibrated() && !monitor_reported) {
+                    monitor_reported = true;
+                    const PreviewMonitor monitor{true, window_tracker.property(), autosize, visible};
+                    shared.monitor.write(monitor);
+                    std::fprintf(stderr, "preview_monitor=%s values=AUTOSIZE:%g,VISIBLE:%g\n",
+                                 previewMonitorName(monitor.property), autosize, visible);
+                }
+                if (window_tracker.warning() && !warned) {
+                    warned = true;
+                    shared.window_warning.store(1, std::memory_order_release);
+                    std::fprintf(stderr, "preview: %s\n", kPreviewWindowWarning);
+                }
+                next_measure = Clock::now() + std::chrono::milliseconds(10);
+            }
             const bool fresh = readPreviewFrame(shared, frame);
-            if (!frame.bgr.empty() && (fresh || Clock::now() >= next_redraw)) {
+            // Không imshow trong lúc chờ xác nhận đóng: HighGUI có thể tự tạo lại cửa sổ đã bị hủy.
+            if (!window_tracker.pendingClose() && !frame.bgr.empty() && (fresh || Clock::now() >= next_redraw)) {
                 shared.state.read(state);
                 state.state[sizeof(state.state) - 1] = 0;
                 cv::Mat display = frame.bgr.clone();
@@ -139,14 +188,8 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 cv::putText(display, line.str(), cv::Point(8, 20), cv::FONT_HERSHEY_SIMPLEX, 0.45,
                             cv::Scalar(0, 255, 0), 1);
                 cv::imshow(window, display);
-                sendKey(key_fd, cv::waitKey(1));
                 shared.shown.store(1, std::memory_order_release);
                 next_redraw = Clock::now() + std::chrono::milliseconds(100);
-            } else sendKey(key_fd, cv::waitKey(1));
-            if (shared.shown.load(std::memory_order_acquire)) {
-                // Một số bộ hiển thị ném lỗi khi nút X đã hủy hẳn cửa sổ.
-                try { if (cv::getWindowProperty(window, cv::WND_PROP_VISIBLE) < 1) return 10; }
-                catch (...) { return 10; }
             }
             ::poll(nullptr, 0, 2);
         }
@@ -294,6 +337,14 @@ bool PreviewHost::wasShown() const noexcept {
 }
 bool PreviewHost::ready() const noexcept {
     return shared_ && shared_->ready.load(std::memory_order_acquire);
+}
+bool PreviewHost::takeWindowWarning() noexcept {
+    return shared_ && shared_->window_warning.exchange(0, std::memory_order_acq_rel) != 0;
+}
+PreviewMonitor PreviewHost::monitor() const noexcept {
+    PreviewMonitor value;
+    if (shared_) shared_->monitor.read(value);
+    return value;
 }
 PreviewChildStatus PreviewHost::pollChild() noexcept {
     if (child_ <= 0) return status_;

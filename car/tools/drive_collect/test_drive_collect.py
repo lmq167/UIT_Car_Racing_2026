@@ -36,10 +36,10 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                lock_held=6, stdin_eof=4, camera_no_frame=4, camera_stall=4,
                write_error=4, disk_low=4, motor_fail=5, servo_fail=5,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
-CUT = {42, 52, 54, 61, 63, 64}
+CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 94)]
-CASES += ['M01', 'M02', 'M03', 'M04', 'M05']
+CASES += ['D{:02d}'.format(n) for n in range(65, 97)]
+CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07']
 
 
 class SafetyFailure(AssertionError):
@@ -100,7 +100,7 @@ def init_sequence(events, required=False, complete=False):
     start = inits[0][0]
     need(not matched(events[:start], 'motor_speed'), 'Có lệnh tốc độ trước Init', 'init_order')
     states = matched(events[:start], 'state')
-    need(states and states[-1][1][2] == 'KHOA', 'Init không ở trạng thái KHOA', 'init_order')
+    need(states and states[-1][1][2] == 'DUNG', 'Init không ở trạng thái DUNG', 'init_order')
     zero_motor = None
     pair_done = None
     for index, event in enumerate(events):
@@ -120,10 +120,10 @@ def limits(events, moving=True):
     for _, kind, value, _ in events:
         if kind == 'motor_speed':
             need(0 <= value <= (5 if moving else 0), 'Tốc độ bị cấm: ' + str(value),
-                 'default_lock' if not moving else 'speed_limit')
+                 'startup_stopped' if not moving else 'speed_limit')
         if kind == 'servo_angle':
             need(abs(value) <= (10 if moving else 0), 'Góc bị cấm: ' + str(value),
-                 'default_lock' if not moving else 'steer_limit')
+                 'startup_stopped' if not moving else 'steer_limit')
 
 
 def ordered_stop(events, tag='stop_order'):
@@ -222,7 +222,13 @@ class Run:
         self.next_w = 0
         self.pump = False
         self.command_speed = 5
+        self.hold_timeout = 800
         for index, value in enumerate(args[:-1]):
+            if value == '--hold-timeout-ms':
+                try:
+                    self.hold_timeout = int(args[index + 1])
+                except ValueError:
+                    pass  # Ca đầu vào hỏng không gọi các helper điều khiển.
             if value == '--speed-cms':
                 try:
                     self.command_speed = float(args[index + 1])
@@ -313,12 +319,12 @@ class Run:
                          seconds, 'Không thấy {} {}'.format(kind, value))
 
     def boot(self, images=True):
-        first = self.event('state', 'KHOA', seconds=10)
+        first = self.event('state', 'DUNG', seconds=10)
         need(self.started - 5 <= first[0] <= monotonic_ms() + 5,
              'Vết không cùng miền CLOCK_MONOTONIC với test', 'setup')
-        need(self.events()[0][1:] == ('state', 'KHOA', False) or
-             matched(self.events(), 'state')[0][1][2] == 'KHOA',
-             'Trạng thái đầu khác KHOA', 'default_lock')
+        need(self.events()[0][1:] == ('state', 'DUNG', False) or
+             matched(self.events(), 'state')[0][1][2] == 'DUNG',
+             'Trạng thái đầu khác DUNG', 'startup_stopped')
         self.wait(lambda: not (termios.tcgetattr(self.slave)[3] & (termios.ICANON | termios.ECHO)),
                   message='Terminal chưa raw/no-echo')
         if images:
@@ -326,11 +332,21 @@ class Run:
         init_sequence(self.events(), required=True, complete=True)
 
     def ready(self):
-        self.key('R')
-        self.key('Y')
-        self.event('state', 'SAN_SANG')
+        # Chỉ khi phục hồi: đợi im phím đủ H từ phím cũ cuối, không chặn W đầu.
+        events = self.events()
+        states = matched(events, 'state')
+        stopped = states and states[-1][1][2] == 'DUNG'
+        resumed = any(e[1] == 'state' and e[2] == 'CHAY' for e in events) or any(
+            e[1] == 'key' and str(e[2]).upper() in ('X', 'S', ' ', 'SPACE') for e in events)
+        if stopped and resumed:
+            self.pump = False
+            relevant = [e[0] for e in events if (e[1] == 'motor_speed' and e[2] == 0) or
+                        (e[1] == 'key' and str(e[2]).upper() in ('W', 'A', 'D', 'C'))]
+            end = max(relevant) + self.hold_timeout + 40
+            self.observe(max(0, (end - monotonic_ms()) / 1000))
 
     def drive(self):
+        self.ready()
         mark = len(self.events())
         self.key('W')
         event = self.event('motor_speed', self.speed(), mark)
@@ -428,7 +444,7 @@ class Run:
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
             need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= 10,
                  'Lệnh CSV ngoài giới hạn')
-            need(row['state'] in ('KHOA', 'SAN_SANG', 'CHAY'), 'Trạng thái CSV sai')
+            need(row['state'] in ('DUNG', 'CHAY'), 'Trạng thái CSV sai')
         return summary, rows
 
     def close(self):
@@ -511,11 +527,85 @@ def rejected(cfg, root, args, code=2, accepted=True, env=None, pipe=False):
         limits(run.events(), moving=False)
 
 
+def motion_quiet(events, tag='fresh_press'):
+    need(not any((e[1] == 'motor_speed' and e[2] > 0) or
+                 (e[1] == 'servo_angle' and e[2] != 0) for e in events),
+         'Phím giữ cũ làm xe chạy/lái lại trước khi im đủ H', tag)
+
+
+def startup_quiet(events, tag):
+    motion_quiet(events, tag)
+    need(not matched(events, 'key'),
+         'Đã diễn giải phím tồn trước khi nhận W mới sau Init', tag)
+
+
+def held_then_fresh(run, mark):
+    """T24/A: phím lặp cũ kéo dài quá H kể từ sự cố vẫn không được chạy."""
+    run.pump = False
+    for _ in range(6):
+        run.key('W')
+        run.key('A')
+        run.observe(run.hold_timeout * 0.30 / 1000,
+                    lambda: motion_quiet(run.events()[mark:]))
+    # Đã xa sự cố >H nhưng chỉ cách phím bị từ chối cuối <H.
+    run.observe(run.hold_timeout * 0.30 / 1000,
+                lambda: motion_quiet(run.events()[mark:]))
+    run.key('W')
+    run.observe(0.05, lambda: motion_quiet(run.events()[mark:]))
+    run.observe((run.hold_timeout + 50) / 1000,
+                lambda: motion_quiet(run.events()[mark:]))
+    fresh = len(run.events())
+    run.key('W')
+    run.event('motor_speed', run.speed(), fresh)
+
+
+def unlock_case(n, cfg, root):
+    if n in (94, 95):
+        environment = {'UCR_DRIVE_FAKE_INIT_MS': '1500'}
+        if n == 95:
+            environment['UCR_DRIVE_FAKE_PREVIEW'] = 'keys:' + '?' * 10 + 'A' + 'W' * 20
+        tag = 'startup_stdin' if n == 94 else 'startup_preview'
+        with running(cfg, root / tag, env=environment) as run:
+            init = run.event('motor_init', seconds=10)
+            if n == 94:
+                need(os.write(run.master, b'AW' * 20) == 40,
+                     'PTY chưa nhận đủ phím tồn trong Init', 'setup')
+            need(monotonic_ms() - init[0] < 1000,
+                 'Không còn đủ cửa sổ đặt phím trước cuối Init', 'setup')
+            if n == 95:
+                # Con giả gửi mỗi 20 ms, chuỗi 31 ký tự kết thúc trước 900 ms.
+                run.wait(lambda: monotonic_ms() >= init[0] + 900, 2,
+                         'Chưa hết cửa sổ tạo hàng phím preview trong Init')
+                need(monotonic_ms() < init[0] + 1400,
+                     'Đặt hàng preview không còn nằm trong Init 1500 ms', 'setup')
+            run.boot()
+            run.observe(0.3, lambda: startup_quiet(run.events(), tag))
+            mark = len(run.events())
+            run.key('W')
+            run.event('motor_speed', 5, mark)  # Không để xả nhầm W đầu mới.
+            run.finish()
+        return
+    with running(cfg, root / 'held_x', args=['--hold-timeout-ms', '400']) as run:
+        moving(run)
+        run.pump = False
+        mark = len(run.events())
+        key = run.key('X')
+        stop_by(run, mark, key[0])
+        run.event('servo_angle', 0, mark)
+        ordered_stop(run.events()[mark:])
+        need(matched(run.events(), 'state')[-1][1][2] == 'DUNG',
+             'X không về DUNG', 'fresh_press')
+        held_then_fresh(run, len(run.events()))
+        run.finish()
+
+
 def test_case(case, cfg, root):
     """Mỗi nhánh đối chiếu hàng cùng mã trong T21_test_cases_report, §8 ưu tiên."""
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n in (94, 95, 96):
+        return unlock_case(n, cfg, root)
     if n in (92, 93):
         return init_write_failure(n, cfg, root)
     if n >= 85:
@@ -568,11 +658,11 @@ def test_case(case, cfg, root):
 
     if n in (21, 22, 23, 24):
         signals = [(signal.SIGINT, 'sigint'), (signal.SIGTERM, 'sigterm'), (signal.SIGHUP, 'sighup')]
-        for state in (('KHOA', 'SAN_SANG') if n == 24 else ('CHAY',)):
+        for state in (('DUNG',) if n == 24 else ('CHAY',)):
             for sig, reason in signals if n == 24 else [signals[n - 21]]:
                 with running(cfg, root / (state + reason)) as run:
                     run.boot()
-                    if state != 'KHOA':
+                    if state != 'DUNG':
                         run.ready()
                     if state == 'CHAY':
                         run.keep_driving()
@@ -656,7 +746,7 @@ def test_case(case, cfg, root):
     if n in (56, 57, 58):
         return wrapper_case(n, cfg, root)
 
-    if n in (5, 16, 17, 53, 59):
+    if n in (16, 17, 53):
         return key_variants(n, cfg, root)
 
     if n == 36:
@@ -742,7 +832,7 @@ def test_case(case, cfg, root):
                 mark = len(run.events())
                 key = [e for e in run.events() if e[1] == 'key' and str(e[2]).upper() == 'W'][-1]
                 stop_by(run, mark, key[0], hold, 'deadman')
-                run.event('state', 'SAN_SANG', mark)
+                run.event('state', 'DUNG', mark)
                 run.drive()
                 run.finish()
         return
@@ -780,25 +870,21 @@ def test_case(case, cfg, root):
             motor_failed(run.events(), run.text())
             return
         if n in (1, 2):
-            # Quan sát ảnh trước: M04 phải bị bắt ở trạng thái đầu hoặc W tự chạy.
-            run.wait(lambda: run.rows(), seconds=10, message='Thiếu ảnh trước kiểm khóa')
-            states = matched(run.events(), 'state')
-            need(states and states[0][1][2] == 'KHOA', 'Không khởi động KHOA', 'default_lock')
-            for key in ('W', 'W', 'Y', 'A', 'D', 'C', 'w', 'y', 'a', 'd') if n == 2 else ('W',):
-                run.key(key)
-            run.observe(1, lambda: limits(run.events(), moving=False))
-            need(all(row['state'] == 'KHOA' for row in run.rows()), 'CSV không ghi KHOA')
+            run.boot()
+            need(matched(run.events(), 'state')[0][1][2] == 'DUNG',
+                 'Không khởi động DUNG', 'startup_stopped')
+            run.observe(0.2, lambda: limits(run.events(), moving=False))
+            if n == 2:
+                # Bỏ qua helper phục hồi: W đầu không được chịu khoảng chờ H.
+                mark = len(run.events())
+                key = run.key('W')
+                event = run.event('motor_speed', 5, mark)
+                need(event[0] - key[0] <= 200 + cfg.slack,
+                     'W đầu không chạy ngay', 'initial_w')
             run.finish()
             return
         run.boot()
-        if n == 4:
-            event = run.key('R')
-            run.observe(max(0, (event[0] + 5300 - monotonic_ms()) / 1000),
-                        lambda: limits(run.events(), moving=False))
-            run.key('Y')
-            run.key('W')
-            run.observe(0.3, lambda: limits(run.events(), moving=False))
-        elif n == 14:
+        if n == 14:
             for _ in range(2):
                 mark = len(run.events())
                 run.key('X')
@@ -919,7 +1005,7 @@ def test_case(case, cfg, root):
                 stop_by(run, mark, key[0])
                 run.event('servo_angle', 0, mark)
                 ordered_stop(run.events()[mark:], 'x_order')
-                run.event('state', 'KHOA', mark)
+                run.event('state', 'DUNG', mark)
                 after = len(run.events())
                 run.key('W')
                 run.observe(0.3, lambda: limits(run.events()[after:], moving=False))
@@ -936,9 +1022,9 @@ def test_case(case, cfg, root):
                         run.key(key_name)
                         run.observe(0.15)
                 stop_by(run, stop_mark, key[0], 800, 'deadman')
-                run.event('state', 'SAN_SANG', stop_mark)
+                run.event('state', 'DUNG', stop_mark)
             elif n == 43:
-                run.wait(lambda: any(r['state'] == 'SAN_SANG' for r in run.rows()))
+                run.wait(lambda: any(r['state'] == 'DUNG' for r in run.rows()))
                 run.keep_driving()
                 steer(run, 'A', 5)
                 run.wait(lambda: any(r['state'] == 'CHAY' and float(r['cmd_speed']) == 5 and
@@ -973,7 +1059,7 @@ def init_case(n, cfg, root):
                 mark = len(run.events())
                 run.key('X')
                 run.pump = False
-                run.event('state', 'KHOA', mark)
+                run.event('state', 'DUNG', mark)
             run.finish()
             init_sequence(run.events(), required=True, complete=True)
         return
@@ -1318,7 +1404,7 @@ def check_capture_states(run):
                 actual = row[column] if kind == 'state' else float(row[column])
                 need(actual == expected, 'CSV khác lệnh/trạng thái tại lúc chụp: ' + column)
         checked.add(row['state'])
-    need({'KHOA', 'SAN_SANG', 'CHAY'} <= checked, 'Thiếu ảnh có mốc ổn định ở đủ ba trạng thái')
+    need({'DUNG', 'CHAY'} <= checked, 'Thiếu ảnh có mốc ổn định ở đủ hai trạng thái')
 
 
 def no_restart(events):
@@ -1430,15 +1516,16 @@ def added_case(n, cfg, root):
         return
     if n == 73:
         with running(cfg, root / 'pause') as run:
-            moving(run)
+            moving(run)  # Đã chạy và lái 5°; nhấn A lần nữa sẽ thành 10°.
             mark = len(run.events())
             stamp = run.inject('camera_pause_600ms')
             stop_by(run, mark, stamp, 500)
-            run.event('state', 'SAN_SANG', mark)
+            run.event('servo_angle', 0, mark)
+            ordered_stop(run.events()[mark:])
+            run.event('state', 'DUNG', mark)
             # Dừng cấp W ngay khi dừng; W đã gửi lúc mất khung không được lưu lại.
             run.pump = False
-            run.observe(0.5, lambda: no_restart(run.events()[mark:]))
-            run.drive()  # Khung đã về, W mới mới được chạy lại.
+            held_then_fresh(run, len(run.events()))
             run.finish()
         return
     if n == 75:
@@ -1471,7 +1558,7 @@ def stop_journal(cfg, root):
         moving(run)
         run.pump = False
         run.key('S')
-        run.event('state', 'SAN_SANG')
+        run.event('state', 'DUNG')
         run.drive()
         mark = len(run.events())
         key = run.key('W')
@@ -1511,18 +1598,8 @@ def stop_journal(cfg, root):
 
 
 def key_variants(n, cfg, root):
-    if n == 5:
-        for key in ('A', 'W', 'D', 'R'):
-            with running(cfg, root / key) as run:
-                run.boot()
-                run.key('R')
-                run.key(key)
-                run.key('Y')
-                run.key('W')
-                run.observe(0.25, lambda: limits(run.events(), moving=False))
-                run.finish()
-    elif n in (16, 17):
-        for state in ('KHOA', 'CHAY'):
+    if n in (16, 17):
+        for state in ('DUNG', 'CHAY'):
             with running(cfg, root / state) as run:
                 run.boot()
                 if state == 'CHAY':
@@ -1546,7 +1623,7 @@ def key_variants(n, cfg, root):
                     run.send(truncated)
                     run.observe(0.3, lambda: need(not matched(run.events()[mark:], 'servo_angle'),
                                                  'Chuỗi cụt/byte lạ thành lái'))
-                if state == 'KHOA':
+                if state == 'DUNG':
                     run.ready()
                     run.drive()
                 else:
@@ -1563,7 +1640,7 @@ def key_variants(n, cfg, root):
         for lower in (False, True):
             with running(cfg, root / str(lower)) as run:
                 run.boot()
-                keys = 'rywadcsx' if lower else 'RYWADCSX'
+                keys = 'wadcsx' if lower else 'WADCSX'
                 for key in keys:
                     run.key(key)
                     if key.upper() == 'W':
@@ -1572,23 +1649,6 @@ def key_variants(n, cfg, root):
                         run.event('servo_angle', 5)
                     elif key.upper() == 'D':
                         run.event('servo_angle', 0)
-                run.finish()
-    elif n == 59:
-        for key in ('X', 'S', ' ', '\x1b'):
-            with running(cfg, root / str(ord(key))) as run:
-                run.boot()
-                run.key('R')
-                mark = len(run.events())
-                if key == '\x1b':
-                    run.finish()
-                    continue
-                run.key(key)
-                if key == 'X':
-                    run.event('servo_angle', 0, mark)
-                    ordered_stop(run.events()[mark:])
-                run.key('Y')
-                run.key('W')
-                run.observe(0.3, lambda: limits(run.events(), moving=False))
                 run.finish()
 
 
@@ -1839,7 +1899,7 @@ def wrapper_guards(n, cfg, root):
 
 def patch_mutant(case, folder):
     """Chỉ đọc/vá BẢN SAO để đặt neo; kỳ vọng lấy từ yêu cầu của phiếu."""
-    path = folder / ('main.cpp' if case == 'M05' else 'options.h')
+    path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07') else 'options.h')
     source = path.read_text(encoding='utf-8')
     if case == 'M01':
         pattern, replacement = r'\bstop\("deadman",\s*deadmanAt\(\)\);', '(void)deadmanAt();'
@@ -1852,9 +1912,14 @@ def patch_mutant(case, folder):
                    r'\{\s*failure = std::current_exception\(\);\s*\})')
         replacement = (r'\1if (reason == "key_x" && center) setAngle(0);\n        \2')
     elif case == 'M04':
-        # Cho W đầu vượt khóa, kể cả nếu khởi động có một lần halt() riêng.
-        pattern = r'if\s*\(state == State::KHOA\)\s*\{'
-        replacement = "if (state == State::KHOA && k == 'w') state = State::SAN_SANG;\n        if (state == State::KHOA) {"
+        pattern, replacement = r'if \(awaitingPress_\) \{', 'if (false && awaitingPress_) {'
+    elif case == 'M06':
+        pattern = r'terminal->discard\(\); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh\.'
+        replacement = '// Mutation: cố ý giữ phím terminal cũ.'
+    elif case == 'M07':
+        pattern = (r'(terminal->discard\(\); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh\.\n)'
+                   r'        preview.discardKeys\(\);')
+        replacement = r'\1        // Mutation: cố ý giữ phím preview cũ.'
     elif case == 'M05':
         # §12: gọi Init hai lần trên bản sao, giữ đường khởi động thành công.
         pattern = r'if\s*\(!motor\.init\(\)\)'
@@ -1867,8 +1932,8 @@ def patch_mutant(case, folder):
 
 
 def mutation(case, cfg, root):
-    original = dict(M01='D18', M02='D07', M03='D13', M04='D01', M05='D80')[case]
-    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='default_lock', M05='init_once')[case]
+    original = dict(M01='D18', M02='D07', M03='D13', M04='D96', M05='D80', M06='D94', M07='D95')[case]
+    expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='fresh_press', M05='init_once', M06='startup_stdin', M07='startup_preview')[case]
     # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
     test_case(original, cfg, root / 'baseline')
     folder = root / 'source'
@@ -1947,14 +2012,14 @@ def self_check():
         else:
             raise AssertionError('Bộ kiểm bỏ lọt cảnh báo TSan trong tệp')
         trace = root / 'trace'
-        trace.write_text('10 state KHOA\n10 motor_init\n11 key  \n12 motor_speed 0 fail\n'
+        trace.write_text('10 state DUNG\n10 motor_init\n11 key  \n12 motor_speed 0 fail\n'
                          '13 motor_emergency fail\n14 servo_angle 0\n15 key', encoding='utf-8')
         events = read_trace(trace)
         need(len(events) == 6 and events[1][1] == 'motor_init' and events[2][2] == ' ' and events[3][3],
              'Bộ đọc vết sai')
         final_stop(events)
         ordered_stop(events)
-        valid_init = [(1, 'state', 'KHOA', False), (2, 'motor_init', '', False),
+        valid_init = [(1, 'state', 'DUNG', False), (2, 'motor_init', '', False),
                       (3, 'motor_speed', 0, False), (4, 'servo_angle', 0, False),
                       (5, 'key', 'R', False), (6, 'motor_speed', 5, False)]
         init_sequence(valid_init, required=True, complete=True)
@@ -1972,6 +2037,21 @@ def self_check():
             else:
                 raise AssertionError('Bộ kiểm hàng W bỏ lọt trễ/chạy lại')
         cmake = Path(__file__).with_name('tests.cmake').read_text(encoding='utf-8')
+        motion_quiet([(1, 'motor_speed', 0, False)])
+        try:
+            motion_quiet([(1, 'motor_speed', 5, False)])
+        except SafetyFailure as error:
+            need(error.tag == 'fresh_press', 'Sai mã phép kiểm nhấn mới')
+        else:
+            raise AssertionError('Bộ kiểm nhấn mới bỏ lọt tốc độ dương')
+        startup_quiet([(1, 'motor_speed', 0, False)], 'startup_stdin')
+        for events in ([(1, 'key', 'W', False)], [(1, 'servo_angle', 5, False)]):
+            try:
+                startup_quiet(events, 'startup_preview')
+            except SafetyFailure as error:
+                need(error.tag == 'startup_preview', 'Sai mã kiểm xả startup')
+            else:
+                raise AssertionError('Bộ kiểm xả startup bỏ lọt phím/lệnh cũ')
         registered = re.findall(r'\b[DM]\d{2}\b', cmake.split('set(_drive_cases', 1)[1].split(')', 1)[0])
         need(len(registered) == len(set(registered)) and set(registered) == set(CASES),
              'Danh sách CLI/CMake lệch hoặc trùng ca')
@@ -1980,7 +2060,7 @@ def self_check():
                  lambda es: ordered_stop(es, 'x_order')),
                 ([(1, 'motor_speed', 6, False)], 'speed_limit', limits),
                 ([(1, 'motor_speed', -1, False)], 'speed_limit', limits),
-                ([(1, 'motor_speed', 5, False)], 'default_lock', lambda es: limits(es, False)),
+                ([(1, 'motor_speed', 5, False)], 'startup_stopped', lambda es: limits(es, False)),
                 (valid_init + [(7, 'motor_init', '', False)], 'init_once', init_sequence),
                 (valid_init[:1] + valid_init[2:], 'init_once', init_sequence),
                 (valid_init[:1] + [valid_init[2]] + valid_init[1:2], 'init_order', init_sequence),
@@ -2005,19 +2085,21 @@ def self_check():
             'M03': 'void stop(const std::string& reason, int64_t trigger, bool center = false) {\n'
                    ' std::exception_ptr failure;\n try { setSpeed(0); }\n'
                    ' catch (...) { failure = std::current_exception(); }\n}',
-            'M04': 'if (state == State::KHOA) { locked(); }',
+            'M04': 'if (awaitingPress_) { reject(); }',
+            'M06': 'terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.',
+            'M07': 'terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.\n        preview.discardKeys();',
             'M05': 'if (!motor.init()) throw Failure(3, "motor_init_fail", "Init hỏng");'}
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()
-            path = folder / ('main.cpp' if case == 'M05' else 'options.h')
+            path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07') else 'options.h')
             path.write_text(source, encoding='utf-8')
             patch_mutant(case, folder)
             need(path.read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
             # Kiểm neo duy nhất trên mã hiện tại, chỉ vá bản sao tạm.
             path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
             patch_mutant(case, folder)
-    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký 92 ca, JPEG và 5 neo hiện tại; chưa chạy binary sản phẩm')
+    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG và 7 neo hiện tại; chưa chạy binary sản phẩm')
 
 
 def main():

@@ -175,9 +175,9 @@ public:
         return keys;
     }
 };
-enum class State { KHOA, SAN_SANG, CHAY };
+enum class State { DUNG, CHAY };
 inline const char* stateName(State s) {
-    return s == State::KHOA ? "KHOA" : (s == State::SAN_SANG ? "SAN_SANG" : "CHAY");
+    return s == State::DUNG ? "DUNG" : "CHAY";
 }
 struct MotorError : std::runtime_error { MotorError() : std::runtime_error("Ghi motor thất bại") {} };
 struct ServoError : std::runtime_error { ServoError() : std::runtime_error("Ghi servo thất bại") {} };
@@ -194,8 +194,12 @@ class Control {
     IMotor& motor_;
     IServo& servo_;
     IClock& clock_;
-    bool confirming_ = false;
-    int64_t confirmAt_ = 0, lastW_ = 0, motor0Done_ = 0;
+    bool awaitingPress_ = false;
+    int64_t lastHeld_ = 0, lastW_ = 0, motor0Done_ = 0;
+    void requireFreshPress() {
+        awaitingPress_ = true;
+        lastHeld_ = clock_.nowMs();
+    }
     float completedSpeed_ = 0;
     int completedAngle_ = 0;
     static int64_t commandNs() {
@@ -203,8 +207,7 @@ class Control {
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
     void publishCommand(int64_t ns) {
-        const auto appliedState = latched_error ? State::KHOA :
-            (completedSpeed_ > 0 ? State::CHAY : (state == State::CHAY ? State::SAN_SANG : state));
+        const auto appliedState = !latched_error && completedSpeed_ > 0 ? State::CHAY : State::DUNG;
         if (onCommand) onCommand(ns, completedSpeed_, completedAngle_, appliedState);
     }
     bool writeSpeed(float v) {
@@ -234,7 +237,7 @@ class Control {
         if (next != State::CHAY) publishCommand(commandNs());
     }
 public:
-    State state = State::KHOA;
+    State state = State::DUNG;
     float speed = 0, maxSpeed = 0;
     int angle = 0, maxAngle = 0;
     uint64_t emergencyStops = 0;
@@ -248,7 +251,7 @@ public:
     std::function<void(const StopRecord&)> onStop;
     Control(const Options& o, IMotor& m, IServo& s, IClock& c) : o_(o), motor_(m), servo_(s), clock_(c) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
-        hookEvent("state", "KHOA");
+        hookEvent("state", "DUNG");
 #endif
     }
     void setSpeed(float v) {
@@ -259,6 +262,8 @@ public:
         if (!written) {
             latched_error = true;
             speed = 0;
+            requireFreshPress();
+            transition(State::DUNG);
             if (v != 0) writeSpeed(0);
             for (int i = 0; i < 3; ++i) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -282,6 +287,8 @@ public:
             latched_error = true;
             const auto trigger = clock_.nowMs();
             setSpeed(0);
+            requireFreshPress();
+            transition(State::DUNG);
             if (!stopCount || stops[(stopCount - 1) % stops.size()].reason != "servo_fail")
                 recordStop("servo_fail", trigger, motor0Done_);
             for (int i = 0; i < 3; ++i) {
@@ -300,20 +307,20 @@ public:
     }
     // Dừng motor trước cả khi trả lái hoặc xử lý lỗi ghi motor.
     void halt() {
-        confirming_ = false;
+        requireFreshPress();
         try { setSpeed(0); }
-        catch (...) { try { setAngle(0); } catch (...) {} transition(State::KHOA); throw; }
+        catch (...) { try { setAngle(0); } catch (...) {} transition(State::DUNG); throw; }
         setAngle(0);
-        transition(State::KHOA);
+        transition(State::DUNG);
     }
-    void stop(const std::string& reason, int64_t trigger, bool center = false, bool lock = false) {
-        confirming_ = false;
+    void stop(const std::string& reason, int64_t trigger, bool center = false) {
+        requireFreshPress();
         discardPending = true;
         std::exception_ptr failure;
         try { setSpeed(0); } catch (...) { failure = std::current_exception(); }
         if (reason != "motor_fail" || !stopCount || stops[(stopCount - 1) % stops.size()].reason != reason)
             recordStop(reason, trigger, motor0Done_);
-        transition(lock ? State::KHOA : (state == State::KHOA ? State::KHOA : State::SAN_SANG));
+        transition(State::DUNG);
         if (center) {
             try { setAngle(0); } catch (...) { if (!failure) failure = std::current_exception(); }
         }
@@ -322,7 +329,6 @@ public:
     int64_t deadmanAt() const { return lastW_ + static_cast<int64_t>(o_.holdTimeout); }
     void tick() {
         const auto now = clock_.nowMs();
-        if (confirming_ && now - confirmAt_ > 5000) confirming_ = false;
         if (state == State::CHAY && now - lastW_ >= static_cast<int64_t>(o_.holdTimeout)) {
             stop("deadman", deadmanAt());
         }
@@ -332,23 +338,24 @@ public:
         tick();
         if (stopCount != stopsBeforeTick) return;
         if (k >= 'A' && k <= 'Z') k += 'a' - 'A';
-        if (k != 27 && (k > 127 || std::string("rywads cx").find(static_cast<char>(k)) == std::string::npos)) return;
-        if (k == 27) { stop("key_esc", clock_.nowMs(), true, true); exiting = true; return; }
-        if (k == 'x') { ++emergencyStops; stop("key_x", clock_.nowMs(), true, true); return; }
+        if (k != 27 && (k < 0 || k > 127 || std::string("wads cx").find(static_cast<char>(k)) == std::string::npos)) return;
+        if (k == 27) { stop("key_esc", clock_.nowMs(), true); exiting = true; return; }
+        if (k == 'x') { ++emergencyStops; stop("key_x", clock_.nowMs(), true); return; }
         if (k == 's' || k == ' ') {
             stop(k == 's' ? "key_s" : "key_space", clock_.nowMs()); return;
         }
-        if (latched_error) return;
-        if (state == State::KHOA) {
-            if (latched_error || !cameraReady) { confirming_ = false; return; }
-            if (confirming_ && k == 'y') { confirming_ = false; transition(State::SAN_SANG); }
-            else if (!confirming_ && k == 'r') { confirming_ = true; confirmAt_ = clock_.nowMs(); }
-            else confirming_ = false;
-            return;
+        if (latched_error || exiting) return;
+        const auto received = readAt >= 0 ? readAt : clock_.nowMs();
+        if (received > clock_.nowMs() || clock_.nowMs() - received >= static_cast<int64_t>(o_.holdTimeout)) return;
+        if (awaitingPress_) {
+            // Terminal không báo nhả: phải im phím đủ một hạn giữ kể từ phím cũ cuối cùng.
+            const bool released = received - lastHeld_ >= static_cast<int64_t>(o_.holdTimeout);
+            lastHeld_ = std::max(lastHeld_, received);
+            if (!released || !cameraReady) return;
+            awaitingPress_ = false;
         }
-        if (k == 'w' && cameraReady) {
-            const auto received = readAt >= 0 ? readAt : clock_.nowMs();
-            if (clock_.nowMs() - received >= static_cast<int64_t>(o_.holdTimeout)) return;
+        if (k == 'w') {
+            if (!cameraReady) { requireFreshPress(); return; }
             // Cả lô phím dùng chung mốc đọc; W tồn không được gia hạn theo lúc xử lý.
             if (state == State::CHAY && lastW_ == received) return;
             transition(State::CHAY); setSpeed(static_cast<float>(o_.speed)); lastW_ = received;

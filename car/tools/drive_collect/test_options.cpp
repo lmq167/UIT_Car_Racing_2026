@@ -134,105 +134,104 @@ void decoderTests() {
     decoder.decode(cut, sizeof(cut), 1500);
     check(decoder.decode(arrow, 1, 1510).empty(), "CSI phân mảnh trong 10 ms phải nuốt cả A");
 }
+// T24/overnight A: DUNG, W mới, phím cũ và đường dừng theo đồng hồ giả.
 void controlTests() {
     Options o;
     FakeClock clock;
     std::vector<std::string> events;
     MotorStub motor(events); ServoStub servo(events);
     Control c(o, motor, servo, clock);
-    c.halt(); events.clear();
-    for (int k : {'w', 'a', 'd', 'y'}) c.key(k);
-    check(events.empty() && c.state == State::KHOA, "Khóa vẫn điều khiển được");
-    c.key('r'); clock.time = 5001; c.key('y');
-    check(c.state == State::KHOA, "Xác nhận quá hạn vẫn mở khóa");
-    c.key('r'); c.key('a'); c.key('y');
-    check(c.state == State::KHOA, "Phím lạ không hủy xác nhận");
-    c.key('R'); clock.time += 5000; c.key('Y');
-    check(c.state == State::SAN_SANG, "Không mở khóa R/Y tại biên 5 giây");
-    c.key('w', false); check(c.speed == 0, "Chạy khi chưa có ảnh");
-    c.key('W'); check(c.speed == 5 && c.state == State::CHAY, "W không chạy đúng tốc độ");
+    check(c.state == State::DUNG && c.speed == 0 && c.angle == 0, "Mở phải là DUNG");
+    c.key('r'); c.key('y'); check(events.empty(), "R/Y phải bị bỏ qua");
+    c.key('W'); check(c.speed == 5 && c.state == State::CHAY, "W mới phải chạy ngay, không mở khóa");
     for (int i = 0; i < 5; ++i) c.key('a');
     check(c.angle == 10, "A phải dương và kẹp 10");
-    c.key('s'); check(c.angle == 10 && c.speed == 0, "S phải giữ góc");
-    c.key('w'); c.key(' '); check(c.angle == 10 && c.speed == 0, "Space phải giữ góc");
+    c.key('s'); check(c.angle == 10 && c.speed == 0 && c.state == State::DUNG, "S phải dừng, giữ góc");
+    clock.time += 800; c.key('w'); c.key(' ');
+    check(c.angle == 10 && c.speed == 0, "Space phải giữ góc");
+    clock.time += 800;
     for (int i = 0; i < 8; ++i) c.key('D');
     check(c.angle == -10, "D phải âm và kẹp -10");
     c.key('C'); check(c.angle == 0, "C không trả lái");
-    c.key('w'); clock.time += 799; c.tick(); check(c.speed == 5, "Dừng trước hạn giữ W");
-    ++clock.time; c.tick(); check(c.speed == 0 && c.state == State::SAN_SANG, "Không tự dừng đúng hạn W");
-    c.key('w'); clock.time += 700; c.key('w'); clock.time += 700; c.tick();
+    c.key('w'); clock.time += 799; c.tick(); check(c.speed == 5, "Dừng trước hạn W");
+    ++clock.time; c.tick(); check(c.speed == 0 && c.state == State::DUNG, "Deadman không về DUNG");
+    clock.time += 800; c.key('w'); clock.time += 700; c.key('w'); clock.time += 700; c.tick();
     check(c.speed == 5, "W lặp không gia hạn");
     c.key('a'); events.clear(); c.key('X');
-    check(events.size() == 2 && events[0] == "motor:0.000000" && events[1] == "servo:0",
-          "X không dừng motor trước servo");
-    check(c.emergencyStops == 1 && c.state == State::KHOA, "X không khóa lại");
-    c.key('w'); check(c.speed == 0, "W chạy lại sau X");
-    c.key('r'); c.key('P'); c.key(0xc3); c.key('?'); c.key('y');
-    check(c.state == State::SAN_SANG, "Phím lạ/P/byte UTF-8 không được đổi trạng thái");
-    c.key(27); check(c.exiting && c.speed == 0 && c.angle == 0, "Esc không dừng và thoát");
+    check(events == std::vector<std::string>({"motor:0.000000", "servo:0"}), "X phải motor 0 trước servo 0");
+    check(c.emergencyStops == 1 && c.state == State::DUNG, "X phải về DUNG");
+    c.key('w'); check(c.speed == 0, "W cũ chạy lại sau X");
+    clock.time += 800; c.key('w'); check(c.speed == 5, "W mới sau X không cần R/Y");
+    c.key(27); check(c.exiting && c.speed == 0 && c.angle == 0, "Esc phải dừng và thoát");
     check(c.maxSpeed == 5 && c.maxAngle == 10, "Sai thống kê lệnh tối đa");
     motor.failing = true; events.clear(); bool failed = false;
     try { c.halt(); } catch (const MotorError&) { failed = true; }
     check(failed && events.size() == 5 && events[1] == "emergency" && events[2] == "emergency" &&
-          events[3] == "emergency" && events[4] == "servo:0", "Thiếu 3 lần dừng dự phòng trước trả lái");
-    for (const auto& event : events) check(event.find("motor:-") == std::string::npos, "Có lệnh lùi");
+          events[3] == "emergency" && events[4] == "servo:0", "Thiếu 3 dừng dự phòng trước trả lái");
+    for (const auto& event : events) check(event.find("motor:-") == std::string::npos, "T24 không được thêm lùi");
     motor.failing = false;
     auto largeStep = parseArgs({"--accept-no-obstacle-brake", "--steer-step-deg", "2147483647"});
     Control large(largeStep, motor, servo, clock);
-    large.key('r'); large.key('y'); large.key('a');
-    check(large.angle == 10, "Bước rất lớn không được tràn số khi rẽ trái");
-    large.key('d'); check(large.angle == -10, "Bước rất lớn không được tràn số khi rẽ phải");
-    check(parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", "0"}).maxSteer == 0,
-          "Phải cho phép khóa góc ở 0 độ");
+    large.key('a'); check(large.angle == 10, "Bước lớn tràn số bên trái");
+    large.key('d'); check(large.angle == -10, "Bước lớn tràn số bên phải");
+    check(parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", "0"}).maxSteer == 0, "Phải nhận góc 0");
 }
 void revisedSafetyTests() {
+    for (const uint64_t hold : {100u, 800u, 2000u}) {
+        for (const char* reason : {"key_x", "frame_stale", "preview_closed", "preview_died", "dir_change"}) {
+            Options o; o.holdTimeout = hold;
+            FakeClock clock;
+            std::vector<std::string> events;
+            MotorStub motor(events); ServoStub servo(events);
+            Control c(o, motor, servo, clock);
+            c.key('w'); clock.time = 10; c.stop(reason, clock.time, true);
+            check(c.state == State::DUNG && c.speed == 0 && c.angle == 0, "Sự cố phải về DUNG");
+            check(c.stopCount == 1 && c.stops[0].reason == reason && c.stops[0].trigger == 10,
+                  "Sai nhật ký sự cố");
+            events.clear();
+            // Phím lặp kéo dài nhiều hạn giữ: chờ từ sự cố thôi sẽ không đủ.
+            for (int i = 0; i < 12; ++i) {
+                clock.time += hold / 2; c.key('w');
+                check(c.speed == 0 && events.empty(), "W giữ cũ làm chạy lại sau sự cố");
+            }
+            const auto last = clock.time;
+            clock.time += hold - 1; c.key('w');
+            check(c.speed == 0, "Nhận W trước khi im đủ hạn");
+            clock.time += hold; c.key('w', true, last); // Lô cũ không được làm mới mốc nhận.
+            check(c.speed == 0, "Lô W hết tuổi vẫn được chạy");
+            c.key('W'); check(c.speed == 5, "Không nhận lần nhấn mới tại biên hạn giữ");
+            clock.time += hold; c.key('w');
+            check(c.speed == 0 && c.stops[c.stopCount-1].reason == "deadman", "W đúng hạn che deadman");
+        }
+    }
     Options o;
     FakeClock clock;
     std::vector<std::string> events;
     MotorStub motor(events); ServoStub servo(events);
     Control c(o, motor, servo, clock);
-    c.key('r', false); c.key('y', false); c.key('w', false);
-    check(c.state == State::KHOA && events.empty(), "Không được mở khóa trước khung đầu");
-    c.key('r'); c.key('y'); c.key('w');
-    clock.time = 800;
-    c.key('w');
-    check(c.speed == 0 && c.discardPending, "W tồn đọng không được chạy lại ngay sau deadman");
-    check(c.stopCount == 1 && c.stops[0].reason == "deadman" && c.stops[0].trigger == 800 &&
-          c.stops[0].done == 800, "Nhật ký deadman phải dùng đúng mốc hết hạn");
-    c.discardPending = false;
-    c.key('w'); clock.time = 810; c.key('s');
-    check(c.stopCount == 2 && c.stops[1].reason == "key_s" && c.stops[1].done >= c.stops[1].trigger,
-          "S phải sinh đúng một bản ghi dừng");
-    c.key('x');
-    check(c.stopCount == 3 && c.stops[2].reason == "key_x", "X phải sinh đúng một bản ghi dừng");
-    c.latched_error = true; events.clear();
-    c.key('r'); c.key('y'); c.key('w'); c.setSpeed(5);
-    check(c.state == State::KHOA && events.empty(), "Lỗi đã chốt không được mở khóa hoặc ghi tiến");
+    c.key('w', false); clock.time = 20; c.key('w', true);
+    check(c.speed == 0, "W trước ảnh đầu tự chạy khi ảnh về");
+    clock.time += 800; c.key('w'); check(c.speed == 5, "W mới sau khung đầu không chạy");
+    c.latched_error = true; c.stop("motor_fail", clock.time, true); events.clear();
+    clock.time += 800; c.key('w'); c.setSpeed(5);
+    check(events.empty() && c.state == State::DUNG, "Lỗi chốt vẫn phát lệnh tiến");
     Control badServo(o, motor, servo, clock);
-    badServo.key('r'); badServo.key('y'); badServo.key('w');
-    servo.failing = true; events.clear(); bool failed = false;
+    badServo.key('w'); servo.failing = true; events.clear(); bool failed = false;
     try { badServo.key('a'); } catch (const ServoError&) { failed = true; }
-    check(failed && badServo.latched_error && badServo.speed == 0, "Lỗi servo phải chốt và dừng motor");
+    check(failed && badServo.latched_error && badServo.speed == 0, "Lỗi servo phải chốt và dừng");
     check(events.size() == 5 && events[1] == "motor:0.000000" && events[2] == "emergency" &&
-          events[3] == "emergency" && events[4] == "emergency", "Lỗi servo cần đủ 4 lần gọi dừng");
-    events.clear(); badServo.key('w');
-    check(events.empty(), "W sau lỗi servo không được phát lệnh tiến");
+          events[3] == "emergency" && events[4] == "emergency", "Lỗi servo thiếu bốn lần dừng");
+    events.clear(); clock.time += 800; badServo.key('w'); check(events.empty(), "W sau lỗi servo vẫn chạy");
     servo.failing = false;
     Control ring(o, motor, servo, clock);
     for (int i = 0; i < 105; ++i) { clock.time = i; ring.key('s'); }
-    check(ring.stopCount == 105 && ring.stops[4].trigger == 104 && ring.stops[5].trigger == 5,
-          "Bộ nhớ nhật ký chỉ giữ 100 lần dừng gần nhất");
+    check(ring.stopCount == 105 && ring.stops[4].trigger == 104 && ring.stops[5].trigger == 5, "Sai vòng nhật ký");
     Control signal(o, motor, servo, clock);
     motor.clock = &clock; motor.delayMs = 7; clock.time = 1000;
-    int notices = 0;
-    signal.onStop = [&](const StopRecord&) { ++notices; };
-    events.clear(); signal.stop("sigterm", 1000, true, true);
-    check(signal.stopCount == 1 && notices == 1 && signal.stops[0].reason == "sigterm",
-          "SIGTERM phải phát đúng một bản ghi và một thông báo");
-    check(signal.stops[0].trigger == 1000 && signal.stops[0].done == 1007,
-          "Độ trễ phải đo tới lúc ghi motor 0 đầu tiên hoàn tất");
-    check(events.size() == 2 && events[0] == "motor:0.000000" && events[1] == "servo:0",
-          "Nhật ký không được đảo thứ tự motor 0 trước servo 0");
+    int notices = 0; signal.onStop = [&](const StopRecord&) { ++notices; };
+    events.clear(); signal.stop("sigterm", 1000, true);
+    check(signal.stopCount == 1 && notices == 1 && signal.stops[0].done == 1007, "Sai mốc ghi motor 0");
+    check(events == std::vector<std::string>({"motor:0.000000", "servo:0"}), "Nhật ký đảo thứ tự dừng");
 }
 void commandCompletionTests() {
     Options o;
@@ -245,42 +244,32 @@ void commandCompletionTests() {
     c.onCommand = [&](int64_t ns, float speed, int angle, State state) {
         applied.push_back({ns, speed, angle, state});
     };
-    c.key('r'); c.key('y');
-    check(applied.size() == 1 && applied.back().state == State::SAN_SANG,
-          "Mở khóa phải công bố trạng thái khi motor vẫn dừng");
     c.key('w'); c.key('a');
     check(applied.back().speed == 5 && applied.back().angle == 5 && applied.back().state == State::CHAY,
-          "Phải công bố từng lệnh tiến/lái đã hoàn tất");
+          "Thiếu công bố lệnh đã hoàn tất");
     servo.beforeWrite = [&](int angle) {
         check(angle == 0 && applied.back().speed == 0 && applied.back().angle == 5 &&
-              applied.back().state != State::CHAY,
-              "Motor 0 phải có nhãn mới trước khi bắt đầu trả servo");
+              applied.back().state == State::DUNG, "Motor 0 phải có nhãn DUNG trước trả lái");
     };
-    c.key(27);
-    check(applied.back().speed == 0 && applied.back().angle == 0 && applied.back().state == State::KHOA,
-          "Esc phải công bố dừng/khóa/trả lái trước khi key trả về");
+    c.stop("key_x", clock.time, true);
+    check(applied.back().speed == 0 && applied.back().angle == 0 && applied.back().state == State::DUNG,
+          "Thiếu công bố dừng/trả lái");
     servo.beforeWrite = {};
-    const auto beforeHalt = applied.size();
-    c.halt();
-    check(applied.size() == beforeHalt + 2, "Dừng cuối phải công bố cả motor 0 và servo 0");
-    c.key('r'); c.key('y'); clock.time = 1; c.key('w');
-    clock.time = 801; c.tick();
-    check(applied.back().speed == 0 && applied.back().state == State::SAN_SANG,
-          "Deadman phải đổi nhãn ngay, không cần phím tiếp theo");
-    clock.time = 802; c.key('w'); servo.failing = true;
-    const auto beforeFailure = applied.size();
-    bool failed = false;
-    try { c.key('a'); } catch (const ServoError&) { failed = true; }
-    check(failed && applied.size() > beforeFailure && applied.back().speed == 0 &&
-          applied.back().angle == 0 && applied.back().state == State::KHOA,
-          "Lỗi servo phải công bố dừng dự phòng, giữ góc đã ghi thành công gần nhất");
+    const auto beforeHalt = applied.size(); c.halt();
+    check(applied.size() == beforeHalt + 2, "halt thiếu công bố motor 0/servo 0");
+    clock.time += 800; c.key('w'); clock.time += 800; c.tick();
+    check(applied.back().speed == 0 && applied.back().state == State::DUNG, "Deadman thiếu công bố DUNG");
+    clock.time += 800; c.key('w'); servo.failing = true;
+    bool failed = false; try { c.key('a'); } catch (const ServoError&) { failed = true; }
+    check(failed && applied.back().speed == 0 && applied.back().angle == 0 &&
+          applied.back().state == State::DUNG, "Sai công bố sau lỗi servo");
     for (size_t i = 1; i < applied.size(); ++i)
-        check(applied[i].ns >= applied[i - 1].ns, "Lịch sử lệnh phải tăng theo đồng hồ đơn điệu");
-    motor.failing = true;
-    const auto beforeMotorFailure = applied.size();
+        check(applied[i].ns >= applied[i - 1].ns, "Mốc lệnh phải tăng đơn điệu");
+    motor.failing = true; const auto before = applied.size();
     try { c.setSpeed(0); } catch (const MotorError&) {}
-    check(applied.size() == beforeMotorFailure, "Không công bố lệnh motor ghi thất bại như thành công");
+    check(applied.size() == before, "Công bố lệnh ghi lỗi như thành công");
 }
+
 }
 int main() {
     try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }

@@ -21,7 +21,7 @@ import time
 import test_drive_collect as d
 
 
-CASES = ['P{:02d}'.format(i) for i in range(1, 19)]
+CASES = ['P{:02d}'.format(i) for i in range(1, 24) if i != 20]
 HIGHGUI = r'cv::(?:namedWindow|imshow|waitKey(?:Ex)?|getWindowProperty)\('
 
 
@@ -178,16 +178,17 @@ def child_loss(case, cfg, root):
         else:
             run.boot()
         row, zero = stop_record(run, reason)
-        run.wait(lambda: d.matched(run.events()[zero:], 'state', 'KHOA') or
-                 d.matched(run.events(), 'state')[-1][1][2] == 'KHOA',
-                 message='Con mất nhưng không khóa lại')
+        run.wait(lambda: d.matched(run.events()[zero:], 'state', 'DUNG') or
+                 d.matched(run.events(), 'state')[-1][1][2] == 'DUNG',
+                 message='Con mất nhưng không về DUNG')
         if case == 'P05':
             d.need(float(row['t_motor0_done_ms']) <= stamp + 200 + cfg.slack,
                    'Dừng trễ từ lúc SIGKILL con', 'preview_stop')
-        run.key('W')
-        run.key('Y')
-        run.key('W')
-        run.observe(0.3, lambda: d.limits(run.events()[zero:], moving=False))
+        d.held_then_fresh(run, len(run.events()))
+        run.pump = False
+        mark = len(run.events())
+        run.key('S')
+        run.event('motor_speed', 0, mark)
         rows = len(run.rows())
         run.wait(lambda: len(run.rows()) > rows, 3, 'Không ghi ảnh sau khi mất preview')
         run.observe(0.3, lambda: d.need(not child_ids(run.process.pid),
@@ -201,13 +202,13 @@ def child_loss(case, cfg, root):
 
 
 def key_effects(events):
-    expected = [('R', None), ('Y', None), ('W', ('motor_speed', 5)),
+    expected = [('W', ('motor_speed', 5)),
                 ('A', ('servo_angle', 5)), ('A', ('servo_angle', 10)),
                 ('D', ('servo_angle', 5)), ('C', ('servo_angle', 0)),
                 ('A', ('servo_angle', 5)), ('S', ('motor_speed', 0)),
                 ('W', ('motor_speed', 5)), (' ', ('motor_speed', 0)),
                 ('W', ('motor_speed', 5)), ('X', ('motor_speed', 0)),
-                ('W', None), ('R', None), ('Y', None),
+                ('W', None),
                 ('W', ('motor_speed', 5)), ('D', ('servo_angle', -5)),
                 ('C', ('servo_angle', 0))]
     keys = [(i, e) for i, e in d.matched(events, 'key') if
@@ -226,17 +227,18 @@ def key_effects(events):
             d.need(not d.matched(chunk, 'servo_angle', 0), 'S/Space làm mất góc', 'window_keys')
         if wanted == 'X':
             d.ordered_stop(chunk, 'window_keys')
-            d.need(d.matched(chunk, 'state', 'KHOA'), 'X không khóa', 'window_keys')
-        if n == 13:
+            d.need(d.matched(chunk, 'state', 'DUNG'), 'X không về DUNG', 'window_keys')
+        if n == 11:
             d.limits(chunk, moving=False)
 
 
 def window_keys(cfg, root):
     # '?' vô hại, kéo giãn 100 ms giữa phím; trước S chưa hết deadman 800 ms.
-    sequence = 'RYWAADCASW WXWRYWDC'
+    sequence = 'WAADCASW WXWWDC'
     for source in ('window', 'terminal'):
         for end, code, reason in (('E', 0, 'esc'), ('3', 130, 'sigint')):
-            stream = '?' * 200 + ('?' * 4).join(sequence + end)
+            stream = '?' * 200 + ''.join(key + '?' * (45 if i in (6, 8, 11) else 4)
+                                                  for i, key in enumerate(sequence + end))
             with preview(cfg, root / (source + end), 'keys:' + stream if source == 'window' else 'ok') as run:
                 pid = live_child(run)
                 if source == 'window':
@@ -245,9 +247,9 @@ def window_keys(cfg, root):
                 if source == 'window':
                     os.kill(pid, signal.SIGCONT)
                 if source == 'terminal':
-                    for key in sequence:
+                    for i, key in enumerate(sequence):
                         run.key(key)
-                        run.observe(0.10)
+                        run.observe(0.90 if i in (6, 8, 11) else 0.10)
                     run.send('\x1b' if end == 'E' else '\x03')
                 run.wait(lambda: run.process.poll() is not None, 12,
                          'Chuỗi phím không thoát', alive=False)
@@ -259,7 +261,7 @@ def window_keys(cfg, root):
 
 
 def shared_deadman(cfg, root):
-    sequence = '?' * 200 + 'ry' + 'w' + '?' * 29 + 'w' + '?' * 29 + 'w'
+    sequence = '?' * 200 + 'w' + '?' * 29 + 'w' + '?' * 29 + 'w'
     with preview(cfg, root, 'keys:' + sequence) as run:
         pid = live_child(run)
         os.kill(pid, signal.SIGSTOP)
@@ -295,6 +297,10 @@ def queue_quiet(events):
     d.need(stops, 'Không có motor 0 để kiểm xóa hàng đợi', 'queue_clear')
     d.need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in events[stops[0] + 1:]),
            'W tồn đọng của hai nguồn làm chạy lại', 'queue_clear')
+    # P08 đã ngừng con trước khi cha tiếp tục; sau dừng chỉ còn byte cũ trong hàng.
+    d.need(not any(e[1] == 'key' and str(e[2]).upper() in ('W', 'A', 'D', 'C')
+                   for e in events[stops[0] + 1:]),
+           'Đuôi hàng phím cũ vẫn bị diễn giải sau lệnh dừng', 'queue_clear')
 
 
 def queue_fresh(rows, stop_ms):
@@ -304,8 +310,8 @@ def queue_fresh(rows, stop_ms):
 
 
 def queue_stop_key(events, key):
-    # §4: cửa sổ gửi E, terminal ghi ESC; s/x có thể giữ chữ thường trong vết.
-    names = ('E', 'ESC') if key == 'E' else (key,)
+    # Vết ghi byte đã giải mã: E thành ESC, 3 thành Ctrl+C (0x03).
+    names = {'E': ('E', 'ESC'), '3': ('3', '\x03')}.get(key, (key,))
     return next((e for e in events if e[1] == 'key' and str(e[2]).upper() in names), None)
 
 
@@ -323,7 +329,7 @@ def queues(cfg, root):
     """§4: dồn byte vào CẢ HAI nguồn khi cha tạm ngừng; không có W mới sau resume."""
     for source in ('terminal', 'window'):
         for key in ('S', 'X', 'E'):
-            stream = '?' * 200 + 'ryw' + ('w' * 3 + key + 'w' * 30
+            stream = '?' * 200 + 'w' + ('w' * 3 + key + 'w' * 30
                                                    if source == 'window' else 'w' * 200)
             with preview(cfg, root / (source + key), 'keys:' + stream) as run:
                 pid = live_child(run)
@@ -379,7 +385,7 @@ def queues(cfg, root):
                 else:
                     run.observe(0.35, lambda: queue_quiet(run.events()[mark:]))
                     if key == 'X':
-                        d.need(d.matched(run.events()[mark:], 'state', 'KHOA'), 'X không khóa')
+                        d.need(d.matched(run.events()[mark:], 'state', 'DUNG'), 'X không về DUNG')
                     run.finish()
                 queue_fresh(journal(run), stop_key[0])
                 queue_quiet(run.events()[mark:])
@@ -533,11 +539,174 @@ def images(cfg, root):
         no_orphans(run)
 
 
+def no_preview_loss(rows):
+    d.need(not any(row['reason'] in ('preview_closed', 'preview_died') for row in rows),
+           'Preview bị coi là đóng/chết khi không đóng cửa sổ', 'false_preview_loss')
+
+
+def same_preview(run, pid, token, state):
+    d.need(identity(pid) == token and child_ids(run.process.pid) == {pid},
+           'Con preview mất/đổi PID hoặc thời điểm khởi tạo', 'preview_lifetime')
+    fields = Path('/proc/{}/stat'.format(pid)).read_text().rsplit(')', 1)[1].split()
+    d.need(fields[0] != 'Z', 'Con preview đã chết, chưa được thu hồi', 'preview_lifetime')
+    no_preview_loss(journal(run))
+    states = d.matched(run.events(), 'state')
+    d.need(states and states[-1][1][2] == state,
+           'Preview làm đổi trạng thái ' + state, 'preview_lifetime')
+
+
+def recording(rows, folder):
+    """P19/P23: đối chiếu ảnh thật với CSV; interval chung của preview() là 100 ms."""
+    names = [row['filename'] for row in rows]
+    d.need(rows and len(set(names)) == len(names) and
+           set(names) == {path.name for path in folder.glob('*.jpg')},
+           'JPEG không khớp từng dòng metadata.csv', 'preview_recording')
+    previous = None
+    for row in rows:
+        d.need((int(row['width']), int(row['height'])) == (1280, 720) and
+               row['state'] == 'DUNG' and float(row['cmd_speed']) == 0 and
+               float(row['cmd_steer']) == 0,
+               'Metadata sai cỡ/trạng thái/lệnh khi đang DUNG', 'preview_recording')
+        size, _ = d.jpeg_info((folder / row['filename']).read_bytes())
+        d.need(size == (1280, 720), 'JPEG không còn 1280×720', 'preview_recording')
+        stamp = int(row['monotonic_ns'])
+        d.need(previous is None or stamp - previous >= 100000000,
+               'Ghi ảnh nhanh hơn --interval-ms 100', 'preview_recording')
+        previous = stamp
+    return rows
+
+
+def long_idle(cfg, root):
+    """T21b_test3/P19: quan sát đủ 60 s, không gửi bất kỳ phím nào trước Esc."""
+    with preview(cfg, root) as run:
+        pid = live_child(run)
+        token = identity(pid)
+        run.boot()
+        counts = (len(list(run.out.glob('*/*.jpg'))), len(run.rows()))
+        started = time.monotonic()
+
+        def unchanged():
+            same_preview(run, pid, token, 'DUNG')
+            events = run.events()
+            d.need(not d.matched(events, 'key'), 'Có phím trong P19', 'setup')
+            d.need(all(e[2] == 'DUNG' for _, e in d.matched(events, 'state')),
+                   'P19 từng rời DUNG', 'preview_lifetime')
+            d.limits(events, moving=False)
+
+        for _ in range(60):
+            run.observe(1, unchanged)
+            current = (len(list(run.out.glob('*/*.jpg'))), len(run.rows()))
+            d.need(all(new > old for old, new in zip(counts, current)),
+                   'JPEG/metadata không tăng trong một giây ở interval 100 ms', 'preview_recording')
+            counts = current
+        d.need(time.monotonic() - started >= 60, 'P19 chưa đủ 60 s', 'setup')
+        run.finish()
+        recording(run.rows(), run.session_dir())
+        no_preview_loss(journal(run))
+        no_orphans(run)
+
+
+def no_close_driving(cfg, root):
+    """T21b_test3/P21: đối chứng CHAY không đóng; P04 giữ ca close_after_frame."""
+    with preview(cfg, root) as run:
+        pid = live_child(run)
+        token = identity(pid)
+        d.moving(run)
+        mark = len(run.events())
+
+        def unchanged():
+            same_preview(run, pid, token, 'CHAY')
+            no_zero(run.events()[mark:])
+
+        run.observe(2, unchanged)
+        run.finish()
+        no_preview_loss(journal(run))
+        no_orphans(run)
+
+
+def exit_paths(cfg, root):
+    """T21b_test3/P22: cả bốn đường thoát khi motor đang chạy, không nới hạn dừng."""
+    for source in ('window_3', 'sigint', 'terminal_esc', 'window_E'):
+        window = source.startswith('window_')
+        end = source[-1]
+        reason, code = ('sigint', 130) if source in ('window_3', 'sigint') else ('esc', 0)
+        mode = 'keys:' + '?' * 200 + end if window else 'ok'
+        with preview(cfg, root / source, mode) as run:
+            pid = live_child(run)
+            if window:
+                queue_pause(run, pid)
+            d.moving(run)
+            mark = len(run.events())
+            if window:
+                os.kill(pid, signal.SIGCONT)
+                key = run.wait(lambda: queue_stop_key(run.events()[mark:], end),
+                               12, 'Không nhận phím thoát từ cửa sổ giả', alive=False)
+                stamp = key[0]
+                run.pump = False
+            else:
+                run.pump = False
+                stamp = d.monotonic_ms()
+                if source == 'sigint':
+                    run.process.send_signal(signal.SIGINT)
+                else:
+                    run.send('\x1b')
+            zero = d.stop_by(run, mark, stamp)
+            run.wait(lambda: run.process.poll() is not None, 8, 'Không thoát ' + source, alive=False)
+            d.need(run.process.returncode == code, 'Sai mã thoát ' + source, 'preview_exit')
+            d.ordered_stop(run.events()[mark:])
+            d.final_stop(run.events())
+            d.no_restart(run.events()[mark:])
+            run.check_output(reason, code)
+            no_preview_loss(journal(run))
+            no_orphans(run)
+            print('P22 {}: mã {}, dừng {:.1f} ms (trần {} ms)'.format(
+                source, code, zero[0] - stamp, 200 + cfg.slack))
+
+
+def compare_counts(counts):
+    d.need(len(counts) == 2 and min(counts) >= 2 and abs(counts[0] - counts[1]) <= 3,
+           'Số JPEG có/không preview lệch hơn ±3 (nhịp lưu dao động dưới tải): ' + repr(counts), 'preview_recording')
+
+
+def compare_images(cfg, root):
+    """T21b_test3/P23: hai cửa sổ thời gian 4 s từ ảnh đầu, loại ảnh lúc dọn dẹp."""
+    counts = []
+    for enabled in (False, True):
+        with preview(cfg, root / str(enabled), 'ok' if enabled else None,
+                     args=[] if enabled else ['--no-preview']) as run:
+            if enabled:
+                pid = live_child(run)
+                token = identity(pid)
+            run.boot()
+            start = int(run.rows()[0]['monotonic_ns'])
+            end = start + 4000000000
+
+            def unchanged():
+                if enabled:
+                    same_preview(run, pid, token, 'DUNG')
+                else:
+                    d.need(not run.sample_children(), '--no-preview vẫn tạo con')
+                no_preview_loss(journal(run))
+                return d.monotonic_ms() * 1000000 >= end
+
+            run.wait(unchanged, 5, 'Không hoàn thành cửa sổ thu 4 s')
+            run.finish()
+            rows = recording(run.rows(), run.session_dir())
+            counts.append(sum(start <= int(row['monotonic_ns']) < end for row in rows))
+            print('P23 preview={} moc_anh_ms={}'.format(enabled, [
+                round((int(row['monotonic_ns']) - start) / 1000000, 3)
+                for row in rows if start <= int(row['monotonic_ns']) < end]), flush=True)
+            no_preview_loss(journal(run))
+            no_orphans(run)
+    compare_counts(counts)
+    print('P23 JPEG trong 4 s, interval 100 ms: không preview {}, có preview {}'.format(*counts))
+
+
 def patch_mutant(case, text):
     """Chỉ ba điểm neo main.cpp sau báo cáo DEV hoàn tất tích hợp 29/10."""
     if case == 'P16':
         anchor = ('control.stop(childStatus == PreviewChildStatus::Closed ? "preview_closed" : "preview_died",\n'
-                  '                                 trigger, true, true);')
+                  '                                 trigger, true);')
         replacement = '(void)trigger;'
     elif case == 'P17':
         anchor = 'while (!control.exiting) {'
@@ -631,7 +800,8 @@ def test_case(case, cfg, root):
     if case in ('P03', 'P04', 'P05'):
         return child_loss(case, cfg, root)
     functions = dict(P06=window_keys, P07=shared_deadman, P08=queues, P09=unavailable,
-                     P10=disabled, P11=arguments, P12=signals, P13=stderr_hang, P15=images)
+                     P10=disabled, P11=arguments, P12=signals, P13=stderr_hang, P15=images,
+                     P19=long_idle, P21=no_close_driving, P22=exit_paths, P23=compare_images)
     if case == 'P14':
         return artifacts(cfg)
     if case in ('P16', 'P17', 'P18'):
@@ -676,12 +846,13 @@ def self_check():
         finally:
             d.tool_output = original_tool
     queue_quiet([(1, 'motor_speed', 5, False), (2, 'motor_speed', 0, False)])
-    try:
-        queue_quiet([(1, 'motor_speed', 0, False), (2, 'motor_speed', 5, False)])
-    except d.SafetyFailure as error:
-        assert error.tag == 'queue_clear'
-    else:
-        raise AssertionError('Không bắt W tồn đọng')
+    for tail in ((2, 'motor_speed', 5, False), (2, 'key', 'W', False)):
+        try:
+            queue_quiet([(1, 'motor_speed', 0, False), tail])
+        except d.SafetyFailure as error:
+            assert error.tag == 'queue_clear'
+        else:
+            raise AssertionError('Không bắt W tồn đọng dù guard chặn motor')
     queue_fresh([], 100)
     queue_fresh([dict(reason='key_s', t_trigger_ms='90'),
                  dict(reason='frame_stale', t_trigger_ms='101')], 100)
@@ -692,20 +863,25 @@ def self_check():
             assert error.tag == 'setup'
         else:
             raise AssertionError('Không bắt frame_stale trước phím dừng')
-    for key, names in (('S', ('s', 'S')), ('X', ('x', 'X')), ('E', ('E', 'ESC'))):
+    for key, names in (('S', ('s', 'S')), ('X', ('x', 'X')), ('E', ('E', 'ESC')),
+                       ('3', ('3', '\x03'))):
         for name in names:
             event = (101, 'key', name, False)
             assert queue_stop_key([(100, 'key', '?', False), event], key) == event
         assert queue_stop_key([(100, 'key', 'W', False)], key) is None
+    with tempfile.TemporaryDirectory(prefix='ucr_preview_ctrl_c_') as directory:
+        trace = Path(directory) / 'trace'
+        trace.write_bytes(b'101 key \x03\n')
+        assert queue_stop_key(d.read_trace(trace), '3') == (101, 'key', '\x03', False)
     # Vết đủ phím/lệnh; thêm phím lạ để xác nhận không lệch bộ ghép phím.
     fixture = []
-    operations = [('R', None), ('Y', None), ('W', ('motor_speed', 5)),
+    operations = [('W', ('motor_speed', 5)),
                   ('A', ('servo_angle', 5)), ('A', ('servo_angle', 10)),
                   ('D', ('servo_angle', 5)), ('C', ('servo_angle', 0)),
                   ('A', ('servo_angle', 5)), ('S', ('motor_speed', 0)),
                   ('W', ('motor_speed', 5)), (' ', ('motor_speed', 0)),
                   ('W', ('motor_speed', 5)), ('X', ('motor_speed', 0)),
-                  ('W', None), ('R', None), ('Y', None),
+                  ('W', None),
                   ('W', ('motor_speed', 5)), ('D', ('servo_angle', -5)),
                   ('C', ('servo_angle', 0)), ('ESC', ('motor_speed', 0))]
     for n, (key, effect) in enumerate(operations):
@@ -714,7 +890,7 @@ def self_check():
             fixture.append((n * 100 + 2, effect[0], effect[1], False))
         if key == 'X':
             fixture += [(n * 100 + 3, 'servo_angle', 0, False),
-                        (n * 100 + 4, 'state', 'KHOA', False)]
+                        (n * 100 + 4, 'state', 'DUNG', False)]
     key_effects(fixture)
     try:
         key_effects([e for e in fixture if e[1:] != ('servo_angle', 10, False)])
@@ -728,9 +904,68 @@ def self_check():
         assert error.tag == 'preview_blocks'
     else:
         raise AssertionError('Không bắt dừng oan')
-    assert len(CASES) == len(set(CASES)) == 18
-    print('ĐẠT tự kiểm deadman/phím/hàng đợi/cảnh báo/HighGUI/dừng oan/18 mã; chưa chạy Linux')
-    print('Chưa kiểm điểm neo .cpp/biên dịch bản lỗi; tự kiểm không đọc mã nguồn C++')
+    no_preview_loss([dict(reason='esc')])
+    for reason in ('preview_closed', 'preview_died'):
+        try:
+            no_preview_loss([dict(reason=reason)])
+        except d.SafetyFailure as error:
+            assert error.tag == 'false_preview_loss'
+        else:
+            raise AssertionError('Không bắt preview đóng/chết oan')
+    compare_counts([40, 40])
+    compare_counts([40, 39])
+    compare_counts([39, 40])
+    compare_counts([40, 37])
+    for counts in ([40, 36], [36, 40], [0, 0], [1, 1]):
+        try:
+            compare_counts(counts)
+        except d.SafetyFailure as error:
+            assert error.tag == 'preview_recording'
+        else:
+            raise AssertionError('Không bắt lệch/mất JPEG')
+    with tempfile.TemporaryDirectory(prefix='ucr_preview_recording_') as directory:
+        folder = Path(directory)
+        # Chỉ marker cỡ ảnh cho bộ đọc JPEG chuẩn; không giả vờ giải mã điểm ảnh.
+        header = b'\xff\xd8\xff\xc0\x00\x0b\x08'
+        tail = b'\x01\x01\x11\x00\xff\xd9'
+        jpeg = header + d.struct.pack('>HH', 720, 1280) + tail
+        rows = [dict(filename='{}.jpg'.format(n), width='1280', height='720',
+                     state='DUNG', cmd_speed='0', cmd_steer='0',
+                     monotonic_ns=str(1000000000 + n * 100000000)) for n in range(2)]
+        for row in rows:
+            (folder / row['filename']).write_bytes(jpeg)
+        recording(rows, folder)
+        bad_rows = []
+        for key, value in (('width', '640'), ('state', 'CHAY'), ('cmd_speed', '5'),
+                           ('cmd_steer', '5'), ('monotonic_ns', '1099999999'),
+                           ('filename', '0.jpg')):
+            altered = [dict(row) for row in rows]
+            altered[1][key] = value
+            bad_rows.append(altered)
+        for altered in bad_rows:
+            try:
+                recording(altered, folder)
+            except d.SafetyFailure as error:
+                assert error.tag == 'preview_recording'
+            else:
+                raise AssertionError('Không bắt metadata sai')
+        for data in (header + d.struct.pack('>HH', 360, 640) + tail, None):
+            path = folder / rows[1]['filename']
+            if data is None:
+                path.unlink()
+            else:
+                path.write_bytes(data)
+            try:
+                recording(rows, folder)
+            except d.SafetyFailure as error:
+                assert error.tag == 'preview_recording'
+            else:
+                raise AssertionError('Không bắt JPEG sai cỡ/mất tệp')
+    assert len(CASES) == len(set(CASES)) == 22 and 'P19' in CASES and 'P20' not in CASES
+    cmake = Path(__file__).with_name('tests_preview.cmake').read_text(encoding='utf-8')
+    assert re.search(r'set\(_preview_cases\s+([^)]*)\)', cmake).group(1).split() == CASES
+    print('ĐẠT tự kiểm deadman/phím/hàng đợi/cảnh báo/HighGUI/dừng oan/đối chứng JPEG/22 mã; chưa chạy Linux')
+    print('Chưa biên dịch/chạy bản lỗi; tự kiểm chỉ kiểm bộ đọc và dữ liệu giả')
 
 
 def main():

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <sys/file.h>
@@ -29,6 +30,74 @@ template <class F> void until(F condition, const char* message, int timeout_ms =
 }
 int64_t nowMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count();
+}
+void windowTracking() {
+    const double exception = std::numeric_limits<double>::quiet_NaN();
+    auto calibrate = [](PreviewWindowTracker& tracker, double autosize, double visible) {
+        for (int ms = 0; ms <= 100; ms += 10) {
+            check(!tracker.sample(ms, autosize, visible), "báo đóng khi đang hiệu chuẩn");
+            if (ms < 100) check(tracker.property() == PreviewWindowProperty::None,
+                                "chọn thuộc tính trước 100 ms");
+        }
+    };
+    PreviewWindowTracker gtk;
+    calibrate(gtk, 1, -1);
+    check(gtk.property() == PreviewWindowProperty::Autosize && !gtk.warning(), "không chọn AUTOSIZE GTK");
+    for (int ms = 101; ms <= 10100; ++ms)
+        check(!gtk.sample(ms, 1, -1), "VISIBLE không hỗ trợ làm tự đóng");
+    check(!gtk.sample(10101, -1, -1) && gtk.pendingClose(), "đóng ngay lần lỗi đầu");
+    check(!gtk.sample(10250, -1, -1), "báo đóng trước 150 ms");
+    check(gtk.sample(10251, -1, -1) && gtk.lastValue() == -1, "không đóng tại 150 ms");
+
+    PreviewWindowTracker unsupported;
+    calibrate(unsupported, -1, -1);
+    check(unsupported.warning() && unsupported.property() == PreviewWindowProperty::None, "thiếu cờ cảnh báo");
+    for (int ms = 101; ms <= 10100; ++ms)
+        check(!unsupported.sample(ms, -1, -1), "thuộc tính không hỗ trợ vẫn báo đóng");
+    check(!unsupported.sample(11000, 1, 1) && unsupported.warning(), "tự chọn lại sau hiệu chuẩn thất bại");
+
+    PreviewWindowTracker minimized;
+    calibrate(minimized, 1, 1);
+    check(minimized.property() == PreviewWindowProperty::Autosize, "không ưu tiên AUTOSIZE");
+    for (int ms = 101; ms <= 10100; ++ms)
+        check(!minimized.sample(ms, 1, ms % 2), "thu nhỏ/mất focus làm tự đóng");
+    check(!minimized.sample(11000, -1, 1) && minimized.sample(11150, -1, 1),
+          "đổi sang VISIBLE khi AUTOSIZE đóng");
+
+    PreviewWindowTracker errors;
+    calibrate(errors, 1, -1);
+    check(!errors.sample(110, exception, -1), "ngoại lệ đơn làm đóng");
+    check(!errors.sample(120, 1, -1) && !errors.pendingClose(), "không xóa hạn sau phục hồi");
+    check(!errors.sample(1000, 1, -1), "ngoại lệ cũ còn gây đóng");
+    check(!errors.sample(1010, exception, -1), "ngoại lệ mới làm đóng ngay");
+    check(!errors.sample(1159, exception, -1), "ngoại lệ đóng trước 150 ms");
+    check(errors.sample(1160, exception, -1) && std::isnan(errors.lastValue()), "ngoại lệ dài không đóng");
+
+    PreviewWindowTracker flicker;
+    calibrate(flicker, 1, -1);
+    check(!flicker.sample(110, 0, -1) && !flicker.sample(259, -1, -1), "chập chờn đóng quá sớm");
+    check(!flicker.sample(260, 1, -1) && !flicker.pendingClose(), "phục hồi không xóa chuỗi lỗi");
+    check(!flicker.sample(270, 0, -1) && !flicker.sample(419, 0, -1) && flicker.sample(420, 0, -1),
+          "cộng dồn hai khoảng lỗi rời nhau");
+
+    PreviewWindowTracker visible;
+    calibrate(visible, -1, 1);
+    check(visible.property() == PreviewWindowProperty::Visible, "không chọn VISIBLE dự phòng");
+    check(!visible.sample(110, 1, 0) && visible.sample(260, 1, 0), "không theo VISIBLE đã chọn");
+
+    PreviewWindowTracker tooFew;
+    for (int n = 0; n < 9; ++n) check(!tooFew.sample(n * 100, 1, -1), "hiệu chuẩn ít mẫu");
+    check(tooFew.property() == PreviewWindowProperty::None, "chọn khi chưa đủ 10 mẫu");
+    check(!tooFew.sample(900, 1, -1) && tooFew.property() == PreviewWindowProperty::Autosize, "không chọn ở mẫu 10");
+
+    PreviewWindowTracker unstable;
+    check(!unstable.sample(0, 0, 1), "mẫu đầu chập chờn");
+    for (int ms = 10; ms <= 100; ms += 10) check(!unstable.sample(ms, 1, 1), "hiệu chuẩn chập chờn");
+    check(unstable.property() == PreviewWindowProperty::Visible, "chọn thuộc tính từng lỗi khi hiệu chuẩn");
+    PreviewWindowTracker allErrors;
+    calibrate(allErrors, exception, exception);
+    check(allErrors.warning() && !allErrors.sample(10000, exception, exception), "ngoại lệ lúc hiệu chuẩn gây đóng");
+    std::cout << "PASS window_tracking: GTK/thuộc tính lỗi/thu nhỏ/ngoại lệ/mốc 100-150 ms\n";
 }
 void options() {
     PreviewOptions value;
@@ -94,6 +163,11 @@ void frames() {
     PreviewFrame other;
     check(!readPreviewFrame(*shared, other), "đọc khung đang ghi");
     shared->frame_sequence.fetch_add(1);
+    shared->frame_busy.store(1);
+    check(!writePreviewFrame(*shared, roi, 2000), "bên ghi chờ/ghi đè khi bộ đệm ảnh bận");
+    check(!readPreviewFrame(*shared, other), "bên đọc vượt khóa bộ đệm ảnh");
+    shared->frame_busy.store(0);
+    check(writePreviewFrame(*shared, roi, 2000) && readPreviewFrame(*shared, other), "không nhả khóa ảnh sau sao chép");
     check(!writePreviewFrame(*shared, cv::Mat(2, 2, CV_8UC1), 0), "nhận ảnh sai định dạng");
     check(!writePreviewFrame(*shared, cv::Mat(721, 1280, CV_8UC3), 0), "tràn vùng ảnh");
     PreviewState state;
@@ -105,6 +179,10 @@ void frames() {
           snapshot.cmd_steer == -10 && !snapshot.recording && snapshot.frame_age_ms == 42 &&
           std::strcmp(snapshot.state, "CHAY") == 0 && std::strcmp(snapshot.stop_reason, "key_s") == 0,
           "sai ảnh chụp trạng thái");
+    shared->monitor.write(PreviewMonitor{true, PreviewWindowProperty::Visible, -1, 1});
+    PreviewMonitor monitor;
+    check(shared->monitor.read(monitor) && monitor.calibrated && monitor.autosize == -1 && monitor.visible == 1 &&
+          std::strcmp(previewMonitorName(monitor.property), "VISIBLE") == 0, "mất chẩn đoán hiệu chuẩn giữa con và cha");
 }
 void child(const char* mode, PreviewChildStatus expected, bool shown) {
     check(setenv("UCR_DRIVE_FAKE_PREVIEW", mode, 1) == 0, "setenv");
@@ -124,8 +202,8 @@ void keys() {
     PreviewHost host;
     check(host.start() == PreviewStartResult::Started, "khởi động keys");
     std::string received;
-    until([&] { received += host.pollKeys(); return received.size() >= 11; }, "thiếu phím pipe");
-    check(received == "rywadc xEs3", "sai giải mã phím");
+    until([&] { received += host.pollKeys(); return received.size() >= 9; }, "thiếu phím pipe");
+    check(received == "wadc xEs3", "sai giải mã phím hoặc R/Y chưa bị bỏ qua");
 }
 void hangAndTiming() {
     setenv("UCR_DRIVE_FAKE_PREVIEW", "hang", 1);
@@ -174,7 +252,7 @@ void noZombies() {
 }
 int main() {
     try {
-        options(); seqlock(); frames();
+        windowTracking(); options(); seqlock(); frames();
         child("ok", PreviewChildStatus::Shown, true);
         child("fail_start", PreviewChildStatus::Died, false);
         child("die_after_frame", PreviewChildStatus::Died, true);
