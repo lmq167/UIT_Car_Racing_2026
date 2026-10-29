@@ -46,7 +46,7 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 97)]
+CASES += ['D{:02d}'.format(n) for n in range(65, 98)]
 CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07']
 
 
@@ -326,7 +326,7 @@ class Run:
                                       if e[1] == kind and (value is None or e[2] == value)), None),
                          seconds, 'Không thấy {} {}'.format(kind, value))
 
-    def boot(self, images=True):
+    def boot(self, images=True, settle=True):
         first = self.event('state', 'DUNG', seconds=10)
         need(self.started - 5 <= first[0] <= monotonic_ms() + 5,
              'Vết không cùng miền CLOCK_MONOTONIC với test', 'setup')
@@ -338,6 +338,13 @@ class Run:
         if images:
             self.wait(lambda: self.rows(), seconds=10, message='Không có ảnh đầu')
         init_sequence(self.events(), required=True, complete=True)
+        # Sau Init chương trình yêu cầu lần nhấn mới: W trong vòng một hạn giữ kể từ lúc khởi động bị bỏ.
+        init_at = min(e[0] for e in self.events() if e[1] == 'servo_angle')  # cuối Init, ngay trước mốc yêu cầu nhấn mới
+        left = init_at + self.hold_timeout + 250 - monotonic_ms()
+        if settle and left > 0:
+            pump, self.pump = self.pump, False
+            self.observe(left / 1000)
+            self.pump = pump
 
     def ready(self):
         # Chỉ khi phục hồi: đợi im phím đủ H từ phím cũ cuối, không chặn W đầu.
@@ -568,6 +575,19 @@ def held_then_fresh(run, mark):
 
 
 def unlock_case(n, cfg, root):
+    if n == 97:
+        # W giữ liên tục xuyên khởi động (tự lặp) không được chạy xe; phải nhả đủ H rồi nhấn mới.
+        with running(cfg, root / 'held_start') as run:
+            run.boot(settle=False)
+            run.pump = True
+            run.observe(run.hold_timeout * 1.5 / 1000, lambda: motion_quiet(run.events(), 'startup_held'))
+            run.pump = False
+            run.observe((run.hold_timeout + 100) / 1000)
+            mark = len(run.events())
+            run.key('W')
+            run.event('motor_speed', run.speed(), mark)
+            run.finish()
+        return
     if n in (94, 95):
         environment = {'UCR_DRIVE_FAKE_INIT_MS': '1500'}
         if n == 95:
@@ -612,7 +632,7 @@ def test_case(case, cfg, root):
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
-    if n in (94, 95, 96):
+    if n in (94, 95, 96, 97):
         return unlock_case(n, cfg, root)
     if n in (92, 93):
         return init_write_failure(n, cfg, root)

@@ -825,6 +825,7 @@ int run(Options o) {
         terminal.reset(new Terminal());
         terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.
         preview.discardKeys();
+        control.requireFreshStart();
         makeOutput(o);
         writeSession(o, o.started, "");
         journal.reset(new StopJournal(o.out));

@@ -184,7 +184,7 @@ def child_loss(case, cfg, root):
             d.stop_by(run, mark, stamp, tag='preview_stop')
             run.pump = False
         else:
-            run.boot()
+            run.boot(settle=False)  # sự cố nằm ngay sau Init: giữ nguyên tiền đề "W cũ trong vòng H kể từ sự cố"
         row, zero = stop_record(run, reason)
         run.wait(lambda: d.matched(run.events()[zero:], 'state', 'DUNG') or
                  d.matched(run.events(), 'state')[-1][1][2] == 'DUNG',

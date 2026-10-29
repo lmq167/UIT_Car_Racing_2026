@@ -243,6 +243,8 @@ public:
     uint64_t emergencyStops = 0;
     bool exiting = false;
     bool latched_error = false, discardPending = false;
+    // Gọi sau khi xả phím lúc khởi động: W đang giữ từ trước không được tính là lần nhấn mới.
+    void requireFreshStart() { requireFreshPress(); }
     std::array<StopRecord, 100> stops;
     size_t stopCount = 0;
     // Camera chờ công bố lệnh đang ghi rồi tra lịch sử theo mốc chụp trước đó.
