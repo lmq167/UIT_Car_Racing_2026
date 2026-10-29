@@ -206,6 +206,11 @@ def child_loss(case, cfg, root):
         run.ready()
         run.drive()
         run.finish()
+        if case == 'P04':
+            text = run.text()
+            d.need('preview_monitor=AUTOSIZE' in text and
+                   'preview: cua so dong (prop=AUTOSIZE gia tri=-1)' in text,
+                   'Cha không ghi chẩn đoán đóng từ vùng chia sẻ')
         no_orphans(run)
 
 
@@ -454,13 +459,14 @@ def disabled(cfg, root):
 
 def arguments(cfg, root):
     bad = [('--no-preview', '--require-preview'), ('--require-preview', '--no-preview')]
+    bad += [('--hold-timeout-ms', value) for value in ('699', '2001')]
     for flag, values in (('--preview-scale', ('0.199', '1.001', '0', '-1', 'nan', 'inf', 'abc')),
                          ('--preview-fps', ('0', '31', '-1', 'nan', 'inf', 'abc', '10.5', '1e99'))):
         bad += [(flag, value) for value in values] + [(flag,)]
     for i, args in enumerate(bad):
         d.rejected(cfg, root / str(i), args, env={'UCR_DRIVE_FAKE_PREVIEW': 'ok'})
-    for i, args in enumerate((('--preview-scale', '0.2', '--preview-fps', '1'),
-                              ('--preview-scale', '1.0', '--preview-fps', '30'))):
+    for i, args in enumerate((('--preview-scale', '0.2', '--preview-fps', '1', '--hold-timeout-ms', '700'),
+                              ('--preview-scale', '1.0', '--preview-fps', '30', '--hold-timeout-ms', '2000'))):
         with preview(cfg, root / ('boundary' + str(i)), args=args) as run:
             live_child(run)
             run.boot()

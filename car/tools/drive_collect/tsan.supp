@@ -1,0 +1,4 @@
+# Thư viện OpenCV/TBB hệ thống chưa được instrument: đếm tham chiếu cv::Mat và hàng đợi TBB dùng nguyên tử bên trong thư viện,
+# nên TSan báo race giả giữa free và memcpy. Chỉ áp dụng cho test drive_collect; không áp dụng cho mã của đội.
+race:libopencv_core
+race:libtbb

@@ -7,7 +7,6 @@
 #include <cerrno>
 #include <cmath>
 #include <csignal>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dirent.h>
@@ -40,7 +39,7 @@ char decodeKey(int key) {
     const char decoded = decodeKey(key);
     if (decoded) { const auto ignored = ::write(fd, &decoded, 1); (void)ignored; }
 }
-// Bỏ cả khóa xe thừa hưởng; con chỉ giữ đầu ghi phím và stdout/stderr.
+// Bỏ cả khóa xe thừa hưởng; con chỉ giữ đầu ghi phím và đầu ra đã chuyển sang /dev/null.
 void closeInherited(int keep) {
     DIR* directory = opendir("/proc/self/fd");
     if (directory) {
@@ -108,6 +107,19 @@ bool readPreviewFrame(PreviewShared& shared, PreviewFrame& frame) {
     return true;
 }
 
+bool samplePreviewWindow(PreviewShared& shared, PreviewWindowTracker& tracker,
+                         int64_t now_ms, double autosize, double visible) noexcept {
+    const bool calibrated = tracker.calibrated();
+    const bool closed = tracker.sample(now_ms, autosize, visible);
+    if (closed) shared.window_closed.store(1, std::memory_order_release);
+    if ((!calibrated && tracker.calibrated()) || closed) {
+        shared.monitor.write(PreviewMonitor{tracker.calibrated(), tracker.property(), autosize, visible,
+                                            closed, tracker.lastValue()});
+        if (tracker.warning()) shared.window_warning.store(1, std::memory_order_release);
+    }
+    return closed;
+}
+
 int runPreviewChild(PreviewShared& shared, int key_fd) {
     // Không gọi cv::setNumThreads ở đây: sau fork, TBB của OpenCV 4.1.1 có thể treo; main đã đặt 1 luồng trước fork, con kế thừa.
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
@@ -125,7 +137,12 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
             shared.shown.store(1, std::memory_order_release);
             shared.monitor.write(PreviewMonitor{true, PreviewWindowProperty::Autosize, 1, -1});
             if (mode == "die_after_frame") { ::kill(getpid(), SIGKILL); return 12; }
-            if (mode == "close_after_frame") return 10;
+            if (mode == "close_after_frame") {
+                PreviewWindowTracker tracker;
+                for (int ms = 0; ms <= 100; ms += 10) samplePreviewWindow(shared, tracker, ms, 1, -1);
+                samplePreviewWindow(shared, tracker, 110, -1, -1);
+                if (samplePreviewWindow(shared, tracker, 260, -1, -1)) return 10;
+            }
         }
         if (mode.compare(0, 5, "keys:") == 0 && key_index < mode.size() && Clock::now() >= next_key) {
             const char key = mode[key_index++];
@@ -143,7 +160,6 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
         PreviewFrame frame;
         PreviewState state{};
         PreviewWindowTracker window_tracker;
-        bool warned = false, monitor_reported = false;
         auto next_measure = Clock::now();
         auto next_redraw = Clock::now();
         while (!shared.stop.load(std::memory_order_acquire)) {
@@ -157,24 +173,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 const auto property = window_tracker.property();
                 const double autosize = property == PreviewWindowProperty::Visible ? 0 : measure(cv::WND_PROP_AUTOSIZE);
                 const double visible = property == PreviewWindowProperty::Autosize ? 0 : measure(cv::WND_PROP_VISIBLE);
-                if (window_tracker.sample(nowMs(), autosize, visible)) {
-                    std::fprintf(stderr, "preview: cua so dong (prop=%s gia tri=%g)\n",
-                                 property == PreviewWindowProperty::Autosize ? "AUTOSIZE" : "VISIBLE",
-                                 window_tracker.lastValue());
-                    return 10;
-                }
-                if (window_tracker.calibrated() && !monitor_reported) {
-                    monitor_reported = true;
-                    const PreviewMonitor monitor{true, window_tracker.property(), autosize, visible};
-                    shared.monitor.write(monitor);
-                    std::fprintf(stderr, "preview_monitor=%s values=AUTOSIZE:%g,VISIBLE:%g\n",
-                                 previewMonitorName(monitor.property), autosize, visible);
-                }
-                if (window_tracker.warning() && !warned) {
-                    warned = true;
-                    shared.window_warning.store(1, std::memory_order_release);
-                    std::fprintf(stderr, "preview: %s\n", kPreviewWindowWarning);
-                }
+                if (samplePreviewWindow(shared, window_tracker, nowMs(), autosize, visible)) return 10;
                 next_measure = Clock::now() + std::chrono::milliseconds(10);
             }
             const bool fresh = readPreviewFrame(shared, frame);
@@ -249,6 +248,10 @@ PreviewStartResult PreviewHost::start() {
     const pid_t parent = getpid();
     child_ = fork();
     if (child_ == 0) {
+        // HighGUI/thư viện cũng có thể tự ghi: không để con kế thừa ống đầu ra đầy của cha.
+        const int sink = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+        if (sink < 0 || dup2(sink, STDOUT_FILENO) < 0 || dup2(sink, STDERR_FILENO) < 0) _exit(11);
+        if (sink > STDERR_FILENO) ::close(sink);
         if (setpriority(PRIO_PROCESS, 0, 10) != 0) _exit(11);
         if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(11);
         for (int signal : {SIGINT, SIGTSTP, SIGQUIT, SIGHUP}) sigaction(signal, &ignore, nullptr);
@@ -367,6 +370,7 @@ PreviewChildStatus PreviewHost::pollChild() noexcept {
         }
         return status_;
     }
+    if (shared_ && shared_->window_closed.load(std::memory_order_acquire)) return PreviewChildStatus::Closed;
     return shown_ ? PreviewChildStatus::Shown : PreviewChildStatus::NotReady;
 }
 void PreviewHost::shutdown() noexcept {

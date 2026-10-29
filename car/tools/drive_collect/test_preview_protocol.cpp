@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <sys/file.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -99,6 +100,21 @@ void windowTracking() {
     PreviewWindowTracker allErrors;
     calibrate(allErrors, exception, exception);
     check(allErrors.warning() && !allErrors.sample(10000, exception, exception), "ngoại lệ lúc hiệu chuẩn gây đóng");
+    PreviewWindowTracker earlyClose;
+    for (int ms = 0; ms <= 20; ms += 10) check(!earlyClose.sample(ms, 1, -1), "đóng khi còn mở");
+    check(!earlyClose.sample(30, -1, -1) && earlyClose.pendingClose(), "mất cờ đóng trong hiệu chuẩn");
+    for (int ms = 40; ms <= 170; ms += 10)
+        check(!earlyClose.sample(ms, -1, -1) && earlyClose.pendingClose(), "mất chuỗi đóng sớm/đóng trước hạn");
+    check(earlyClose.sample(180, -1, -1) && earlyClose.pendingClose(), "không đóng tại 150 ms từ lỗi sớm");
+    PreviewWindowTracker bothSupported;
+    check(!bothSupported.sample(0, 1, 1), "báo đóng mẫu hỗ trợ đầu");
+    for (int ms = 10; ms <= 150; ms += 10)
+        check(!bothSupported.sample(ms, -1, 1) && bothSupported.pendingClose(), "thuộc tính còn mở che chuỗi đóng sớm");
+    check(bothSupported.sample(160, -1, 1), "đổi thuộc tính làm mất chuỗi đóng trong hiệu chuẩn");
+    PreviewWindowTracker sparseClose;
+    check(!sparseClose.sample(0, 1, -1) && !sparseClose.sample(10, -1, -1) && sparseClose.pendingClose(),
+          "không theo dõi đóng khi chưa đủ 10 mẫu");
+    check(sparseClose.sample(160, -1, -1), "chưa đủ mẫu hiệu chuẩn làm mất phát hiện đóng");
     std::cout << "PASS window_tracking: GTK/thuộc tính lỗi/thu nhỏ/ngoại lệ/mốc 100-150 ms\n";
 }
 void options() {
@@ -256,6 +272,46 @@ void noZombies() {
     int status = 0; errno = 0;
     check(waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD, "còn con/zombie sau shutdown");
 }
+void childWithFullStderr() {
+    void* memory = mmap(nullptr, sizeof(PreviewShared), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    check(memory != MAP_FAILED, "mmap kiểm stderr");
+    auto* shared = new (memory) PreviewShared;
+    int pipe_fd[2];
+    const int made = pipe2(pipe_fd, O_NONBLOCK | O_CLOEXEC);
+    if (made != 0) { shared->~PreviewShared(); munmap(memory, sizeof(PreviewShared)); }
+    check(made == 0, "pipe kiểm stderr");
+    char bytes[4096] = {};
+    while (::write(pipe_fd[1], bytes, sizeof(bytes)) > 0) {}
+    while (::write(pipe_fd[1], bytes, 1) > 0) {}
+    const bool full = errno == EAGAIN || errno == EWOULDBLOCK;
+    const bool blocking = fcntl(pipe_fd[1], F_SETFL, fcntl(pipe_fd[1], F_GETFL) & ~O_NONBLOCK) == 0;
+    setenv("UCR_DRIVE_FAKE_PREVIEW", "close_after_frame", 1);
+    shared->frame_sequence.store(2);
+    const pid_t pid = full && blocking ? fork() : -1;
+    if (pid == 0) {
+        if (dup2(pipe_fd[1], STDERR_FILENO) < 0 || dup2(pipe_fd[1], STDOUT_FILENO) < 0) _exit(99);
+        ::close(pipe_fd[0]); ::close(pipe_fd[1]);
+        _exit(runPreviewChild(*shared, -1));
+    }
+    int status = 0;
+    pid_t result = 0;
+    const auto deadline = Clock::now() + std::chrono::seconds(3);
+    while (pid > 0 && (result = waitpid(pid, &status, WNOHANG)) == 0 && Clock::now() < deadline)
+        std::this_thread::yield();
+    const bool exited = result == pid && pid > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 10;
+    if (pid > 0 && result == 0) {
+        ::kill(pid, SIGKILL);
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    }
+    PreviewMonitor monitor;
+    const bool diagnosed = shared->monitor.read(monitor) && monitor.closed &&
+                           monitor.property == PreviewWindowProperty::Autosize && monitor.close_value == -1 &&
+                           shared->window_closed.load() == 1;
+    ::close(pipe_fd[0]); ::close(pipe_fd[1]);
+    shared->~PreviewShared(); munmap(memory, sizeof(PreviewShared));
+    check(full && blocking && pid > 0, "không tạo được tiền đề stderr đầy/chặn");
+    check(exited && diagnosed, "con kẹt stderr hoặc mất chẩn đoán đóng qua vùng chia sẻ");
+}
 }
 int main() {
     try {
@@ -264,7 +320,7 @@ int main() {
         child("fail_start", PreviewChildStatus::Died, false);
         child("die_after_frame", PreviewChildStatus::Died, true);
         child("close_after_frame", PreviewChildStatus::Closed, true);
-        keys(); hangAndTiming(); disabledAndLock(); noZombies();
+        childWithFullStderr(); keys(); hangAndTiming(); disabledAndLock(); noZombies();
         std::cout << "PASS preview_protocol (không cần X)\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }

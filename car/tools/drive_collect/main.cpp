@@ -830,6 +830,7 @@ int run(Options o) {
         writeSession(o, o.started, "");
         journal.reset(new StopJournal(o.out));
         bool monitorLogged = previewStart != PreviewStartResult::Started;
+        bool closeLogged = false;
         const auto logMonitor = [&] {
             const auto monitor = preview.monitor();
             std::ostringstream line;
@@ -860,8 +861,6 @@ int run(Options o) {
             if (const int stopSignal = stopping.load()) throw Failure(stopSignal == SIGQUIT ? 143 : 128 + stopSignal,
                                         signalReason(stopSignal), "Đã nhận tín hiệu dừng");
             const auto childStatus = preview.pollChild();
-            if (!monitorLogged && (preview.monitor().calibrated || childStatus == PreviewChildStatus::Died)) logMonitor();
-            if (preview.takeWindowWarning()) journal->warn(kPreviewWindowWarning);
             if (!previewHandled && (childStatus == PreviewChildStatus::Closed || childStatus == PreviewChildStatus::Died)) {
                 previewHandled = true;
                 if (preview.wasShown()) {
@@ -873,6 +872,16 @@ int run(Options o) {
                         throw Failure(7, "preview_unavailable", preview.diagnostic());
                     journal->warn(preview.diagnostic());
                 }
+            }
+            const auto monitor = preview.monitor();
+            if (!monitorLogged && (monitor.calibrated || monitor.closed || childStatus == PreviewChildStatus::Died)) logMonitor();
+            if (preview.takeWindowWarning()) journal->warn(kPreviewWindowWarning);
+            if (monitor.closed && !closeLogged) {
+                std::ostringstream line;
+                line << "preview: cua so dong (prop=" << previewMonitorName(monitor.property)
+                     << " gia tri=" << monitor.close_value << ")";
+                journal->warn(line.str());
+                closeLogged = true;
             }
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
             pollHooks(consumed);
@@ -1016,7 +1025,8 @@ int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root runs_drive] [--label drive]\n"
                   << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 10\n"
-                  << "  --hold-timeout-ms 800 [100..2000] --interval-ms 1000 --min-free-mb 1024\n"
+                  << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
+                  << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
                   << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"

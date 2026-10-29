@@ -249,6 +249,9 @@ class Run:
                          UCR_DRIVE_FAKE_CAMERA='ok', UCR_DRIVE_FAKE_FREE_MB='4096',
                          UCR_DRIVE_FAKE_LOCK=str(lock or root / 'vehicle.lock'))
         child_env.update(env or {})
+        # Race giả nằm trong OpenCV/TBB chưa instrument (đếm tham chiếu cv::Mat); xem tsan.supp.
+        child_env['TSAN_OPTIONS'] = ':'.join(filter(None, (child_env.get('TSAN_OPTIONS', ''),
+            'suppressions=' + str(Path(__file__).resolve().parent / 'tsan.supp'))))
         argv = [cfg.hooks, '--out-root', str(self.out), '--label', 'test']
         if accepted:
             argv.append('--accept-no-obstacle-brake')
@@ -613,7 +616,7 @@ def unlock_case(n, cfg, root):
             run.event('motor_speed', 5, mark)  # Không để xả nhầm W đầu mới.
             run.finish()
         return
-    with running(cfg, root / 'held_x', args=['--hold-timeout-ms', '400']) as run:
+    with running(cfg, root / 'held_x', args=['--hold-timeout-ms', '700']) as run:
         moving(run)
         run.pump = False
         mark = len(run.events())
@@ -652,7 +655,7 @@ def test_case(case, cfg, root):
         elif n == 60:
             variants = [('--unknown',), ('--speed-cms',), ('--speed-cms', 'rác'),
                         ('--hold-timeout-ms', '0'), ('--interval-ms', '-1'),
-                        ('--hold-timeout-ms', '99'), ('--hold-timeout-ms', '2001'),
+                        ('--hold-timeout-ms', '99'), ('--hold-timeout-ms', '699'), ('--hold-timeout-ms', '2001'),
                         ('--steer-step-deg', '0'),
                         ('--hold-timeout-ms', '999999999999999999999999999999')]
         else:
@@ -864,7 +867,7 @@ def test_case(case, cfg, root):
         return
 
     if n == 19:
-        for hold in (800, 400):
+        for hold in (800, 700):
             with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
                 run.boot()
                 run.ready()
@@ -1223,7 +1226,7 @@ def init_write_failure(n, cfg, root):
 def fix4_case(n, cfg, root):
     """T21_test_fix4 H2/N1/N2/N4; N3 cần giao diện tiêm lỗi ghi giữa Init."""
     if n == 85:
-        for hold in (100, 800):
+        for hold in (700, 800):
             with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
                 run.boot()
                 run.ready()
@@ -1467,7 +1470,7 @@ def added_case(n, cfg, root):
             limits(run.events(), moving=False)
         return
     if n == 66:
-        for hold in (100, 2000):
+        for hold in (700, 2000):
             with running(cfg, root / str(hold), args=['--hold-timeout-ms', str(hold)]) as run:
                 run.boot()
                 run.ready()

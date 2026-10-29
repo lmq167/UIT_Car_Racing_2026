@@ -56,7 +56,7 @@ void parserTests() {
             {"--speed-cms", "20"}, {"--speed-cms", "-1"}, {"--speed-cms", "nan"},
             {"--speed-cms", "inf"}, {"--speed-cms", "5x"}, {"--max-steer-deg", "30"},
             {"--steer-step-deg", "0"}, {"--max-steer-deg", "-1"}, {"--hold-timeout-ms", "0"},
-            {"--hold-timeout-ms", "1.5"}, {"--hold-timeout-ms", "99"}, {"--hold-timeout-ms", "2001"},
+            {"--hold-timeout-ms", "1.5"}, {"--hold-timeout-ms", "99"}, {"--hold-timeout-ms", "699"}, {"--hold-timeout-ms", "2001"},
             {"--lock-file", "other.lock"}, {"--interval-ms", "0"}, {"--min-free-mb", "-1"},
             {"--interval-ms", "999999999999999999999999"}, {"--pipeline", "   "}})
         reject({"--accept-no-obstacle-brake", pair.first, pair.second});
@@ -69,7 +69,7 @@ void parserTests() {
     check(o.argv.size() == 12 && o.argv[0] == "ucr_drive_collect", "Thiếu argv gốc trong tài liệu phiên");
     check(safeLabel("../trai /phai").find('/') == std::string::npos, "Nhãn lọt đường dẫn");
     check(jsonString("a\n\"\\") == "\"a\\u000a\\\"\\\\\"", "Sai thoát ký tự JSON");
-    check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "100"}).holdTimeout == 100,
+    check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "700"}).holdTimeout == 700,
           "Phải nhận biên dưới hạn giữ");
     check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "2000"}).holdTimeout == 2000,
           "Phải nhận biên trên hạn giữ");
@@ -177,7 +177,7 @@ void controlTests() {
     check(parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", "0"}).maxSteer == 0, "Phải nhận góc 0");
 }
 void revisedSafetyTests() {
-    for (const uint64_t hold : {100u, 800u, 2000u}) {
+    for (const uint64_t hold : {700u, 800u, 2000u}) {
         for (const char* reason : {"key_x", "frame_stale", "preview_closed", "preview_died", "dir_change"}) {
             Options o; o.holdTimeout = hold;
             FakeClock clock;
@@ -189,6 +189,8 @@ void revisedSafetyTests() {
             check(c.stopCount == 1 && c.stops[0].reason == reason && c.stops[0].trigger == 10,
                   "Sai nhật ký sự cố");
             events.clear();
+            clock.time += 660; c.key('w');
+            check(c.speed == 0 && events.empty(), "Lần tự lặp đầu 660 ms tự mở chốt sau sự cố");
             // Phím lặp kéo dài nhiều hạn giữ: chờ từ sự cố thôi sẽ không đủ.
             for (int i = 0; i < 12; ++i) {
                 clock.time += hold / 2; c.key('w');

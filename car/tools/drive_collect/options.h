@@ -115,7 +115,7 @@ inline Options parse(int argc, char** argv) {
                 if (key == "--steer-step-deg") o.steerStep = static_cast<int>(n);
                 else o.maxSteer = static_cast<int>(n);
             } else if (key == "--hold-timeout-ms") {
-                if (n < 100 || n > 2000) throw std::runtime_error(key + " phải trong [100, 2000]");
+                if (n < 700 || n > 2000) throw std::runtime_error(key + " phải trong [700, 2000]");
                 o.holdTimeout = n;
             } else if (key == "--interval-ms") {
                 if (!n) throw std::runtime_error(key + " phải lớn hơn 0");

@@ -81,6 +81,8 @@ struct PreviewMonitor {
     bool calibrated = false;
     PreviewWindowProperty property = PreviewWindowProperty::None;
     double autosize = 0, visible = 0;
+    bool closed = false;
+    double close_value = 0;
 };
 constexpr const char* kPreviewWindowWarning =
     "không phát hiện được đóng cửa sổ bằng thuộc tính; đóng cửa sổ sẽ không dừng xe, dùng Space/X/Esc ở terminal";
@@ -89,23 +91,39 @@ constexpr const char* kPreviewWindowWarning =
 class PreviewWindowTracker {
 public:
     bool sample(int64_t now_ms, double autosize, double visible) noexcept {
+        if (!calibrated_ || property_ == PreviewWindowProperty::Autosize) autosize_.sample(now_ms, autosize);
+        if (!calibrated_ || property_ == PreviewWindowProperty::Visible) visible_.sample(now_ms, visible);
         if (!calibrated_) {
             if (samples_++ == 0) calibration_start_ = now_ms;
             autosize_valid_ = autosize_valid_ && autosize >= 1;
             visible_valid_ = visible_valid_ && visible >= 1;
-            if (samples_ < 10 || now_ms - calibration_start_ < 100) return false;
-            property_ = autosize_valid_ ? PreviewWindowProperty::Autosize
-                      : visible_valid_ ? PreviewWindowProperty::Visible : PreviewWindowProperty::None;
-            calibrated_ = true;
+            if (samples_ >= 10 && now_ms - calibration_start_ >= 100) {
+                // Ưu tiên chuỗi nghi đóng đã bắt đầu, không che nó bằng thuộc tính còn mở.
+                property_ = autosize_.pending && (!visible_.pending || autosize_.close_start <= visible_.close_start)
+                            ? PreviewWindowProperty::Autosize
+                          : visible_.pending ? PreviewWindowProperty::Visible
+                          : autosize_valid_ ? PreviewWindowProperty::Autosize
+                          : visible_valid_ ? PreviewWindowProperty::Visible
+                          : autosize_.supported ? PreviewWindowProperty::Autosize
+                          : visible_.supported ? PreviewWindowProperty::Visible : PreviewWindowProperty::None;
+                calibrated_ = true;
+            }
         }
-        if (property_ == PreviewWindowProperty::None) return false;
-        last_value_ = property_ == PreviewWindowProperty::Autosize ? autosize : visible;
-        if (last_value_ >= 1) pending_close_ = false;
-        else {
-            if (!pending_close_) { pending_close_ = true; close_start_ = now_ms; }
-            return now_ms - close_start_ >= 150;
+        auto tracked = property_;
+        if (!calibrated_) {
+            // Không bỏ mất chuỗi đóng bắt đầu trong 100 ms hiệu chuẩn.
+            tracked = autosize_.closed(now_ms) ? PreviewWindowProperty::Autosize
+                    : visible_.closed(now_ms) ? PreviewWindowProperty::Visible
+                    : autosize_.pending ? PreviewWindowProperty::Autosize
+                    : visible_.pending ? PreviewWindowProperty::Visible : PreviewWindowProperty::None;
         }
-        return false;
+        pending_close_ = tracked == PreviewWindowProperty::Autosize ? autosize_.pending
+                       : tracked == PreviewWindowProperty::Visible ? visible_.pending : false;
+        if (tracked == PreviewWindowProperty::None) return false;
+        last_value_ = tracked == PreviewWindowProperty::Autosize ? autosize : visible;
+        const bool closed = tracked == PreviewWindowProperty::Autosize ? autosize_.closed(now_ms) : visible_.closed(now_ms);
+        if (closed) property_ = tracked;
+        return closed;
     }
     PreviewWindowProperty property() const noexcept { return property_; }
     bool warning() const noexcept { return calibrated_ && property_ == PreviewWindowProperty::None; }
@@ -113,9 +131,18 @@ public:
     bool pendingClose() const noexcept { return pending_close_; }
     double lastValue() const noexcept { return last_value_; }
 private:
+    struct Property {
+        bool supported = false, pending = false;
+        int64_t close_start = 0;
+        void sample(int64_t now_ms, double value) noexcept {
+            if (value >= 1) { supported = true; pending = false; }
+            else if (supported && !pending) { pending = true; close_start = now_ms; }
+        }
+        bool closed(int64_t now_ms) const noexcept { return pending && now_ms - close_start >= 150; }
+    } autosize_, visible_;
     PreviewWindowProperty property_ = PreviewWindowProperty::None;
     int samples_ = 0;
-    int64_t calibration_start_ = 0, close_start_ = 0;
+    int64_t calibration_start_ = 0;
     bool calibrated_ = false, autosize_valid_ = true, visible_valid_ = true, pending_close_ = false;
     double last_value_ = 0;
 };
@@ -163,6 +190,7 @@ struct PreviewShared {
     PreviewSlot<PreviewMonitor> monitor;
     std::atomic<uint32_t> ready{0}, shown{0}, stop{0};
     std::atomic<uint32_t> window_warning{0};
+    std::atomic<uint32_t> window_closed{0};
 };
 static_assert(ATOMIC_INT_LOCK_FREE == 2 && ATOMIC_CHAR_LOCK_FREE == 2,
               "Bo nho chia se can nguyen tu khong dung khoa");
@@ -173,6 +201,9 @@ struct PreviewFrame {
 };
 bool writePreviewFrame(PreviewShared& shared, const cv::Mat& bgr, int64_t captured_ms) noexcept;
 bool readPreviewFrame(PreviewShared& shared, PreviewFrame& frame);
+// Con chỉ xuất chẩn đoán qua vùng chia sẻ; không ghi stdout/stderr.
+bool samplePreviewWindow(PreviewShared& shared, PreviewWindowTracker& tracker,
+                         int64_t now_ms, double autosize, double visible) noexcept;
 
 enum class PreviewChildStatus { NotReady, Shown, Closed, Died };
 enum class PreviewStartResult { Disabled, Started, Unavailable };
