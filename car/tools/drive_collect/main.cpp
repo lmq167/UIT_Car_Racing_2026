@@ -333,7 +333,7 @@ struct DriveMotor : IMotor {
         // Không thử lại poll khi EINTR: tín hiệu phải đưa vòng lái sang DỪNG ngay.
         good = poll(&uart, 1, 50) > 0 && (uart.revents & POLLOUT) &&
                !(uart.revents & (POLLERR | POLLHUP | POLLNVAL));
-        if (good && !(v > 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
+        if (good && !(v != 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
         else good = false;
     }
     bool EmergencyStop() noexcept override {
@@ -502,6 +502,7 @@ void writeSession(const Options& o, const std::string& started, const std::strin
          << ",\n\"preview_monitor_values\":" << jsonString(values.str())
          << ",\n\"preview_monitor_calibrated\":" << (monitor.calibrated ? "true" : "false")
          << ",\n\"version\":\"ucr_drive_collect/1\",\n\"speed_cms\":" << o.speed
+         << ",\n\"reverse_speed_cms\":" << o.reverseSpeed
          << ",\"steer_step_deg\":" << o.steerStep << ",\"max_steer_deg\":" << o.maxSteer
          << ",\"hold_timeout_ms\":" << o.holdTimeout << ",\"interval_ms\":" << o.interval
          << ",\"min_free_mb\":" << o.minFree << ",\"jpeg_quality\":90,\"accept_no_obstacle_brake\":true\n}\n";
@@ -902,7 +903,7 @@ int run(Options o) {
                 throw Failure(4, "camera_stall", "Luồng ghi ảnh mất nhịp sống");
             }
             const bool fresh = frameNs && now - lastFrame <= 500;
-            if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500, true);
+            if (!fresh && moving(control.state)) control.stop("frame_stale", lastFrame + 500, true);
             control.tick();
             if (control.discardPending) {
                 terminal->discard(); preview.discardKeys(); control.discardPending = false;
@@ -911,6 +912,18 @@ int run(Options o) {
             auto keys = terminal->read(readAt);
             if (!previewHandled) {
                 for (unsigned char key : preview.pollKeys()) keys.push_back(key == 'E' ? 27 : key == '3' ? 3 : key);
+            }
+            const bool forward = std::find(keys.begin(), keys.end(), 'w') != keys.end() ||
+                                 std::find(keys.begin(), keys.end(), 'W') != keys.end();
+            const bool reverse = std::find(keys.begin(), keys.end(), 's') != keys.end() ||
+                                 std::find(keys.begin(), keys.end(), 'S') != keys.end();
+            if (forward && reverse) {
+                // Nhìn cả lô trước khi gửi motor: WS/SW không được chạy thoáng một hướng.
+                control.directionStop("reverse_conflict", readAt);
+                terminal->discard(); preview.discardKeys(); control.discardPending = false;
+                keys.erase(std::remove_if(keys.begin(), keys.end(), [](int k) {
+                    return k != 3 && k != 27 && k != 'x' && k != 'X' && k != ' ';
+                }), keys.end());
             }
             for (int key : keys) {
                 trigger = nowMs();
@@ -1024,13 +1037,16 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root runs_drive] [--label drive]\n"
-                  << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 10\n"
+                  << "  --pipeline CHUỖI --speed-cms 5 --reverse-speed-cms 3 (trần 5 cm/s)\n"
+                  << "  --steer-step-deg 5 [1..10] --max-steer-deg 10 [0..40]\n"
                   << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
                   << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"
-                  << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; ảnh luôn được ghi.\n"
+                  << "S = LÙI (giữ). DỪNG = Space / X / Esc. S KHÔNG CÒN LÀ DỪNG.\n"
+                  << "X dừng khẩn rồi DUNG; Esc thoát; Ctrl+C dừng và thoát; ảnh luôn được ghi.\n"
+                  << "Đổi hướng: motor 0, nghỉ ít nhất 300 ms, nhả đủ hạn giữ rồi nhấn mới.\n"
                   << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới để chạy lại.\n"
                   << "Chạy qua scripts/run_drive.sh để có đường dừng độc lập.\n";
         return 0;
@@ -1041,7 +1057,9 @@ int main(int argc, char** argv) {
         if (!isatty(0)) throw std::runtime_error("stdin không phải tty (terminal trực tiếp); không chạy qua pipe");
     } catch (const std::exception& e) { std::cerr << "Lỗi tham số: " << e.what() << '\n'; return 2; }
     std::cerr << "CANH BAO: KHONG CO PHANH ToF; người giám sát phải ở sẵn bên xe.\n"
-              << "Mở là DUNG; W tiến; A/D lái; C trả lái; S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát.\n"
+              << "Mở là DUNG; W tiến; A/D lái; C trả lái; X dừng khẩn rồi DUNG; Esc/Ctrl+C thoát.\n"
+              << "S = LÙI (giữ). DỪNG = Space / X / Esc. S KHÔNG CÒN LÀ DỪNG.\n"
+              << "Đổi hướng: motor 0, nghỉ ít nhất 300 ms; W+S xung đột thì dừng.\n"
               << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới.\n"
               << "Ctrl+C chỉ là một cách dừng. Nếu mất điều khiển: DUNG CONG TAC NGUON motor.\n";
     try { return run(options); }

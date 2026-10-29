@@ -40,7 +40,7 @@ struct Options {
     std::string pipeline = defaultPipeline, label = "drive";
     std::string started;
     std::vector<std::string> argv;
-    double speed = 5;
+    double speed = 5, reverseSpeed = 3;
     int steerStep = 5, maxSteer = 10;
     uint64_t holdTimeout = 800, interval = 1000, minFree = 1024;
     bool accepted = false;
@@ -86,7 +86,7 @@ inline Options parse(int argc, char** argv) {
         const std::string key = argv[i];
         if (key == "--accept-no-obstacle-brake") { o.accepted = true; continue; }
         if (key != "--out-root" && key != "--label" && key != "--pipeline" &&
-            key != "--speed-cms" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
+            key != "--speed-cms" && key != "--reverse-speed-cms" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
             key != "--hold-timeout-ms" && key != "--interval-ms" && key != "--min-free-mb")
             throw std::runtime_error("Tham số không biết: " + key);
         if (++i == argc || std::string(argv[i]).compare(0, 2, "--") == 0)
@@ -105,13 +105,19 @@ inline Options parse(int argc, char** argv) {
             catch (...) { throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 5"); }
             if (used != value.size() || !std::isfinite(o.speed) || o.speed < 0 || o.speed > 5)
                 throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 5 (trần cứng)");
+        } else if (key == "--reverse-speed-cms") {
+            size_t used = 0;
+            try { o.reverseSpeed = std::stod(value, &used); }
+            catch (...) { throw std::runtime_error("--reverse-speed-cms phải là số hữu hạn lớn hơn 0, tối đa 5"); }
+            if (used != value.size() || !std::isfinite(o.reverseSpeed) || o.reverseSpeed <= 0 || o.reverseSpeed > 5)
+                throw std::runtime_error("--reverse-speed-cms phải lớn hơn 0, tối đa 5 (trần cứng)");
         } else {
             const auto n = number(value, key);
             if (n > static_cast<uint64_t>(std::numeric_limits<int>::max()))
                 throw std::runtime_error("Giá trị quá lớn: " + key);
             if (key == "--steer-step-deg" || key == "--max-steer-deg") {
-                if ((key == "--steer-step-deg" && n < 1) || (key == "--max-steer-deg" && n > 10))
-                    throw std::runtime_error(key + " cần bước dương và trần góc từ 0 đến 10 độ");
+                if ((key == "--steer-step-deg" && (n < 1 || n > 10)) || (key == "--max-steer-deg" && n > 40))
+                    throw std::runtime_error(key + " cần bước từ 1 đến 10 và trần góc từ 0 đến 40 độ");
                 if (key == "--steer-step-deg") o.steerStep = static_cast<int>(n);
                 else o.maxSteer = static_cast<int>(n);
             } else if (key == "--hold-timeout-ms") {
@@ -175,9 +181,11 @@ public:
         return keys;
     }
 };
-enum class State { DUNG, CHAY };
+constexpr int64_t kDirectionPauseMs = 300;
+enum class State { DUNG, CHAY_TIEN, CHAY_LUI };
+inline bool moving(State s) { return s != State::DUNG; }
 inline const char* stateName(State s) {
-    return s == State::DUNG ? "DUNG" : "CHAY";
+    return s == State::CHAY_TIEN ? "CHAY_TIEN" : s == State::CHAY_LUI ? "CHAY_LUI" : "DUNG";
 }
 struct MotorError : std::runtime_error { MotorError() : std::runtime_error("Ghi motor thất bại") {} };
 struct ServoError : std::runtime_error { ServoError() : std::runtime_error("Ghi servo thất bại") {} };
@@ -196,6 +204,8 @@ class Control {
     IClock& clock_;
     bool awaitingPress_ = false;
     int64_t lastHeld_ = 0, lastW_ = 0, motor0Done_ = 0;
+    int64_t lastForward_ = -1, lastReverse_ = -1, directionReadyAt_ = 0;
+    int lastDirection_ = 0, pendingDirection_ = 0;
     void requireFreshPress() {
         awaitingPress_ = true;
         lastHeld_ = clock_.nowMs();
@@ -207,7 +217,9 @@ class Control {
             std::chrono::steady_clock::now().time_since_epoch()).count();
     }
     void publishCommand(int64_t ns) {
-        const auto appliedState = !latched_error && completedSpeed_ > 0 ? State::CHAY : State::DUNG;
+        // Nhật ký giữ lệnh đã ghi thành công, kể cả khi lần ghi dừng tiếp theo lỗi.
+        const auto appliedState = completedSpeed_ == 0 ? State::DUNG :
+            completedSpeed_ < 0 ? State::CHAY_LUI : State::CHAY_TIEN;
         if (onCommand) onCommand(ns, completedSpeed_, completedAngle_, appliedState);
     }
     bool writeSpeed(float v) {
@@ -233,8 +245,8 @@ class Control {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
         hookEvent("state", stateName(state));
 #endif
-        // CHAY chỉ có hiệu lực khi lệnh tiến đã hoàn tất.
-        if (next != State::CHAY) publishCommand(commandNs());
+        // Trạng thái chạy chỉ có hiệu lực khi lệnh motor đã hoàn tất.
+        if (!moving(next)) publishCommand(commandNs());
     }
 public:
     State state = State::DUNG;
@@ -257,7 +269,9 @@ public:
 #endif
     }
     void setSpeed(float v) {
-        if (v > 0 && (state != State::CHAY || latched_error)) return;
+        if (!std::isfinite(v)) return;
+        if (v > 0 && (state != State::CHAY_TIEN || latched_error)) return;
+        if (v < 0 && (state != State::CHAY_LUI || latched_error || -v > static_cast<float>(std::min(o_.reverseSpeed, 5.0)))) return;
         const auto trigger = clock_.nowMs();
         const bool written = writeSpeed(v);
         speed = v;
@@ -275,7 +289,7 @@ public:
                 recordStop("motor_fail", trigger, motor0Done_);
             throw MotorError();
         }
-        maxSpeed = std::max(maxSpeed, v);
+        maxSpeed = std::max(maxSpeed, std::abs(v));
     }
     void setAngle(int v) {
         bool written;
@@ -329,9 +343,15 @@ public:
         if (failure) std::rethrow_exception(failure);
     }
     int64_t deadmanAt() const { return lastW_ + static_cast<int64_t>(o_.holdTimeout); }
+    void directionStop(const std::string& reason, int64_t trigger) {
+        stop(reason, trigger);
+        directionReadyAt_ = motor0Done_ + kDirectionPauseMs;
+        lastForward_ = lastReverse_ = -1;
+        if (reason == "reverse_conflict") { lastDirection_ = 0; pendingDirection_ = 0; }
+    }
     void tick() {
         const auto now = clock_.nowMs();
-        if (state == State::CHAY && now - lastW_ >= static_cast<int64_t>(o_.holdTimeout)) {
+        if (moving(state) && now - lastW_ >= static_cast<int64_t>(o_.holdTimeout)) {
             stop("deadman", deadmanAt());
         }
     }
@@ -343,8 +363,8 @@ public:
         if (k != 27 && (k < 0 || k > 127 || std::string("wads cx").find(static_cast<char>(k)) == std::string::npos)) return;
         if (k == 27) { stop("key_esc", clock_.nowMs(), true); exiting = true; return; }
         if (k == 'x') { ++emergencyStops; stop("key_x", clock_.nowMs(), true); return; }
-        if (k == 's' || k == ' ') {
-            stop(k == 's' ? "key_s" : "key_space", clock_.nowMs()); return;
+        if (k == ' ') {
+            stop("key_space", clock_.nowMs()); return;
         }
         if (latched_error || exiting) return;
         const auto received = readAt >= 0 ? readAt : clock_.nowMs();
@@ -353,14 +373,29 @@ public:
             // Terminal không báo nhả: phải im phím đủ một hạn giữ kể từ phím cũ cuối cùng.
             const bool released = received - lastHeld_ >= static_cast<int64_t>(o_.holdTimeout);
             lastHeld_ = std::max(lastHeld_, received);
-            if (!released || !cameraReady) return;
+            if (!released || !cameraReady || clock_.nowMs() < directionReadyAt_) return;
             awaitingPress_ = false;
         }
-        if (k == 'w') {
+        if (k == 'w' || k == 's') {
             if (!cameraReady) { requireFreshPress(); return; }
-            // Cả lô phím dùng chung mốc đọc; W tồn không được gia hạn theo lúc xử lý.
-            if (state == State::CHAY && lastW_ == received) return;
-            transition(State::CHAY); setSpeed(static_cast<float>(o_.speed)); lastW_ = received;
+            const int direction = k == 'w' ? 1 : -1;
+            const auto opposite = direction > 0 ? lastReverse_ : lastForward_;
+            if (opposite >= 0 && received - opposite < static_cast<int64_t>(o_.holdTimeout)) {
+                pendingDirection_ = 0;
+                directionStop("reverse_conflict", clock_.nowMs()); return;
+            }
+            if (lastDirection_ && direction != lastDirection_ && pendingDirection_ != direction) {
+                pendingDirection_ = direction;
+                directionStop("dir_change", clock_.nowMs()); return;
+            }
+            // Cả lô phím dùng chung mốc đọc; phím tồn không gia hạn theo lúc xử lý.
+            if (moving(state) && lastW_ == received) return;
+            if (clock_.nowMs() < directionReadyAt_) return;
+            transition(direction > 0 ? State::CHAY_TIEN : State::CHAY_LUI);
+            setSpeed(static_cast<float>(direction > 0 ? o_.speed : -o_.reverseSpeed));
+            lastW_ = received;
+            (direction > 0 ? lastForward_ : lastReverse_) = received;
+            lastDirection_ = direction; pendingDirection_ = 0;
         } else if (k == 'a') setAngle(static_cast<int>(std::min<int64_t>(o_.maxSteer, static_cast<int64_t>(angle) + o_.steerStep)));
         else if (k == 'd') setAngle(static_cast<int>(std::max<int64_t>(-o_.maxSteer, static_cast<int64_t>(angle) - o_.steerStep)));
         else if (k == 'c') setAngle(0);

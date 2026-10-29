@@ -185,6 +185,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 std::ostringstream line;
                 line << state.state << " v=" << state.cmd_speed << " steer=" << state.cmd_steer
                      << " images=" << state.images << " rec=" << (state.recording ? "ON" : "OFF");
+                if (std::strcmp(state.state, "CHAY_LUI") == 0) line << " LUI";
                 cv::putText(display, line.str(), cv::Point(8, 20), cv::FONT_HERSHEY_SIMPLEX, 0.45,
                             cv::Scalar(0, 255, 0), 1);
                 cv::imshow(window, display);

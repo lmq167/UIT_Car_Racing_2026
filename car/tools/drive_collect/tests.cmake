@@ -1,4 +1,4 @@
-# T21/T24: 87 ca D + 7 ca M; PTY/thư mục/khóa/vết riêng.
+# T21/T24/T25: PTY/thư mục/khóa/vết riêng; ca M là kiểm ngược bằng lỗi cố ý.
 # DEV include file này trong BUILD_TESTING; không sửa CMakeLists.txt của DEV.
 if(NOT BUILD_TESTING)
     return()
@@ -27,7 +27,8 @@ set(_drive_cases
     D65 D66 D67 D68 D69 D70 D71 D72 D73 D74 D75 D76 D77 D78 D79
     D80 D81 D82 D83 D84
     D85 D86 D87 D88 D89 D90 D91 D92 D93 D94 D95 D96 D97
-    M01 M02 M03 M04 M05 M06 M07)
+    D98 D99 D100 D101 D102 D103 D104 D105
+    M01 M02 M03 M04 M05 M06 M07 M08 M09 M10)
 set(_drive_cam "${CMAKE_BINARY_DIR}/tools/cam_collect/ucr_collect_cam")
 if(TARGET ucr_collect_cam)
     set(_drive_cam "$<TARGET_FILE:ucr_collect_cam>")
@@ -43,6 +44,7 @@ foreach(_drive_case IN LISTS _drive_cases)
         --case "${_drive_case}"
         --hooks "$<TARGET_FILE:ucr_drive_collect_hooks>"
         --real "$<TARGET_FILE:ucr_drive_collect>" --cam "${_drive_cam}"
+        --contract "$<TARGET_FILE:test_drive_collect_reverse>"
         --source "${CMAKE_CURRENT_LIST_DIR}"
         --wrapper "${CMAKE_CURRENT_LIST_DIR}/../../scripts/run_drive.sh"
         --cmake "${CMAKE_COMMAND}" --cxx "${CMAKE_CXX_COMPILER}"
