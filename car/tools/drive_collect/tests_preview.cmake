@@ -35,6 +35,12 @@ foreach(_preview_case IN LISTS _preview_cases)
     if(_preview_case MATCHES "^P(16|17|18)$")
         set(_preview_labels "acceptance;slow")
     endif()
+    # P23 (so số ảnh có/không preview): nhịp lưu dao động bất thường dưới TSan nên phép so tốc độ không có nghĩa; vẫn chạy ở ASan + container.
+    # P13 (con treo + stderr đầy, hạn cleanup 3 s): như D86/D88, dưới TSan tiến trình treo ở đường _exit khi pipe stderr đầy;
+    # giới hạn của TSan, không phải của mã xe. Ca vẫn chạy ở ASan và container GCC 7.
+    if(_preview_case STREQUAL "P13" OR _preview_case STREQUAL "P23")
+        set(_preview_labels "acceptance")
+    endif()
     if(_preview_case STREQUAL "P19")
         set(_preview_labels "acceptance;threads;slow")
     endif()

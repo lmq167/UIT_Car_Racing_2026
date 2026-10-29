@@ -11,6 +11,8 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <thread>
 #include <sys/file.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -190,7 +192,12 @@ void child(const char* mode, PreviewChildStatus expected, bool shown) {
     check(host.start() == PreviewStartResult::Started, "không fork được con giả");
     cv::Mat frame(720, 1280, CV_8UC3, cv::Scalar(1, 2, 3));
     check(host.publishFrame(frame, nowMs()), "không giao được khung đầu");
-    until([&] { return host.pollChild() == expected; }, "sai trạng thái con");
+    const auto end = Clock::now() + std::chrono::seconds(3);
+    while (host.pollChild() != expected) {
+        check(Clock::now() < end, (std::string("sai trạng thái con (chế độ ") + mode + ", có " +
+              std::to_string(int(host.pollChild())) + ", cần " + std::to_string(int(expected)) + ")").c_str());
+        std::this_thread::yield();
+    }
     check(host.wasShown() == shown, "sai cờ shown");
     if (!shown) check(!host.diagnostic().empty(), "thiếu hướng dẫn lỗi khởi động");
     const auto before = Clock::now();

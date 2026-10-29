@@ -1005,6 +1005,8 @@ int run(Options o) {
 }
 }
 int main(int argc, char** argv) {
+    // Giữ OpenCV một luồng để giảm tải Nano và tránh nhóm luồng TBB.
+    cv::setNumThreads(1);
     std::set_terminate(emergencyTerminate);
     struct sigaction action{};
     action.sa_handler = signalStop; sigemptyset(&action.sa_mask);

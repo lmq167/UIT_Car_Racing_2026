@@ -7,6 +7,7 @@ thiết lập/biên dịch là phát hiện mutation (kiểm ngược bằng l�
 import argparse
 from contextlib import contextmanager
 import csv
+import io
 import math
 import os
 from pathlib import Path
@@ -17,6 +18,13 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# Không phụ thuộc locale của container; Python 3.6 chưa có reconfigure().
+for _name in ('stdout', 'stderr'):
+    _stream = getattr(sys, _name)
+    if hasattr(_stream, 'buffer'):
+        setattr(sys, _name, io.TextIOWrapper(_stream.detach(), encoding='utf-8',
+                                           errors='replace', line_buffering=True))
 
 import test_drive_collect as d
 
@@ -30,7 +38,7 @@ def child_ids(pid):
     children = set()
     for path in Path('/proc/{}/task'.format(pid)).glob('*/children'):
         try:
-            children.update(int(value) for value in path.read_text().split())
+            children.update(int(value) for value in path.read_text(encoding='utf-8').split())
         except FileNotFoundError:
             pass
     return children
@@ -38,7 +46,7 @@ def child_ids(pid):
 
 def identity(pid):
     try:
-        fields = Path('/proc/{}/stat'.format(pid)).read_text().rsplit(')', 1)[1].split()
+        fields = Path('/proc/{}/stat'.format(pid)).read_text(encoding='utf-8').rsplit(')', 1)[1].split()
         return fields[19]  # starttime, trường 22; không nhầm PID được dùng lại.
     except FileNotFoundError:
         return None
@@ -317,7 +325,7 @@ def queue_stop_key(events, key):
 
 def queue_pause(run, pid):
     os.kill(pid, signal.SIGSTOP)
-    run.wait(lambda: Path('/proc/{}/stat'.format(pid)).read_text().rsplit(')', 1)[1].split()[0] == 'T',
+    run.wait(lambda: Path('/proc/{}/stat'.format(pid)).read_text(encoding='utf-8').rsplit(')', 1)[1].split()[0] == 'T',
              0.1, 'Không xác nhận được tiến trình ngừng để dồn phím')
 
 
@@ -474,8 +482,13 @@ def signals(cfg, root):
 
 
 def stderr_hang(cfg, root):
+    environment = {}
+    if cfg.tsan_slack:
+        # Như D86/D88: stderr vẫn đầy, nhưng bộ dò lỗi không bị kẹt khi ghi chẩn đoán.
+        environment['TSAN_OPTIONS'] = ':'.join(filter(None, (
+            os.environ.get('TSAN_OPTIONS', ''), 'log_path="{}"'.format(root / 'tsan'))))
     with d.stderr_pipe() as (_, writer):
-        with preview(cfg, root, 'hang', stderr=writer) as run:
+        with preview(cfg, root, 'hang', env=environment, stderr=writer) as run:
             live_child(run)
             d.moving(run)
             d.fill_pipe(writer)
@@ -488,6 +501,7 @@ def stderr_hang(cfg, root):
             run.wait(lambda: run.process.poll() is not None,
                      max(0.01, (deadline - d.monotonic_ms()) / 1000),
                      'Con hang + stderr đầy phá hạn cleanup 3 s', alive=False)
+            d.check_tsan_logs(root)
             d.need(d.monotonic_ms() <= deadline and run.process.returncode == 143,
                    'Cleanup trễ/sai mã khi stderr nghẽn', 'cleanup_deadline')
             d.final_stop(run.events())
@@ -547,7 +561,7 @@ def no_preview_loss(rows):
 def same_preview(run, pid, token, state):
     d.need(identity(pid) == token and child_ids(run.process.pid) == {pid},
            'Con preview mất/đổi PID hoặc thời điểm khởi tạo', 'preview_lifetime')
-    fields = Path('/proc/{}/stat'.format(pid)).read_text().rsplit(')', 1)[1].split()
+    fields = Path('/proc/{}/stat'.format(pid)).read_text(encoding='utf-8').rsplit(')', 1)[1].split()
     d.need(fields[0] != 'Z', 'Con preview đã chết, chưa được thu hồi', 'preview_lifetime')
     no_preview_loss(journal(run))
     states = d.matched(run.events(), 'state')

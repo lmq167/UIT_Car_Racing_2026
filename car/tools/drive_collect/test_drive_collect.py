@@ -7,6 +7,7 @@ Release (bản tối ưu) giữ trần 200 ms; sanitizer (dò lỗi bộ nhớ/l
 import argparse
 from contextlib import contextmanager
 import csv
+import io
 import json
 import math
 import os
@@ -21,6 +22,13 @@ import subprocess
 import sys
 import tempfile
 import time
+
+# Python 3.6 có thể dùng locale ASCII; cả thông báo lỗi cũng phải in được.
+for _name in ('stdout', 'stderr'):
+    _stream = getattr(sys, _name)
+    if hasattr(_stream, 'buffer'):
+        setattr(sys, _name, io.TextIOWrapper(_stream.detach(), encoding='utf-8',
+                                           errors='replace', line_buffering=True))
 
 if os.name == 'posix':
     import fcntl
@@ -649,11 +657,26 @@ def test_case(case, cfg, root):
                     steer(run, 'D', target)
                 run.finish()
         if n == 8:
-            with running(cfg, root / 'keys') as run:
-                moving(run)
-                for key in ('W', 'S', ' ', 'C', 'A', 'D', 'X', 'S'):
-                    run.key(key)
-                run.finish()
+            # Dấu đọc phím có trước dừng/xả hàng; mỗi phím cần phiên riêng.
+            for index, key in enumerate(('W', 'S', ' ', 'C', 'A', 'D', 'X', 'S')):
+                with running(cfg, root / ('key_' + str(index))) as run:
+                    moving(run)
+                    run.pump = False
+                    mark = len(run.events())
+                    pressed = run.key(key)
+                    if key in ('S', ' ', 'X'):
+                        stop_by(run, mark, pressed[0])
+                        run.event('state', 'DUNG', mark)
+                        if key == 'X':
+                            run.event('servo_angle', 0, mark)
+                            ordered_stop(run.events()[mark:])
+                    elif key == 'W':
+                        run.event('motor_speed', run.speed(), mark)
+                    else:
+                        run.event('servo_angle', {'C': 0, 'A': 10, 'D': 0}[key], mark)
+                    # Không gửi Esc vào đúng cửa sổ xóa phím sau S/Space/X.
+                    run.process.send_signal(signal.SIGTERM)
+                    run.finish('sigterm')
         return
 
     if n in (21, 22, 23, 24):
@@ -798,7 +821,7 @@ def test_case(case, cfg, root):
         blocked.mkdir(mode=0o500)
         try:
             try:
-                (blocked / 'probe').write_text('x')
+                (blocked / 'probe').write_text('x', encoding='utf-8')
             except PermissionError:
                 pass
             else:
@@ -1249,10 +1272,10 @@ def cleanup_deadline(n, cfg, root):
                 fake.write_text(
                     'import json, os, sys\nfrom pathlib import Path\n'
                     'kind = sys.argv[1]\n'
-                    'with open(os.environ["JOURNAL"], "a") as f:\n'
+                    'with open(os.environ["JOURNAL"], "a", encoding="utf-8") as f:\n'
                     ' f.write(json.dumps([kind]) + "\\n")\n'
                     'if kind == "child":\n'
-                    ' Path(os.environ["CHILD_MARK"]).write_text(str(os.getpid()))\n'
+                    ' Path(os.environ["CHILD_MARK"]).write_text(str(os.getpid()), encoding="utf-8")\n'
                     ' os.execv(os.environ["HOOKS"], [os.environ["HOOKS"]] + sys.argv[2:])\n',
                     encoding='utf-8')
                 prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
@@ -1284,7 +1307,7 @@ def cleanup_deadline(n, cfg, root):
                     run.event('servo_angle', 0, mark)
                     stopped = matched(run.events()[mark:], 'servo_angle', 0)[0][1][0]
                     deadline = stopped + 3000 + 300 + cfg.slack + cfg.tsan_slack
-                    pid = int(child_mark.read_text()) if n == 88 else run.process.pid
+                    pid = int(child_mark.read_text(encoding='utf-8')) if n == 88 else run.process.pid
                     exited = (lambda: not Path('/proc/{}/stat'.format(pid)).exists()) if n == 88 else (
                         lambda: run.process.poll() is not None)
                     run.wait(exited, max(0.01, (deadline - monotonic_ms()) / 1000),
@@ -1326,7 +1349,7 @@ def wrapper_lock_order(n, cfg, root):
             'kind = sys.argv[1]\n'
             'stage = "child" if kind == "child" else ("post" if (root / "child_seen").exists() else "pre")\n'
             'def record(value):\n'
-            ' with open(os.environ["JOURNAL"], "a") as f: f.write(json.dumps([value]) + "\\n")\n'
+            ' with open(os.environ["JOURNAL"], "a", encoding="utf-8") as f: f.write(json.dumps([value]) + "\\n")\n'
             'record(stage + "_enter")\n'
             'if stage == "child": (root / "child_seen").touch()\n'
             'end = time.monotonic() + 8\n'
@@ -1343,7 +1366,7 @@ def wrapper_lock_order(n, cfg, root):
         with running(cfg, folder / 'run', env=env,
                      command=[cfg.bash, isolated_wrapper(cfg, folder)]) as run:
             run.wait(lambda: ['pre_enter'] in wrapper_records(journal), 5, 'Không tới stop trước')
-            with lock.open('a') as probe:
+            with lock.open('a', encoding='utf-8') as probe:
                 def locked():
                     try:
                         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1355,7 +1378,7 @@ def wrapper_lock_order(n, cfg, root):
             need(wrapper_records(journal) == [['pre_enter']], 'Chạy con trước khi stop trước xong')
             (folder / 'pre_release').touch()
             run.wait(lambda: ['child_enter'] in wrapper_records(journal), 5, 'Không chạy con sau stop trước')
-            with lock.open('a') as owner:
+            with lock.open('a', encoding='utf-8') as owner:
                 # Lấy được khóa cũng chứng minh đã nhả khóa trước khi chạy con.
                 fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 if n == 89:
@@ -1649,6 +1672,9 @@ def key_variants(n, cfg, root):
                         run.event('servo_angle', 5)
                     elif key.upper() == 'D':
                         run.event('servo_angle', 0)
+                # X xóa hàng đợi phím; Esc gửi ngay sau X có thể bị xóa theo (như D08). Chờ X xử lý xong rồi mới thoát.
+                run.pump = False
+                run.observe(0.5, lambda: None)
                 run.finish()
 
 
@@ -1731,14 +1757,14 @@ def wrapper_preflight(cfg, root):
         fake.write_text(
             'import json, os, sys\n'
             'kind = sys.argv[1]\n'
-            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            'with open(os.environ["JOURNAL"], "a", encoding="utf-8") as f:\n'
             ' f.write(json.dumps([kind, sys.argv[2:]]) + "\\n")\n'
             'sys.exit(9 if kind == "stop" and os.environ["MODE"] == "pre_fail" else 0)\n',
             encoding='utf-8')
         prefix = '#!/bin/sh\nexec {} {} '.format(shlex.quote(sys.executable), shlex.quote(str(fake)))
         executable(build / 'ucr_stop', prefix + 'stop "$@"\n')
         executable(build / 'ucr_drive_collect', prefix + 'child "$@"\n')
-        with lock.open('w') as owner:
+        with lock.open('w', encoding='utf-8') as owner:
             if mode == 'busy':
                 fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with running(cfg, folder / 'run', env=dict(UCR_BUILD_DIR=str(build),
@@ -1779,13 +1805,13 @@ def wrapper_case(n, cfg, root):
             'alive = False\n'
             'if kind == "stop" and Path(os.environ["CHILD_TRACE"]).exists():\n'
             ' try:\n'
-            '  os.kill(json.loads(Path(os.environ["CHILD_TRACE"]).read_text())["pid"], 0)\n'
+            '  os.kill(json.loads(Path(os.environ["CHILD_TRACE"]).read_text(encoding="utf-8"))["pid"], 0)\n'
             '  alive = True\n'
             ' except ProcessLookupError: pass\n'
-            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            'with open(os.environ["JOURNAL"], "a", encoding="utf-8") as f:\n'
             ' f.write(json.dumps([kind, sys.argv[2:], alive]) + "\\n")\n'
             'if kind == "stop":\n'
-            ' Path(os.environ["STOP_TRACE"]).write_text(json.dumps(sys.argv[2:]))\n'
+            ' Path(os.environ["STOP_TRACE"]).write_text(json.dumps(sys.argv[2:]), encoding="utf-8")\n'
             ' sys.exit(int(os.environ["STOP_STATUS"]) if Path(os.environ["CHILD_TRACE"]).exists() else 0)\n'
             'fd = sys.stdin.fileno()\n'
             'attrs = termios.tcgetattr(fd)\n'
@@ -1794,7 +1820,7 @@ def wrapper_case(n, cfg, root):
             'mark = Path(os.environ["CHILD_TRACE"])\n'
             'pending = mark.with_suffix(".tmp")\n'
             'pending.write_text(json.dumps(dict(\n'
-            ' pid=os.getpid(), pgid=os.getpgrp(), fg=os.tcgetpgrp(fd), tty=os.isatty(fd))))\n'
+            ' pid=os.getpid(), pgid=os.getpgrp(), fg=os.tcgetpgrp(fd), tty=os.isatty(fd))), encoding="utf-8")\n'
             'pending.rename(mark)\n'
             'signal.signal(signal.SIGINT, lambda s,f: sys.exit(130))\n'
             'signal.signal(signal.SIGTERM, lambda s,f: sys.exit(143))\n'
@@ -1850,10 +1876,10 @@ def wrapper_guards(n, cfg, root):
         fake.write_text(
             'import json, os, signal, sys\nfrom pathlib import Path\n'
             'kind, mode = sys.argv[1:3]\n'
-            'with open(os.environ["JOURNAL"], "a") as f:\n'
+            'with open(os.environ["JOURNAL"], "a", encoding="utf-8") as f:\n'
             ' f.write(json.dumps([kind]) + "\\n")\n'
             'Path(os.environ["CHILD_MARK"] if kind == "child" else os.environ["STOP_MARK"]).write_text(\n'
-            ' json.dumps(dict(pid=os.getpid(), pgid=os.getpgrp())))\n'
+            ' json.dumps(dict(pid=os.getpid(), pgid=os.getpgrp())), encoding="utf-8")\n'
             'if kind == "child": sys.exit(6 if mode == "lock" else 3 if mode == "open" else 0)\n'
             'if mode == "pre_hang" or (mode == "post_hang" and Path(os.environ["CHILD_MARK"]).exists()):\n'
             ' while True: signal.pause()\n', encoding='utf-8')

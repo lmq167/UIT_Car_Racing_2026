@@ -109,6 +109,7 @@ bool readPreviewFrame(PreviewShared& shared, PreviewFrame& frame) {
 }
 
 int runPreviewChild(PreviewShared& shared, int key_fd) {
+    // Không gọi cv::setNumThreads ở đây: sau fork, TBB của OpenCV 4.1.1 có thể treo; main đã đặt 1 luồng trước fork, con kế thừa.
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
     const char* env = std::getenv("UCR_DRIVE_FAKE_PREVIEW");
     const std::string mode = env ? env : "ok";

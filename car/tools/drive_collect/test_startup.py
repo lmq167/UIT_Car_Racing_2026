@@ -1,13 +1,22 @@
 """Kiểm tra của phần triển khai: trình bao dùng lệnh giả; Init dùng bản hooks."""
 import argparse
+import io
 import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
+
+# In được cả thông báo lỗi tiếng Việt khi Python 3.6 dùng locale ASCII.
+for _name in ('stdout', 'stderr'):
+    _stream = getattr(sys, _name)
+    if hasattr(_stream, 'buffer'):
+        setattr(sys, _name, io.TextIOWrapper(_stream.detach(), encoding='utf-8',
+                                           errors='replace', line_buffering=True))
 
 
 HERE = Path(__file__).resolve().parent
@@ -19,6 +28,31 @@ def shell_path(path):
     if os.name == 'nt':
         return '/' + path.drive[0].lower() + path.as_posix()[2:]
     return str(path)
+
+
+class TextOutputTests(unittest.TestCase):
+    def test_vietnamese_with_ascii_streams(self):
+        # Ép ASCII thật ở cả hai đầu ra, không dựa vào locale trên máy chạy.
+        message = 'ĐẠT: dung sai dừng; lỗi tiếng Việt'
+        for name in ('test_drive_collect.py', 'test_preview.py', 'test_startup.py'):
+            with self.subTest(script=name):
+                command = (
+                    "import io, runpy, sys; sys.path.insert(0, {folder}); "
+                    "sys.stdout = io.TextIOWrapper(sys.stdout.detach(), encoding='ascii'); "
+                    "sys.stderr = io.TextIOWrapper(sys.stderr.detach(), encoding='ascii'); "
+                    "runpy.run_path({path}); "
+                    "print({message}); print({message}, file=sys.stderr); "
+                    "print('\\udcff'); print('\\udcff', file=sys.stderr)"
+                ).format(folder=ascii(str(HERE)), path=ascii(str(HERE / name)),
+                         message=ascii(message))
+                env = os.environ.copy()
+                env.update(LC_ALL='C', LANG='C', PYTHONCOERCECLOCALE='0', PYTHONUTF8='0',
+                           PYTHONIOENCODING='ascii:strict', PYTHONDONTWRITEBYTECODE='1')
+                result = subprocess.run([sys.executable, '-c', command], env=env,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
+                self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8', errors='replace'))
+                self.assertEqual(result.stdout.decode('utf-8').splitlines(), [message, '?'])
+                self.assertEqual(result.stderr.decode('utf-8').splitlines(), [message, '?'])
 
 
 class WrapperTests(unittest.TestCase):
@@ -120,11 +154,11 @@ class InitTests(unittest.TestCase):
                         try:
                             deadline = time.monotonic() + 5
                             while time.monotonic() < deadline:
-                                if trace.exists() and ' motor_init\n' in trace.read_text():
+                                if trace.exists() and ' motor_init\n' in trace.read_text(encoding='utf-8'):
                                     break
                                 self.assertIsNone(process.poll())
                                 time.sleep(0.01)
-                            self.assertTrue(trace.exists() and ' motor_init\n' in trace.read_text())
+                            self.assertTrue(trace.exists() and ' motor_init\n' in trace.read_text(encoding='utf-8'))
                             if mode.startswith('signal_'):
                                 process.send_signal(int(mode.split('_')[1]))
                                 os.write(master, b'RYW\n')
@@ -134,7 +168,7 @@ class InitTests(unittest.TestCase):
                             if process.poll() is None:
                                 process.kill()
                             process.wait(timeout=3)
-                    rows = trace.read_text().splitlines()
+                    rows = trace.read_text(encoding='utf-8').splitlines()
                     self.assertEqual(sum(row.endswith(' motor_init') for row in rows), 1)
                     self.assertFalse(any(' key ' in row for row in rows))
                     self.assertFalse(any('motor_speed ' in row and float(row.split()[2]) > 0 for row in rows))
@@ -144,7 +178,7 @@ class InitTests(unittest.TestCase):
                         self.assertTrue(any('motor_speed 0' in row for row in rows))
                         summaries = list((root / 'runs').glob('*/summary.json'))
                         self.assertEqual(len(summaries), 1)
-                        summary = json.loads(summaries[0].read_text())
+                        summary = json.loads(summaries[0].read_text(encoding='utf-8'))
                         self.assertEqual(summary['exit_code'], code)
                         if not mode.startswith('signal_'):
                             self.assertEqual(summary['exit_reason'], 'motor_init_fail')
