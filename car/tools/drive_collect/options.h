@@ -1,6 +1,8 @@
 #ifndef UCR_DRIVE_COLLECT_OPTIONS_H
 #define UCR_DRIVE_COLLECT_OPTIONS_H
 
+#include "preview.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -33,6 +35,7 @@ constexpr const char* defaultPipeline =
     "video/x-raw,format=BGR ! appsink drop=true max-buffers=1";
 
 struct Options {
+    PreviewOptions preview;
     fs::path outRoot = "runs_drive", out;
     std::string pipeline = defaultPipeline, label = "drive";
     std::string started;
@@ -76,6 +79,10 @@ inline Options parse(int argc, char** argv) {
     Options o;
     for (int i = 0; i < argc; ++i) o.argv.emplace_back(argv[i]);
     for (int i = 1; i < argc; ++i) {
+        std::string error;
+        const auto preview = parsePreviewOption(argc, argv, i, o.preview, error);
+        if (preview == PreviewOptionResult::Error) throw std::runtime_error(error);
+        if (preview == PreviewOptionResult::Parsed) continue;
         const std::string key = argv[i];
         if (key == "--accept-no-obstacle-brake") { o.accepted = true; continue; }
         if (key != "--out-root" && key != "--label" && key != "--pipeline" &&
@@ -145,20 +152,25 @@ class KeyDecoder {
 public:
     std::vector<int> decode(const unsigned char* bytes, size_t size, int64_t now) {
         std::vector<int> keys;
-        if (escape_ != Escape::None && now - escapeAt_ >= 50) {
-            if (escape_ == Escape::Pending) keys.push_back(27);
+        // Chỉ bỏ CSI/SS3 cụt khi lượt đọc rỗng; đuôi đang chờ phải được nuốt trước.
+        if (escape_ == Escape::Sequence && size == 0 && now - escapeAt_ >= 50)
+            escape_ = Escape::None;
+        // Đọc tiền tố đang chờ trước khi chốt Esc đơn.
+        if (escape_ == Escape::Pending && now - escapeAt_ >= 50 &&
+            (size == 0 || (bytes[0] != '[' && bytes[0] != 'O'))) {
+            keys.push_back(27);
             escape_ = Escape::None;
         }
         for (size_t i = 0; i < size; ++i) {
             const int b = bytes[i];
-            if (escape_ == Escape::Pending) {
-                escape_ = (b == '[' || b == 'O') ? Escape::Sequence : Escape::None;
-                escapeAt_ = now;
+            if (b == 27) { escape_ = Escape::Pending; escapeAt_ = now; }
+            else if (escape_ == Escape::Pending) {
+                // Phím giữ W có thể chen giữa Esc và phần còn lại của mũi tên.
+                if (b == '[' || b == 'O') { escape_ = Escape::Sequence; escapeAt_ = now; }
             } else if (escape_ == Escape::Sequence) {
                 if (b >= 0x40 && b <= 0x7e) escape_ = Escape::None;
                 escapeAt_ = now;
-            } else if (b == 27) { escape_ = Escape::Pending; escapeAt_ = now; }
-            else if (b >= 32 && b < 127) keys.push_back(b);
+            } else if (b >= 32 && b < 127) keys.push_back(b);
         }
         return keys;
     }

@@ -73,6 +73,23 @@ void parserTests() {
           "Phải nhận biên dưới hạn giữ");
     check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "2000"}).holdTimeout == 2000,
           "Phải nhận biên trên hạn giữ");
+    check(!o.preview.no_preview && !o.preview.require_preview && o.preview.preview_scale == 0.5 &&
+          o.preview.preview_fps == 10, "Sai mặc định preview");
+    o = parseArgs({"--accept-no-obstacle-brake", "--require-preview", "--preview-scale", "0.2", "--preview-fps", "1"});
+    check(o.preview.require_preview && o.preview.preview_scale == 0.2 && o.preview.preview_fps == 1,
+          "Chưa nối tham số preview vào bộ phân tích chính");
+    o = parseArgs({"--accept-no-obstacle-brake", "--no-preview", "--preview-scale", "1", "--preview-fps", "30"});
+    check(o.preview.no_preview && o.preview.preview_scale == 1 && o.preview.preview_fps == 30,
+          "Sai biên trên tham số preview");
+    reject({"--accept-no-obstacle-brake", "--no-preview", "--require-preview"});
+    reject({"--accept-no-obstacle-brake", "--require-preview", "--no-preview"});
+    for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
+            {"--preview-scale", "0.19"}, {"--preview-scale", "1.01"}, {"--preview-scale", "nan"},
+            {"--preview-fps", "0"}, {"--preview-fps", "31"}, {"--preview-fps", "1.5"},
+            {"--preview-fps", "9999999999999999999999"}})
+        reject({"--accept-no-obstacle-brake", pair.first, pair.second});
+    reject({"--accept-no-obstacle-brake", "--preview-scale"});
+    reject({"--accept-no-obstacle-brake", "--preview-fps"});
 }
 void decoderTests() {
     KeyDecoder decoder;
@@ -90,8 +107,32 @@ void decoderTests() {
     const unsigned char cut[] = {27, '['};
     decoder.decode(cut, sizeof(cut), 600);
     check(decoder.decode(nullptr, 0, 900).empty(), "Chuỗi cụt bị coi là Esc");
+    check(decoder.decode(arrow, 1, 950) == std::vector<int>{'A'}, "CSI cụt hết hạn phải trả A về phím thường");
+    decoder.decode(esc, 1, 960);
+    const unsigned char lateTail[] = {'[', 'D'};
+    check(decoder.decode(lateTail, sizeof(lateTail), 1020).empty(), "CSI đang chờ bị chốt thành Esc trước khi đọc đuôi");
+    const unsigned char cutSs3[] = {27, 'O'}, right[] = {'D'};
+    decoder.decode(cutSs3, sizeof(cutSs3), 1030);
+    check(decoder.decode(nullptr, 0, 1100).empty(), "SS3 cụt bị coi là Esc");
+    check(decoder.decode(right, 1, 1110) == std::vector<int>{'D'}, "SS3 cụt hết hạn phải trả D về phím thường");
+    decoder.decode(esc, 1, 1120);
+    const unsigned char heldW[] = {'W'}, tail[] = {'[', 'C'};
+    check(decoder.decode(heldW, 1, 1125).empty(), "W chen sau Esc không được thành phím lái");
+    check(decoder.decode(tail, sizeof(tail), 1130).empty(), "W chen giữa làm lọt đuôi mũi tên");
+    decoder.decode(cut, sizeof(cut), 1140);
+    decoder.decode(esc, 1, 1150);
+    check(decoder.decode(nullptr, 0, 1200) == std::vector<int>{27}, "Esc mới sau CSI cụt phải dừng sau 50 ms");
+    decoder.decode(esc, 1, 1210);
+    check(decoder.decode(heldW, 1, 1230).empty(), "W chen không được hủy Esc đang chờ");
+    check(decoder.decode(heldW, 1, 1260) == std::vector<int>({27, 'W'}), "W liên tục không được trì hoãn Esc quá 50 ms");
     const unsigned char utf8[] = {0xc3, 0xa1, 'w'};
-    check(decoder.decode(utf8, sizeof(utf8), 1000) == std::vector<int>{'w'}, "Byte UTF-8 không được bỏ qua");
+    check(decoder.decode(utf8, sizeof(utf8), 1300) == std::vector<int>{'w'}, "Byte UTF-8 không được bỏ qua");
+    const unsigned char unlock[] = {'R'};
+    decoder.decode(cut, sizeof(cut), 1400);
+    decoder.decode(nullptr, 0, 1451);
+    check(decoder.decode(unlock, 1, 1452) == std::vector<int>{'R'}, "CSI cụt hết hạn 50 ms không được nuốt R");
+    decoder.decode(cut, sizeof(cut), 1500);
+    check(decoder.decode(arrow, 1, 1510).empty(), "CSI phân mảnh trong 10 ms phải nuốt cả A");
 }
 void controlTests() {
     Options o;

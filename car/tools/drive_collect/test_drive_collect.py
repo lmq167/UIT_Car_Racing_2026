@@ -1878,14 +1878,16 @@ def mutation(case, cfg, root):
     build = root / 'mutant-build'
     build.mkdir()
     # CMake độc lập chỉ biên dịch bản hooks, không tạo/chạy phần cứng thật.
-    # main.cpp chưa dùng ký hiệu preview; thêm lại preview.cpp khi nối phần xem ảnh.
+    # main.cpp đã nối PreviewHost; bản hooks cần cả đơn vị preview để liên kết.
     (build / 'CMakeLists.txt').write_text(
         'cmake_minimum_required(VERSION 3.10)\nproject(Mutant LANGUAGES CXX)\n'
         'set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n'
-        'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc)\n'
+        'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc OPTIONAL_COMPONENTS highgui)\n'
         'find_package(Threads REQUIRED)\n'
-        'add_executable(mutant "${SOURCE}/main.cpp")\n'
+        'add_executable(mutant "${SOURCE}/main.cpp" "${SOURCE}/preview.cpp")\n'
         'target_compile_definitions(mutant PRIVATE UCR_DRIVE_TEST_HOOKS=1)\n'
+        'if(OpenCV_highgui_FOUND)\n'
+        ' target_compile_definitions(mutant PRIVATE UCR_DRIVE_HAVE_HIGHGUI=1)\nendif()\n'
         'target_include_directories(mutant PRIVATE ${OpenCV_INCLUDE_DIRS})\n'
         'target_link_libraries(mutant PRIVATE ${OpenCV_LIBS} Threads::Threads)\n'
         'if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)\n'

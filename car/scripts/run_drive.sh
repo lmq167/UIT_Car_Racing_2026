@@ -2,6 +2,9 @@
 # Giữ con ở tiền cảnh để đọc tty; trình bao sống để gọi đường dừng độc lập.
 # SIGKILL trình bao/mất điện có thể giữ lệnh cuối: dùng công tắc nguồn motor.
 set -u
+if [[ -z ${DISPLAY:-} && -n ${SUDO_USER:-} ]]; then
+    printf '%s\n' 'DISPLAY đang rỗng khi dùng sudo; để xem camera, chạy sudo --preserve-env=DISPLAY,XAUTHORITY ... hoặc chọn --no-preview.' >&2
+fi
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P) || exit 1
 build=${UCR_BUILD_DIR:-"$root/build"}
 case "$build" in /*) ;; *) build="$PWD/$build" ;; esac

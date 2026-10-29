@@ -14,9 +14,11 @@
 #include <fcntl.h>
 #include <new>
 #include <poll.h>
+#include <pthread.h>
 #include <sstream>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -99,11 +101,12 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
     if (mode == "fail_start") return 11;
     shared.ready.store(1, std::memory_order_release);
     if (mode == "hang") for (;;) ::pause();
-    PreviewFrame frame;
     size_t key_index = 5;
     auto next_key = Clock::now();
     while (!shared.stop.load(std::memory_order_acquire)) {
-        if (readPreviewFrame(shared, frame)) {
+        // Con giả chỉ cần biết có khung hoàn chỉnh, không sao chép ảnh làm chậm phím 20 ms.
+        const auto sequence = shared.frame_sequence.load(std::memory_order_acquire);
+        if (sequence && !(sequence & 1)) {
             shared.shown.store(1, std::memory_order_release);
             if (mode == "die_after_frame") { ::kill(getpid(), SIGKILL); return 12; }
             if (mode == "close_after_frame") return 10;
@@ -118,7 +121,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
     return 0;
 #elif defined(UCR_DRIVE_HAVE_HIGHGUI)
     try {
-        const char* window = "UCR drive collect";
+        const char* window = "UCR Drive Collect";
         cv::namedWindow(window, cv::WINDOW_AUTOSIZE);
         shared.ready.store(1, std::memory_order_release);
         PreviewFrame frame;
@@ -129,18 +132,12 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
             if (!frame.bgr.empty() && (fresh || Clock::now() >= next_redraw)) {
                 shared.state.read(state);
                 state.state[sizeof(state.state) - 1] = 0;
-                state.stop_reason[sizeof(state.stop_reason) - 1] = 0;
                 cv::Mat display = frame.bgr.clone();
                 std::ostringstream line;
                 line << state.state << " v=" << state.cmd_speed << " steer=" << state.cmd_steer
                      << " images=" << state.images << " rec=" << (state.recording ? "ON" : "OFF");
                 cv::putText(display, line.str(), cv::Point(8, 20), cv::FONT_HERSHEY_SIMPLEX, 0.45,
                             cv::Scalar(0, 255, 0), 1);
-                line.str(""); line.clear();
-                line << "age=" << std::max(state.frame_age_ms, double(std::max<int64_t>(0, nowMs() - frame.captured_ms)))
-                     << "ms stop=" << state.stop_reason;
-                cv::putText(display, line.str(), cv::Point(8, 40), cv::FONT_HERSHEY_SIMPLEX, 0.45,
-                            cv::Scalar(0, 255, 255), 1);
                 cv::imshow(window, display);
                 sendKey(key_fd, cv::waitKey(1));
                 shared.shown.store(1, std::memory_order_release);
@@ -175,16 +172,21 @@ PreviewStartResult PreviewHost::start() {
     std::string error;
     if (!validatePreviewOptions(options_, error)) { unavailable(error); return PreviewStartResult::Unavailable; }
     if (options_.no_preview) return PreviewStartResult::Disabled;
-#if !defined(UCR_DRIVE_TEST_HOOKS) || !UCR_DRIVE_TEST_HOOKS
-#ifndef UCR_DRIVE_HAVE_HIGHGUI
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+    // Không chỉ định con giả thì mô phỏng cả lỗi thiếu môi trường hiển thị của bản xe.
+    if (!std::getenv("UCR_DRIVE_FAKE_PREVIEW")) {
+#elif !defined(UCR_DRIVE_HAVE_HIGHGUI)
     unavailable("bản này không có HighGUI"); return PreviewStartResult::Unavailable;
-#else
+#endif
+#if defined(UCR_DRIVE_HAVE_HIGHGUI) || (defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS)
     const char* display = std::getenv("DISPLAY");
     const char* wayland = std::getenv("WAYLAND_DISPLAY");
     if ((!display || !*display) && (!wayland || !*wayland)) {
         unavailable("không có DISPLAY / WAYLAND_DISPLAY"); return PreviewStartResult::Unavailable;
     }
 #endif
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+    }
 #endif
     void* memory = mmap(nullptr, sizeof(PreviewShared), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
     if (memory == MAP_FAILED) { unavailable("không tạo được bộ nhớ preview"); return PreviewStartResult::Unavailable; }
@@ -203,6 +205,7 @@ PreviewStartResult PreviewHost::start() {
     const pid_t parent = getpid();
     child_ = fork();
     if (child_ == 0) {
+        if (setpriority(PRIO_PROCESS, 0, 10) != 0) _exit(11);
         if (prctl(PR_SET_PDEATHSIG, SIGKILL) != 0 || getppid() != parent) _exit(11);
         for (int signal : {SIGINT, SIGTSTP, SIGQUIT, SIGHUP}) sigaction(signal, &ignore, nullptr);
         struct sigaction normal{}; normal.sa_handler = SIG_DFL; sigemptyset(&normal.sa_mask);
@@ -215,9 +218,22 @@ PreviewStartResult PreviewHost::start() {
     }
     ::close(pipe_fd[1]); keys_ = pipe_fd[0];
     if (child_ < 0) { shutdown(); unavailable("fork preview thất bại"); return PreviewStartResult::Unavailable; }
+    // Luồng cấp khung cũng phải chặn tín hiệu Init; cha chỉ khôi phục để nhận sau motor 0/servo 0.
+    sigset_t blocked, original;
+    sigemptyset(&blocked);
+    for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) sigaddset(&blocked, s);
+    if (pthread_sigmask(SIG_BLOCK, &blocked, &original) != 0) {
+        shutdown(); unavailable("không chặn được tín hiệu cho luồng preview"); return PreviewStartResult::Unavailable;
+    }
     feeding_.store(true);
     try { feeder_ = std::thread(&PreviewHost::feed, this); }
-    catch (...) { shutdown(); unavailable("không tạo được luồng cấp preview"); return PreviewStartResult::Unavailable; }
+    catch (...) {
+        pthread_sigmask(SIG_SETMASK, &original, nullptr);
+        shutdown(); unavailable("không tạo được luồng cấp preview"); return PreviewStartResult::Unavailable;
+    }
+    if (pthread_sigmask(SIG_SETMASK, &original, nullptr) != 0) {
+        shutdown(); unavailable("không khôi phục được tín hiệu sau tạo luồng preview"); return PreviewStartResult::Unavailable;
+    }
     return PreviewStartResult::Started;
 }
 bool PreviewHost::publishFrame(const cv::Mat& bgr, int64_t captured_ms) {
@@ -262,6 +278,16 @@ std::string PreviewHost::pollKeys() {
     if (keys_ < 0) return {};
     const auto count = ::read(keys_, keys, sizeof(keys));
     return count > 0 ? std::string(keys, size_t(count)) : std::string();
+}
+void PreviewHost::discardKeys() noexcept {
+    if (keys_ < 0) return;
+    char bytes[4096];
+    // Bỏ tối đa dung lượng pipe, có hạn cả khi con vẫn gửi phím.
+    for (int i = 0; i < 256; ++i) {
+        const auto count = ::read(keys_, bytes, sizeof(bytes));
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) break;
+    }
 }
 bool PreviewHost::wasShown() const noexcept {
     return shown_ || (shared_ && shared_->shown.load(std::memory_order_acquire));

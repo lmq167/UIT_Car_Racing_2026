@@ -141,6 +141,7 @@ public:
     // Một nguồn trạng thái ở vòng điều khiển, độc lập với bên ghi ảnh.
     void publishState(const PreviewState& state) noexcept;
     std::string pollKeys(); // Tối đa 64 byte; E = Esc, 3 = Ctrl+C.
+    void discardKeys() noexcept;
     PreviewChildStatus pollChild() noexcept;
     bool wasShown() const noexcept;
     bool ready() const noexcept;
