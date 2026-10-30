@@ -448,7 +448,7 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc,
             }
             const auto child = preview.pollChild();
             if (child == drive::PreviewChildStatus::Closed || child == drive::PreviewChildStatus::Died) {
-                std::cerr << "Lỗi: Cửa sổ ảnh đã đóng hoặc tiến trình hiển thị đã dừng\n";
+                std::cerr << "Lỗi: cửa sổ ảnh đã đóng hoặc tiến trình hiển thị đã dừng\n";
                 stats.reason = "error";
                 return false;
             }
