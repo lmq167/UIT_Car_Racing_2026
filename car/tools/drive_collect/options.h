@@ -44,6 +44,7 @@ struct Options {
     int steerStep = 5, maxSteer = 40;
     uint64_t holdTimeout = 800, interval = 1000, minFree = 1024;
     bool accepted = false, selftest = false, recOnStart = false;
+    bool invertMotorDirection = false;
 };
 
 inline uint64_t number(const std::string& text, const std::string& name) {
@@ -86,9 +87,10 @@ inline Options parse(int argc, char** argv) {
         const std::string key = argv[i];
         if (key == "--selftest") { o.selftest = true; continue; }
         if (key == "--rec-on-start") { o.recOnStart = true; continue; }
+        if (key == "--invert-motor-direction") { o.invertMotorDirection = true; continue; }
         if (key == "--accept-no-obstacle-brake") { o.accepted = true; continue; }
         if (key != "--out-root" && key != "--label" && key != "--pipeline" &&
-            key != "--speed-cms" && key != "--reverse-speed-cms" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
+            key != "--speed-cms" && key != "--reverse-speed-cms" && key != "--invert-motor-direction" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
             key != "--hold-timeout-ms" && key != "--interval-ms" && key != "--min-free-mb")
             throw std::runtime_error("Tham số không biết: " + key);
         if (++i == argc || std::string(argv[i]).compare(0, 2, "--") == 0)
@@ -110,9 +112,9 @@ inline Options parse(int argc, char** argv) {
         } else if (key == "--reverse-speed-cms") {
             size_t used = 0;
             try { o.reverseSpeed = std::stod(value, &used); }
-            catch (...) { throw std::runtime_error("--reverse-speed-cms phải là số hữu hạn lớn hơn 0, tối đa 5"); }
-            if (used != value.size() || !std::isfinite(o.reverseSpeed) || o.reverseSpeed <= 0 || o.reverseSpeed > 5)
-                throw std::runtime_error("--reverse-speed-cms phải lớn hơn 0, tối đa 5 (trần cứng)");
+            catch (...) { throw std::runtime_error("--reverse-speed-cms phải là số hữu hạn lớn hơn 0, tối đa 30"); }
+            if (used != value.size() || !std::isfinite(o.reverseSpeed) || o.reverseSpeed <= 0 || o.reverseSpeed > 30)
+                throw std::runtime_error("--reverse-speed-cms phải lớn hơn 0, tối đa 30 (trần cứng)");
         } else {
             const auto n = number(value, key);
             if (n > static_cast<uint64_t>(std::numeric_limits<int>::max()))
@@ -348,7 +350,7 @@ public:
     void setSpeed(float v) {
         if (!std::isfinite(v)) return;
         if (v > 0 && (state != State::CHAY_TIEN || latched_error)) return;
-        if (v < 0 && (state != State::CHAY_LUI || latched_error || -v > static_cast<float>(std::min(o_.reverseSpeed, 5.0)))) return;
+        if (v < 0 && (state != State::CHAY_LUI || latched_error || -v > static_cast<float>(std::min(o_.reverseSpeed, 30.0)))) return;
         const auto trigger = clock_.nowMs();
         const bool written = writeSpeed(v);
         speed = v;

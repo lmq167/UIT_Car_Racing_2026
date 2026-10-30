@@ -275,6 +275,7 @@ struct HardwareCall {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
 struct DriveMotor : IMotor {
     bool good = true;
+    bool invert = false;
     std::function<void(int64_t)> onEmergencyStop;
     bool init() {
         hookEvent("motor_init", "");
@@ -303,6 +304,7 @@ struct DriveMotor : IMotor {
         HardwareCall call;
         if (v != 0 && hardwareFault) { good = false; return; }
         good = !failMotor();
+        v = v == 0 ? 0.0f : (invert ? -v : v);
         hookEvent("motor_speed", std::to_string(v) + (good ? "" : " fail"));
         if (hooks.motorHang) std::this_thread::sleep_for(2s);
     }
@@ -334,6 +336,7 @@ struct DriveMotor : IMotor {
     Motor device;
     int readiness = -1;
     bool good = false;
+    bool invert = false;
     std::function<void(int64_t)> onEmergencyStop;
     bool init() {
         const bool initialized = device.Init();
@@ -347,7 +350,10 @@ struct DriveMotor : IMotor {
         // Không thử lại poll khi EINTR: tín hiệu phải đưa vòng lái sang DỪNG ngay.
         good = poll(&uart, 1, 50) > 0 && (uart.revents & POLLOUT) &&
                !(uart.revents & (POLLERR | POLLHUP | POLLNVAL));
-        if (good && !(v != 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
+        if (good && !(v != 0 && hardwareFault)) {
+            device.SetSpeedCms(v == 0 ? 0.0f : (invert ? -v : v));
+            good = device.LastWriteOk();
+        }
         else good = false;
     }
     bool EmergencyStop() noexcept override {
@@ -516,6 +522,7 @@ void writeSession(const Options& o, const std::string& started, const std::strin
          << ",\n\"preview_monitor_values\":" << jsonString(values.str())
          << ",\n\"preview_monitor_calibrated\":" << (monitor.calibrated ? "true" : "false")
          << ",\n\"version\":\"ucr_drive_collect/1\",\n\"speed_cms\":" << o.speed
+         << ",\n\"invert_motor\":" << (o.invertMotorDirection ? "true" : "false")
          << ",\n\"reverse_speed_cms\":" << o.reverseSpeed
          << ",\"steer_step_deg\":" << o.steerStep << ",\"max_steer_deg\":" << o.maxSteer
          << ",\"hold_timeout_ms\":" << o.holdTimeout << ",\"interval_ms\":" << o.interval
@@ -828,6 +835,7 @@ int run(Options o) {
     o.started = utcNow();
     SteadyClock clock;
     DriveMotor motor;
+    motor.invert = o.invertMotorDirection;
     DriveServo servo;
     Control control(o, motor, servo, clock);
     bool motorOpened = false, servoOpened = false;
@@ -1287,7 +1295,8 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root data_raw] [--rec-on-start] [--label drive]\n"
-                  << "  --pipeline CHUỖI --speed-cms 5 [0..60 cm/s, trần cứng 60] --reverse-speed-cms 3 [>0..5 cm/s]\n"
+                  << "  --pipeline CHUỖI --speed-cms 5 [0..60 cm/s, trần cứng 60] --reverse-speed-cms 3 [>0..30 cm/s]\n"
+                  << "  --invert-motor-direction: cờ không giá trị, mặc định tắt; đảo dấu lệnh phần cứng cho motor lắp ngược.\n"
                   << "  --steer-step-deg 5 --max-steer-deg 40 [0..60]\n"
                   << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
