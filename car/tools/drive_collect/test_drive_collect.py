@@ -2726,4 +2726,6 @@ def main():
 
 
 if __name__ == '__main__':
+    # test_reverse.py import lại tệp này; dùng chung một module để SafetyFailure cùng lớp.
+    sys.modules['test_drive_collect'] = sys.modules['__main__']
     main()
