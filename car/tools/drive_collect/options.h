@@ -1,7 +1,7 @@
 #ifndef UCR_DRIVE_COLLECT_OPTIONS_H
 #define UCR_DRIVE_COLLECT_OPTIONS_H
 
-#include "preview.h"
+#include "../collect_common/preview.h"
 
 #include <algorithm>
 #include <chrono>

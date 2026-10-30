@@ -43,7 +43,7 @@ class TextOutputTests(unittest.TestCase):
                     "runpy.run_path({path}); "
                     "print({message}); print({message}, file=sys.stderr); "
                     "print('\\udcff'); print('\\udcff', file=sys.stderr)"
-                ).format(folder=ascii(str(HERE)), path=ascii(str(HERE / name)),
+                ).format(folder=ascii(str(HERE)), path=ascii(str((HERE.parent / 'collect_common' if name == 'test_preview.py' else HERE) / name)),
                          message=ascii(message))
                 env = os.environ.copy()
                 env.update(LC_ALL='C', LANG='C', PYTHONCOERCECLOCALE='0', PYTHONUTF8='0',

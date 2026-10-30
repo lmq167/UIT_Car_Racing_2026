@@ -26,6 +26,7 @@ for _name in ('stdout', 'stderr'):
         setattr(sys, _name, io.TextIOWrapper(_stream.detach(), encoding='utf-8',
                                            errors='replace', line_buffering=True))
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'drive_collect'))
 import test_drive_collect as d
 
 
@@ -748,16 +749,19 @@ def patch_mutant(case, text):
 
 
 def build_mutant(case, cfg, root):
-    source, build = root / 'source', root / 'build'
+    source, build = root / 'drive_collect', root / 'build'
     source.mkdir(parents=True)
     build.mkdir()
+    common = root / 'collect_common'
+    common.mkdir()
     # Sao chép nguyên byte tệp phụ trợ; không phân tích header/preview của DEV.
     for name in ('main.cpp', 'options.h', 'preview.h', 'preview.cpp', 'pass_store.h', 'pass_store.cpp'):
-        shutil.copyfile(str(Path(cfg.source) / name), str(source / name))
+        origin = Path(cfg.source) if name in ('main.cpp', 'options.h') else Path(cfg.source).parent / 'collect_common'
+        shutil.copyfile(str(origin / name), str((source if name in ('main.cpp', 'options.h') else common) / name))
     main = source / 'main.cpp'
     main.write_text(patch_mutant(case, main.read_text(encoding='utf-8')), encoding='utf-8')
-    target = ('add_library(ucr_drive_collect OBJECT main.cpp preview.cpp pass_store.cpp)\n' if case == 'P17' else
-              'add_executable(ucr_drive_collect main.cpp preview.cpp pass_store.cpp)\n')
+    target = ('add_library(ucr_drive_collect OBJECT main.cpp ../collect_common/preview.cpp ../collect_common/pass_store.cpp)\n' if case == 'P17' else
+              'add_executable(ucr_drive_collect main.cpp ../collect_common/preview.cpp ../collect_common/pass_store.cpp)\n')
     # P17 chỉ cần biên dịch object có lời gọi HighGUI sai chỗ, không cần X/highgui
     # của container; ký hiệu undefined cv::waitKey đã đủ để nm phát hiện đúng lỗi.
     (source / 'CMakeLists.txt').write_text(
@@ -1001,7 +1005,7 @@ def main():
     parser.add_argument('--self-check', action='store_true')
     for name in ('hooks', 'real', 'cam', 'build-root'):
         parser.add_argument('--' + name)
-    parser.add_argument('--source', default=str(Path(__file__).resolve().parent))
+    parser.add_argument('--source', default=str(Path(__file__).resolve().parent.parent / 'drive_collect'))
     parser.add_argument('--cmake', default='cmake')
     parser.add_argument('--cxx', default='g++')
     parser.add_argument('--nm', default='nm')

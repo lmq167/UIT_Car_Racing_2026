@@ -1,5 +1,5 @@
 #include "options.h"
-#include "pass_store.h"
+#include "../collect_common/pass_store.h"
 #ifndef UCR_DRIVE_GIT_REVISION
 #define UCR_DRIVE_GIT_REVISION "unknown"
 #endif

@@ -2394,7 +2394,7 @@ def wrapper_guards(n, cfg, root):
 
 def mutant_source(case):
     if case == 'M12':
-        return 'pass_store.cpp'
+        return '../collect_common/pass_store.cpp'
     return 'main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09', 'M13') else 'options.h'
 
 
@@ -2472,6 +2472,8 @@ def mutation(case, cfg, root):
     folder = root / 'source'
     shutil.copytree(cfg.source, str(folder), ignore=shutil.ignore_patterns(
         'build*', '__pycache__', '*.pyc', 'test_drive_collect.py', 'tests.cmake'))
+    shutil.copytree(str(Path(cfg.source).parent / 'collect_common'), str(folder.parent / 'collect_common'),
+                    ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
     patch_mutant(case, folder)
     build = root / 'mutant-build'
     build.mkdir()
@@ -2482,7 +2484,7 @@ def mutation(case, cfg, root):
         'set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n'
         'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc OPTIONAL_COMPONENTS highgui)\n'
         'find_package(Threads REQUIRED)\n'
-        'add_executable(mutant "${SOURCE}/main.cpp" "${SOURCE}/preview.cpp" "${SOURCE}/pass_store.cpp")\n'
+        'add_executable(mutant "${SOURCE}/main.cpp" "${SOURCE}/../collect_common/preview.cpp" "${SOURCE}/../collect_common/pass_store.cpp")\n'
         'target_compile_definitions(mutant PRIVATE UCR_DRIVE_TEST_HOOKS=1)\n'
         'if(OpenCV_highgui_FOUND)\n'
         ' target_compile_definitions(mutant PRIVATE UCR_DRIVE_HAVE_HIGHGUI=1)\nendif()\n'
@@ -2654,17 +2656,19 @@ def self_check():
             folder = root / case
             folder.mkdir()
             path = folder / mutant_source(case)
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(source, encoding='utf-8')
             patch_mutant(case, folder)
             need(path.read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
             # Kiểm neo duy nhất trên mã hiện tại, chỉ vá bản sao tạm.
-            path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
+            path.write_bytes((Path(__file__).resolve().parent / mutant_source(case)).read_bytes())
             patch_mutant(case, folder)
         for case in ('M10', 'M11', 'M12', 'M13'):
             folder = root / case
             folder.mkdir()
             path = folder / mutant_source(case)
-            path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((Path(__file__).resolve().parent / mutant_source(case)).read_bytes())
             patch_mutant(case, folder)
         no_selftest_hardware([])
         for event in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle'):

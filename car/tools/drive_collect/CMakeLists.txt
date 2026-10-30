@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc OPTIONAL_COMPONENTS highgui)
 find_package(Threads REQUIRED)
 get_filename_component(UCR_DRIVE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-add_executable(ucr_drive_collect main.cpp preview.cpp pass_store.cpp
+add_executable(ucr_drive_collect main.cpp ../collect_common/preview.cpp ../collect_common/pass_store.cpp
     ${UCR_DRIVE_ROOT}/src/hardware/Motor.cpp
     ${UCR_DRIVE_ROOT}/src/hardware/Servo.cpp
     ${UCR_DRIVE_ROOT}/src/common/Logger.cpp)
@@ -44,7 +44,7 @@ target_compile_definitions(ucr_drive_collect PRIVATE UCR_DRIVE_GIT_REVISION="${_
 include(CTest)
 if(BUILD_TESTING)
     # Bản giả không mở UART/I2C; không truyền định nghĩa giả sang bản xe.
-    add_executable(ucr_drive_collect_hooks main.cpp preview.cpp pass_store.cpp)
+    add_executable(ucr_drive_collect_hooks main.cpp ../collect_common/preview.cpp ../collect_common/pass_store.cpp)
     set_target_properties(ucr_drive_collect_hooks PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     target_compile_definitions(ucr_drive_collect_hooks PRIVATE UCR_DRIVE_TEST_HOOKS=1 UCR_DRIVE_GIT_REVISION="${_drive_git}")
     target_include_directories(ucr_drive_collect_hooks PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -68,13 +68,13 @@ if(BUILD_TESTING)
         COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_startup.py"
         --hooks "$<TARGET_FILE:ucr_drive_collect_hooks>")
     set_tests_properties(drive_collect_startup PROPERTIES TIMEOUT 60)
-    add_executable(test_preview_protocol test_preview_protocol.cpp preview.cpp)
+    add_executable(test_preview_protocol ../collect_common/test_preview_protocol.cpp ../collect_common/preview.cpp)
     target_compile_definitions(test_preview_protocol PRIVATE UCR_DRIVE_TEST_HOOKS=1)
     target_include_directories(test_preview_protocol PRIVATE ${OpenCV_INCLUDE_DIRS})
     target_link_libraries(test_preview_protocol PRIVATE ${OpenCV_LIBS} Threads::Threads)
     add_test(NAME drive_collect_preview_protocol COMMAND test_preview_protocol)
     set_tests_properties(drive_collect_preview_protocol PROPERTIES TIMEOUT 30)
-    include(${CMAKE_CURRENT_LIST_DIR}/pass_store_tests.cmake)
+    include(${CMAKE_CURRENT_LIST_DIR}/../collect_common/pass_store_tests.cmake)
     include(${CMAKE_CURRENT_LIST_DIR}/tests.cmake OPTIONAL)
-    include(${CMAKE_CURRENT_LIST_DIR}/tests_preview.cmake OPTIONAL)
+    include(${CMAKE_CURRENT_LIST_DIR}/../collect_common/tests_preview.cmake OPTIONAL)
 endif()

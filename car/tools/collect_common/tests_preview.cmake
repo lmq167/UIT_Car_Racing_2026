@@ -28,7 +28,7 @@ foreach(_preview_case IN LISTS _preview_cases)
         --case "${_preview_case}" --hooks "$<TARGET_FILE:ucr_drive_collect_hooks>"
         --real "$<TARGET_FILE:ucr_drive_collect>" --cam "${_preview_cam}"
         --build-root "${CMAKE_BINARY_DIR}" --nm "${CMAKE_NM}"
-        --source "${CMAKE_CURRENT_LIST_DIR}" --cmake "${CMAKE_COMMAND}"
+        --source "${CMAKE_CURRENT_LIST_DIR}/../drive_collect" --cmake "${CMAKE_COMMAND}"
         --cxx "${CMAKE_CXX_COMPILER}"
         --slack "${_preview_slack}" --tsan-slack "${_preview_tsan_slack}")
     set(_preview_labels "acceptance;threads")
