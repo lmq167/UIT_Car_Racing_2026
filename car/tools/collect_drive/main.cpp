@@ -93,6 +93,9 @@ void warning() noexcept {
 }
 void trace(const char* event, const std::string& value = {}) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+    // Lấy giờ và ghi dưới cùng một khóa để các luồng không ghi vết đảo thứ tự giờ.
+    static std::mutex traceMutex;
+    std::lock_guard<std::mutex> traceLock(traceMutex);
     if (const char* path = std::getenv("UCR_DRIVE_FAKE_TRACE")) {
         const int fd = ::open(path, O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK | O_CLOEXEC, 0600);
         if (fd >= 0) {
