@@ -185,6 +185,24 @@ inline bool motionKey(int key) {
     if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
     return key == 'w' || key == 'a' || key == 'd' || key == 'c';
 }
+inline bool safetyKey(int key) {
+    return key == 27 || key == 3 || key == 'x' || key == 'X' ||
+           key == 's' || key == 'S' || key == ' ';
+}
+// Đọc không chờ: giữ phím an toàn, bỏ chuyển động; quá trần thì bên gọi phải thoát.
+template <class Reader, class Clock>
+bool drainSafetyKeys(std::vector<int>& retained, Reader read, Clock now) {
+    const auto started = now();
+    size_t total = 0;
+    for (int attempt = 0; attempt < 256 && now() - started < 5; ++attempt) {
+        const auto keys = read();
+        if (keys.empty()) return true;
+        total += keys.size();
+        for (int key : keys) if (safetyKey(key)) retained.push_back(key);
+        if (total >= 65536) return false;
+    }
+    return false;
+}
 class KeyBurstGuard {
     uint64_t hold_;
     int64_t lastRead_;

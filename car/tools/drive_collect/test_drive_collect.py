@@ -46,7 +46,7 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 104)]
+CASES += ['D{:02d}'.format(n) for n in range(65, 106)]
 CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09']
 
 
@@ -78,7 +78,7 @@ def read_trace(path):
         stamp = float(fields[0])
         need(math.isfinite(stamp), 'Mốc vết không hữu hạn')
         kind = fields[1]
-        need(kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'key', 'state', 'key_burst'),
+        need(kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'key', 'state', 'key_burst', 'input_pause'),
              'Sự kiện ngoài hợp đồng: ' + repr(line))
         value = ' '.join(fields[2:])
         failed = value.endswith(' fail') or value == 'fail'
@@ -788,11 +788,59 @@ def selftest_case(n, cfg, root):
             fcntl.flock(available.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 
 
+def unread_safety_case(n, cfg, root):
+    if n == 104:
+        for end, reason, code in (('E', 'esc', 0), ('3', 'sigint', 130),
+                                  ('x', 'key_x', None), ('s', 'key_s', None), (' ', 'key_space', None)):
+            folder = root / str(ord(end))
+            batch = folder / 'batch'
+            with running(cfg, folder, env={'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)}) as run:
+                run.boot()
+                run.key('?')
+                run.observe(0.45)
+                mark = len(run.events())
+                # Một write <= PIPE_BUF: 64 chuyển động rồi phím an toàn thứ 65.
+                batch.write_bytes(('c' * 64 + end + 'wAdC').encode('ascii'))
+                if code is not None:
+                    run.wait(lambda: run.process.poll() is not None, 8, 'Mất phím thoát thứ 65', alive=False)
+                    need(run.process.returncode == code, 'Sai mã thoát phím thứ 65')
+                    run.check_output(reason, code)
+                    final_stop(run.events())
+                else:
+                    run.wait(lambda: reason in run.text(), message='Mất lý do dừng phím thứ 65')
+                    run.observe(0.15)
+                need(matched(run.events()[mark:], 'key_burst'), 'Chưa dựng được lô 64 phím', 'setup')
+                motion_quiet(run.events()[mark:], 'unread_safety')
+                if code is None:
+                    run.finish()
+        return
+    with running(cfg, root, args=['--no-preview']) as run:
+        run.boot()
+        run.drive()
+        mark = len(run.events())
+        # Chỉ giữ luồng nhập; camera vẫn tươi, lượt tiếp theo bắt buộc tick deadman.
+        with run.ctrl.open('a') as control:
+            control.write('pause_input_900ms\n')
+        run.event('input_pause', mark=mark)
+        run.send('\x1b')
+        run.wait(lambda: run.process.poll() is not None, 8, 'Esc đang chờ tại deadman bị mất', alive=False)
+        need(run.process.returncode == 0, 'Esc tại deadman sai mã thoát')
+        run.check_output('esc', 0)
+        records = json.loads((run.session_dir() / 'summary.json').read_text(encoding='utf-8'))['stops']
+        reasons = [record['reason'] for record in records]
+        need('deadman' in reasons and 'key_esc' in reasons and
+             reasons.index('deadman') < reasons.index('key_esc'), 'Chưa xử lý Esc đúng lượt deadman', 'unread_safety')
+        no_restart(run.events()[mark:])
+        final_stop(run.events())
+
+
 def test_case(case, cfg, root):
     """Mỗi nhánh đối chiếu hàng cùng mã trong T21_test_cases_report, §8 ưu tiên."""
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n in (104, 105):
+        return unread_safety_case(n, cfg, root)
     if n in (98, 99, 100, 101):
         return burst_case(n, cfg, root)
     if n in (102, 103):

@@ -172,6 +172,10 @@ void pollHooks(size_t& consumed) {
         else if (line == "jpeg_slow") hooks.jpegSlow = true;
         else if (line == "throw") uncaughtTestFault();
         else if (line == "stdin_error") throw Failure(4, "stdin_eof", "Tiêm lỗi đọc stdin");
+        else if (line == "pause_input_900ms") {
+            hookEvent("input_pause", "");
+            std::this_thread::sleep_for(900ms);
+        }
         else if (line.compare(0, 8, "free_mb ") == 0)
             hooks.freeMb = static_cast<int>(std::min<uint64_t>(number(line.substr(8), "free_mb"), 2147483647));
     }
@@ -230,7 +234,11 @@ public:
             // Chốt lượng byte của lượt này; VMIN/VTIME=0 giữ read không chờ byte mới.
             const size_t limit = std::min(bytes.size(), static_cast<size_t>(std::max(available, 1)));
             size_t total = 0;
+            const auto deadline = nowMs() + 5;
+            int attempts = 0;
             while (total < limit) {
+                if (++attempts > 256 || nowMs() >= deadline)
+                    throw Failure(4, "stdin_eof", "Đọc tty vượt hạn; dừng an toàn");
                 const auto n = ::read(0, bytes.data() + total, limit - total);
                 if (n > 0) { total += static_cast<size_t>(n); continue; }
                 if (n < 0 && errno == EINTR) continue;
@@ -905,26 +913,37 @@ int run(Options o) {
             const bool fresh = frameNs && now - lastFrame <= 500;
             if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500, true);
             control.tick();
-            if (control.discardPending) {
-                terminal->discard(); preview.discardKeys(); control.discardPending = false;
-            }
+            const bool pendingDiscard = control.discardPending;
+            control.discardPending = false;
             const auto readAt = nowMs();
             auto keys = terminal->read(readAt);
-            std::vector<int> previewKeys;
-            if (!previewHandled) {
-                for (unsigned char key : preview.pollKeys()) previewKeys.push_back(key == 'E' ? 27 : key == '3' ? 3 : key);
-            }
+            const auto readPreviewKeys = [&]() {
+                std::vector<int> result;
+                for (unsigned char key : preview.pollKeys()) result.push_back(key == 'E' ? 27 : key == '3' ? 3 : key);
+                return result;
+            };
+            auto previewKeys = previewHandled ? std::vector<int>{} : readPreviewKeys();
             const bool burst = control.keyBurst(keys, previewKeys, readAt);
             keys.insert(keys.end(), previewKeys.begin(), previewKeys.end());
+            bool queueDrained = false, queueComplete = true;
+            const auto drainPendingKeys = [&]() {
+                if (queueDrained) return;
+                queueDrained = true; // Một lần mỗi vòng, không quét vô hạn khi phím dừng tới liên tục.
+                const bool ttyComplete = drainSafetyKeys(keys, [&]() { return terminal->read(nowMs()); }, nowMs);
+                const bool previewComplete = drainSafetyKeys(keys, readPreviewKeys, nowMs);
+                queueComplete = ttyComplete && previewComplete;
+            };
             if (burst) {
                 control.rejectKeyBurst(readAt);
                 journal->warn("key_burst: bỏ lô phím chuyển động, cần nhả rồi nhấn mới");
-                terminal->discard(); preview.discardKeys(); control.discardPending = false;
+                control.discardPending = false;
             }
-            bool discardMotion = burst;
+            if (pendingDiscard || burst) drainPendingKeys();
+            bool discardMotion = pendingDiscard || burst;
             // Giữ vết phân loại lô dồn; chỉ bỏ ngầm đuôi sau phím dừng.
-            bool stoppedInBatch = false;
-            for (int key : keys) {
+            bool stoppedInBatch = pendingDiscard;
+            for (size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
+                const int key = keys[keyIndex];
                 if (!acceptBatchKey(key, stoppedInBatch)) continue;
                 trigger = nowMs();
                 // Kiểm lại cờ/fault trước mỗi phím, không cho W cùng lô vượt qua lỗi.
@@ -935,12 +954,14 @@ int run(Options o) {
                 const bool ready = latestFrame && nowMs() - latestFrame / 1000000 <= 500;
                 control.key(key, ready, readAt);
                 if (control.discardPending || control.exiting) {
-                    terminal->discard(); preview.discardKeys(); control.discardPending = false;
+                    drainPendingKeys(); control.discardPending = false;
                     discardMotion = true;
                     stoppedInBatch = true;
                     if (control.exiting) break;
                 }
             }
+            if (!queueComplete && !control.exiting)
+                throw Failure(4, "stdin_eof", "Xả hàng phím vượt 256 lượt/64 KiB/5 ms; dừng an toàn");
             PreviewState snapshot;
             std::snprintf(snapshot.state, sizeof(snapshot.state), "%s", stateName(control.state));
             snapshot.cmd_speed = control.speed; snapshot.cmd_steer = control.angle;

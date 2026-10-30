@@ -737,7 +737,7 @@ def patch_mutant(case, text):
     else:
         # Bỏ cả xả hai nguồn và chặn đuôi lô để W cũ tới phép kiểm queue_clear.
         anchor = ('if (control.discardPending || control.exiting) {\n'
-                  '                    terminal->discard(); preview.discardKeys(); control.discardPending = false;\n'
+                  '                    drainPendingKeys(); control.discardPending = false;\n'
                   '                    discardMotion = true;\n'
                   '                    stoppedInBatch = true;')
         replacement = ('if (control.discardPending || control.exiting) {\n'

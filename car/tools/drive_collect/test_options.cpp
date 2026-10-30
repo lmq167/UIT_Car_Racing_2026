@@ -345,6 +345,62 @@ void batchKeyTests() {
     check(acceptBatchKey('W', false) && keyTrace == std::vector<std::string>{"W"},
           "Lô mới sau dừng vẫn bị bỏ ngầm");
 }
+void drainTests() {
+    for (const int safe : std::vector<int>{27, 3, 'X', 'S', ' '}) {
+        Options o;
+        FakeClock clock;
+        std::vector<std::string> events;
+        MotorStub motor(events); ServoStub servo(events);
+        Control c(o, motor, servo, clock);
+        // Mô phỏng pollKeys lấy 64 byte đầu, phím thứ 65 vẫn nằm trong pipe.
+        std::vector<int> keys(64, 'c');
+        clock.time = 400;
+        check(c.keyBurst({}, keys, clock.time), "Lô 64 phím phải bị chặn");
+        c.rejectKeyBurst(clock.time);
+        int reads = 0;
+        check(drainSafetyKeys(keys, [&]() {
+            return reads++ == 0 ? std::vector<int>{safe, 'W', 'a', 'd', 'c'} : std::vector<int>{};
+        }, [&]() { return clock.time; }), "Không đọc hết phần hàng còn lại");
+        check(reads == 2 && keys.size() == 65 && keys.back() == safe, "Mất phím thứ 65 hoặc giữ chuyển động cũ");
+        for (int key : keys) if (safetyKey(key) && key != 3) c.key(key);
+        check(c.speed == 0 && events.end() == std::find(events.begin(), events.end(), "motor:5.000000"),
+              "Lô bị xả vẫn có tốc độ dương");
+        if (safe != 3) {
+            check(c.stops[c.stopCount-1].reason == (safe == 27 ? "key_esc" : safe == 'X' ? "key_x" :
+                                                  safe == 'S' ? "key_s" : "key_space"), "Sai lý do phím thứ 65");
+        }
+        // Đúng lượt tick deadman, sau đó mới đọc và lọc hàng chưa đọc.
+        Control deadman(o, motor, servo, clock);
+        deadman.key('w'); clock.time += o.holdTimeout; deadman.tick();
+        std::vector<int> pending;
+        reads = 0;
+        check(drainSafetyKeys(pending, [&]() {
+            return reads++ == 0 ? std::vector<int>{'W', safe} : std::vector<int>{};
+        }, [&]() { return clock.time; }) && pending == std::vector<int>{safe}, "Deadman làm mất phím an toàn đang chờ");
+        events.clear();
+        if (safe != 3) deadman.key(pending[0]);
+        check(deadman.speed == 0 && deadman.exiting == (safe == 27), "Esc tại tick deadman không thoát");
+        check(std::find(events.begin(), events.end(), "motor:5.000000") == events.end(), "Chạy lại sau deadman");
+    }
+    for (int bound = 0; bound < 3; ++bound) {
+        std::vector<int> keys;
+        int calls = 0;
+        int64_t time = 0;
+        const bool complete = drainSafetyKeys(keys, [&]() {
+            ++calls;
+            if (bound == 2) time += 5;
+            return std::vector<int>(bound == 1 ? 65536 : 1, 'w');
+        }, [&]() { return time; });
+        check(!complete && keys.empty(), "Không chặn hàng vô hạn theo lượt/byte/thời gian");
+        check(calls == (bound == 0 ? 256 : 1), "Vượt trần đọc hàng phím");
+    }
+    KeyDecoder tty;
+    const unsigned char bytes[] = {'W', 27};
+    tty.decode(bytes, sizeof(bytes), 0);
+    std::vector<int> pending;
+    drainSafetyKeys(pending, [&]() { return tty.decode(nullptr, 0, 10); }, []() { return 10; });
+    check(tty.decode(nullptr, 0, 50) == std::vector<int>{27}, "Đọc xả làm mất Esc tty chưa đủ 50 ms");
+}
 void commandCompletionTests() {
     Options o;
     FakeClock clock;
@@ -384,6 +440,6 @@ void commandCompletionTests() {
 
 }
 int main() {
-    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
+    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); drainTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

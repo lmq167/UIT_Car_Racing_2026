@@ -129,6 +129,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
     shared.ready.store(1, std::memory_order_release);
     if (mode == "hang") for (;;) ::pause();
     size_t key_index = 5;
+    bool batch_sent = false;
     auto next_key = Clock::now();
     while (!shared.stop.load(std::memory_order_acquire)) {
         // Con giả chỉ cần biết có khung hoàn chỉnh, không sao chép ảnh làm chậm phím 20 ms.
@@ -142,6 +143,20 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 for (int ms = 0; ms <= 100; ms += 10) samplePreviewWindow(shared, tracker, ms, 1, -1);
                 samplePreviewWindow(shared, tracker, 110, -1, -1);
                 if (samplePreviewWindow(shared, tracker, 260, -1, -1)) return 10;
+            }
+        }
+        // Chỉ bản giả: ghi nguyên lô để tái hiện chính xác biên đọc 64 byte.
+        if (!batch_sent && mode.compare(0, 6, "batch:") == 0) {
+            const int input = ::open(mode.substr(6).c_str(), O_RDONLY | O_NONBLOCK);
+            if (input >= 0) {
+                char bytes[4096];
+                const auto count = ::read(input, bytes, sizeof(bytes));
+                ::close(input);
+                if (count > 0) {
+                    const auto written = ::write(key_fd, bytes, size_t(count));
+                    if (written != count) return 11;
+                    batch_sent = true;
+                }
             }
         }
         if (mode.compare(0, 5, "keys:") == 0 && key_index < mode.size() && Clock::now() >= next_key) {
