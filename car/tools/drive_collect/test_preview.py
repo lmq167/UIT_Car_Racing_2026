@@ -735,8 +735,14 @@ def patch_mutant(case, text):
         d.need(text.count(include) == 1, 'Điểm khai báo HighGUI không duy nhất', 'mutation_setup')
         text = text.replace(include, include + '\nnamespace cv { int waitKey(int); }', 1)
     else:
-        anchor = 'terminal->discard(); preview.discardKeys(); control.discardPending = false; break;'
-        replacement = 'control.discardPending = false;'
+        # Bỏ cả xả hai nguồn và chặn đuôi lô để W cũ tới phép kiểm queue_clear.
+        anchor = ('if (control.discardPending || control.exiting) {\n'
+                  '                    terminal->discard(); preview.discardKeys(); control.discardPending = false;\n'
+                  '                    discardMotion = true;\n'
+                  '                    stoppedInBatch = true;')
+        replacement = ('if (control.discardPending || control.exiting) {\n'
+                       '                    control.discardPending = false;\n'
+                       '                    discardMotion = false;')
     d.need(text.count(anchor) == 1, 'Điểm vá không khớp duy nhất: ' + case, 'mutation_setup')
     return text.replace(anchor, replacement, 1)
 
