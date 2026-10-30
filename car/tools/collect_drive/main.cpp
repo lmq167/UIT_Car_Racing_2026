@@ -92,6 +92,31 @@ bool fakeMotorFail() {
     const char* value = std::getenv("UCR_DRIVE_FAKE_MOTOR_FAIL");
     return value && std::string(value) == "1";
 }
+// Như drive_collect: lệnh tiêm lỗi qua tệp UCR_DRIVE_FAKE_CTRL (chỉ dòng đủ '\n'), chỉ ở bản hooks.
+struct HookState {
+    std::atomic<bool> cameraStall{false}, jpegFail{false}, csvFail{false}, jpegHang{false};
+    std::atomic<int> freeMb{-1};
+    std::atomic<int64_t> cameraPauseUntil{0};
+} hooks;
+void pollHooks() {
+    static size_t consumed = 0;
+    const char* path = std::getenv("UCR_DRIVE_FAKE_CTRL");
+    if (!path) return;
+    std::ifstream file(path);
+    std::string line;
+    size_t index = 0;
+    while (std::getline(file, line)) {
+        if (file.eof()) break;
+        if (index++ < consumed) continue;
+        ++consumed;
+        if (line == "camera_stall") hooks.cameraStall = true;
+        else if (line == "camera_pause_600ms") hooks.cameraPauseUntil = nowMs() + 600;
+        else if (line == "jpeg_fail") hooks.jpegFail = true;
+        else if (line == "csv_fail") hooks.csvFail = true;
+        else if (line == "jpeg_hang") hooks.jpegHang = true;
+        else if (line.compare(0, 8, "free_mb ") == 0) hooks.freeMb = std::stoi(line.substr(8));
+    }
+}
 #endif
 
 class VehicleLock {
@@ -464,6 +489,7 @@ public:
 
 double freeMB(const fs::path& path) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+    if (hooks.freeMb >= 0) return hooks.freeMb;
     if (const char* value = std::getenv("UCR_DRIVE_FAKE_FREE_MB")) {
         size_t used = 0; const double n = std::stod(value, &used);
         if (used != std::strlen(value) || !std::isfinite(n) || n < 0)
@@ -559,7 +585,11 @@ class Writer {
                     pass = store.active() ? store.pass() : store.nextPass();
                 }
                 if (nowMs() >= nextDisk) {
-                    if (freeMB(options_.outRoot) < kMinFreeMb) throw std::runtime_error("Đĩa dưới ngưỡng dự phòng");
+                    if (freeMB(options_.outRoot) < kMinFreeMb) {
+                        // Như drive_collect: còn dự phòng nên đóng lượt gọn (end,disk_low) rồi mới báo mã 5.
+                        if (store.active()) store.endPass("disk_low", wallMs());
+                        throw std::runtime_error("Đĩa dưới ngưỡng dự phòng");
+                    }
                     nextDisk = nowMs() + kDiskCheckMs;
                 }
                 if (frame.image.empty() || !store.active() || !recording_ || frame.epoch != applied) continue;
@@ -574,6 +604,10 @@ class Writer {
                     std::lock_guard<std::mutex> lock(mutex_);
                     if (quit_ || !recording_ || frame.epoch != epoch_) continue;
                 }
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+                if (hooks.jpegFail || hooks.csvFail) throw std::runtime_error("Tiêm lỗi ghi JPEG/CSV");
+                if (hooks.jpegHang) while (true) ::poll(nullptr, 0, 100);
+#endif
                 drive_collect::CaptureColumns columns;
                 columns.frame = saved.load() + 1; columns.monotonic_ns = frame.header.ns;
                 columns.width = frame.image.cols; columns.height = frame.image.rows;
@@ -645,11 +679,14 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         watchdog->heartbeat = nowMs(); watchdog->initialized = true;
         const auto started = nowMs();
         writer.reset(new Writer(o, host, utcNow(), argc, argv));
-        bool running = true, stale = true, haveFrame = false, recording = false;
+        bool running = true, stale = true, haveFrame = false, recording = false, ready = false;
         int64_t lastFrame = started, nextSave = 0;
         const auto tick = [&]() {
             const auto now = nowMs(); watchdog->heartbeat = now;
             if (stopping) return false;
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+            pollHooks();
+#endif
             if (writer->failure) throw Failure(5, "Đĩa đầy hoặc lỗi ghi dữ liệu");
             const auto busy = writer->busySince.load();
             if (busy && now - busy > kIoTimeoutMs) throw Failure(4, "Luồng ghi dữ liệu quá hạn");
@@ -664,6 +701,8 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
             }
             if (now - lastFrame > kFrameTimeoutMs)
                 throw Failure(haveFrame ? 4 : 3, haveFrame ? "Camera treo" : "Không có ảnh đầu tiên");
+            // Phím chạy/lái chỉ có hiệu lực từ lúc này; vết cho test biết thời điểm.
+            if (!ready && !stale && preview.wasShown() && writer->ready) { ready = true; trace("ready"); }
             for (unsigned char key : preview.pollKeys()) {
                 trace("key", std::string(1, key));
                 if (key == 'E' || key == '3') { running = false; break; }
@@ -687,6 +726,9 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
             cv::Mat frame; Header h;
             if (!camera->read(frame, h, tick)) break;
             if (h.status != 1 || frame.empty()) continue;
+#if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
+            if (hooks.cameraStall || nowMs() < hooks.cameraPauseUntil) continue; // giả mất ảnh
+#endif
             if (nowMs() - h.ns / 1000000 > kStaleFrameMs) continue;
             lastFrame = h.ns / 1000000; haveFrame = true; stale = false;
             preview.publishFrame(frame, lastFrame);
@@ -699,7 +741,9 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
     catch (const std::exception& e) { code = 1; error = e.what(); }
     catch (...) { code = 1; error = "Ngoại lệ không xác định"; }
 
-    if (watchdog) { watchdog->cleanupCode = code ? code : 4; watchdog->cleanupAt = nowMs(); }
+    // HĐ §2: thoát do tín hiệu là mã 0 kể cả khi luồng ghi kẹt lúc dọn (như drive_collect: lý do tín hiệu thắng).
+    const auto hungCode = [&] { return code ? code : (stopping ? 0 : 4); };
+    if (watchdog) { watchdog->cleanupCode = hungCode(); watchdog->cleanupAt = nowMs(); }
     // Dừng trước mọi I/O đóng lượt, join, shutdown preview hay thu hồi camera.
     bool stopped = false;
     if (motorAttempted) stopped = control.stop();
@@ -710,7 +754,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         stopped = motorOk && servoOk;
     }
     if (!stopped) { if (!code) code = 1; warning(); }
-    if (watchdog) watchdog->cleanupCode = code ? code : 4;
+    if (watchdog) watchdog->cleanupCode = hungCode();
     if (writer) writer->stop(code);
     preview.shutdown();
     camera.reset();
@@ -719,7 +763,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         while (!writer->finished && nowMs() < deadline) ::poll(nullptr, 0, kPollMs);
         if (!writer->finished) {
             // Giữ khóa và đối tượng sống tới _exit; không huỷ bộ nhớ của luồng đang kẹt.
-            externalStop(paths); warning(); _exit(code ? code : 4);
+            externalStop(paths); warning(); _exit(hungCode());
         }
         if (writer->failure) { code = 5; error = writer->error; }
         writer.reset();
