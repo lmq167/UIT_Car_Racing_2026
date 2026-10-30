@@ -57,16 +57,17 @@ struct ServoStub : IServo {
 void parserTests() {
     check(parseArgs({"--selftest"}).selftest, "Tự kiểm không cần cờ chấp nhận hay tty");
     reject({"--selftest", "--pipeline"});
-    reject({"--selftest", "--speed-cms", "6"});
+    reject({"--selftest", "--speed-cms", "61"});
     auto o = parseArgs({"--accept-no-obstacle-brake"});
     check(o.speed == 5 && o.reverseSpeed == 3 && o.steerStep == 5 && o.maxSteer == 40 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
           "Sai giá trị mặc định");
+    check(parseArgs({"--accept-no-obstacle-brake", "--speed-cms", "60"}).speed == 60, "Trần 60 cm/s phải được nhận");
     check(!o.recOnStart && o.outRoot == fs::path("data_raw"), "REC mặc định phải tắt, data_raw");
     check(parseArgs({"--accept-no-obstacle-brake", "--rec-on-start"}).recOnStart, "Thiếu cờ REC lúc mở");
     check(o.pipeline.find("width=1280,height=720") != std::string::npos, "Sai kích thước camera");
     reject({});
     for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
-            {"--speed-cms", "20"}, {"--speed-cms", "-1"}, {"--speed-cms", "nan"},
+            {"--speed-cms", "61"}, {"--speed-cms", "-1"}, {"--speed-cms", "nan"},
             {"--speed-cms", "inf"}, {"--speed-cms", "5x"}, {"--max-steer-deg", "61"},
             {"--steer-step-deg", "0"}, {"--max-steer-deg", "-1"}, {"--hold-timeout-ms", "0"},
             {"--hold-timeout-ms", "1.5"}, {"--hold-timeout-ms", "99"}, {"--hold-timeout-ms", "699"}, {"--hold-timeout-ms", "2001"},

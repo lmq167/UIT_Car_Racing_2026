@@ -124,7 +124,7 @@ def init_sequence(events, required=False, complete=False):
         need(pair_done is not None, 'Thiếu motor 0 rồi servo 0 thành công sau Init', 'init_order')
 
 
-def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800):
+def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800, max_speed=5):
     state, last_s = 'DUNG', None
     for stamp, kind, value, _ in events:
         if kind == 'state':
@@ -132,7 +132,7 @@ def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800):
         if kind == 'key' and str(value).upper() == 'S':
             last_s = stamp
         if kind == 'motor_speed':
-            need(-min(reverse_speed, 5) <= value <= 5 if moving else value == 0,
+            need(-min(reverse_speed, 5) <= value <= max_speed if moving else value == 0,
                  'Tốc độ bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'speed_limit')
             if value < 0:
@@ -443,7 +443,8 @@ class Run:
         expected = {REASONS[reason]} if codes is None else set(codes)
         need(code in expected, 'Mã thoát {} cần {}: {}'.format(code, expected, self.text()))
         events = self.events()
-        limits(events, max_steer=self.max_steer, reverse_speed=self.reverse_speed, hold=self.hold_timeout)
+        limits(events, max_steer=self.max_steer, reverse_speed=self.reverse_speed, hold=self.hold_timeout,
+               max_speed=self.command_speed)
         if cleanup:
             final_stop(events)
         if reason != 'esc' and hasattr(self, 'stop_mark'):
@@ -488,7 +489,7 @@ class Run:
             filenames.add(name)
             size, _ = read_jpeg(self.out / name)
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
-            need(-min(self.reverse_speed, 5) <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= self.max_steer,
+            need(-min(self.reverse_speed, 5) <= float(row['cmd_speed']) <= self.command_speed and abs(float(row['cmd_steer'])) <= self.max_steer,
                  'Lệnh CSV ngoài giới hạn')
             need(row['state'] in ('DUNG', 'CHAY_TIEN', 'CHAY_LUI'), 'Trạng thái CSV sai')
             need((float(row['cmd_speed']) < 0) == (row['state'] == 'CHAY_LUI'), 'Dấu lệnh CSV không khớp trạng thái')
@@ -1068,7 +1069,7 @@ def test_case(case, cfg, root):
         return added_case(n, cfg, root)
     if n in (7, 8, 10, 38, 39, 60):
         if n == 7:
-            variants = [('--speed-cms', '20'), ('--speed-cms', '5.01')]
+            variants = [('--speed-cms', '61'), ('--speed-cms', '60.01')]
         elif n == 8:
             variants = [('--speed-cms', v) for v in ('-1', 'nan', 'inf', '-inf')]
         elif n == 10:
@@ -2404,7 +2405,7 @@ def patch_mutant(case, folder):
     if case == 'M01':
         pattern, replacement = r'\bstop\("deadman",\s*deadmanAt\(\)\);', '(void)deadmanAt();'
     elif case == 'M02':
-        pattern, replacement = r'\|\|\s*o\.speed\s*>\s*5\b', ''
+        pattern, replacement = r'\|\|\s*o\.speed\s*>\s*60\b', ''
     elif case == 'M03':
         # X nay dùng stop(), không dùng halt(); chỉ làm sai X, giữ đường Init.
         pattern = (r'(void stop\([^\n]+\)\s*\{.*?std::exception_ptr failure;\s*)'
@@ -2520,11 +2521,11 @@ def mutation(case, cfg, root):
     mutant.slack = 0  # Bản sao vừa biên dịch Release, không áp dung sai sanitizer.
     mutant.tsan_slack = 0
     if case == 'M02':
-        with running(mutant, root / 'precondition', args=['--speed-cms', '20']) as run:
+        with running(mutant, root / 'precondition', args=['--speed-cms', '61']) as run:
             run.boot()
             run.ready()
             run.drive()
-            need(matched(run.events(), 'motor_speed', 20), 'Bản vá chưa bỏ trần tốc độ', 'mutation_setup')
+            need(matched(run.events(), 'motor_speed', 61), 'Bản vá chưa bỏ trần tốc độ', 'mutation_setup')
     try:
         test_case(original, mutant, root / 'probe')
     except SafetyFailure as error:
@@ -2636,7 +2637,7 @@ def self_check():
         fixtures = {
             'M01': 'if (state == State::CHAY_TIEN && lastW_ == received) return;\n'
                    'if (state == State::CHAY_TIEN && now >= deadmanAt()) { stop("deadman", deadmanAt()); }',
-            'M02': 'if (!finite || o.speed < 0 || o.speed > 5) throw error;',
+            'M02': 'if (!finite || o.speed < 0 || o.speed > 60) throw error;',
             'M03': 'void stop(const std::string& reason, int64_t trigger, bool center = false) {\n'
                    ' std::exception_ptr failure;\n try { setSpeed(0); }\n'
                    ' catch (...) { failure = std::current_exception(); }\n}',

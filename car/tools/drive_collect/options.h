@@ -104,9 +104,9 @@ inline Options parse(int argc, char** argv) {
         } else if (key == "--speed-cms") {
             size_t used = 0;
             try { o.speed = std::stod(value, &used); }
-            catch (...) { throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 5"); }
-            if (used != value.size() || !std::isfinite(o.speed) || o.speed < 0 || o.speed > 5)
-                throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 5 (trần cứng)");
+            catch (...) { throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 60"); }
+            if (used != value.size() || !std::isfinite(o.speed) || o.speed < 0 || o.speed > 60)
+                throw std::runtime_error("--speed-cms phải là số hữu hạn từ 0 đến 60 (trần cứng)");
         } else if (key == "--reverse-speed-cms") {
             size_t used = 0;
             try { o.reverseSpeed = std::stod(value, &used); }
