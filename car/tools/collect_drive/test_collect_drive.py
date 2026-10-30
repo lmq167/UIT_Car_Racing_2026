@@ -241,6 +241,7 @@ class Run:
         self.wait(lambda: last_commands(self.events()) == (0, 0), 10, 'Thiếu dừng khởi động')
         self.wait(lambda: (self.out / 'sessions.csv').exists(), 10, 'Chưa có phiên ghi')
         self.wait(lambda: self.children(), 5, 'Không có cửa sổ giả')
+        self.wait(lambda: any(e[1] == 'ready' for e in self.events()), 10, 'Chưa sẵn sàng nhận phím (ảnh đầu, cửa sổ, luồng ghi)')
         # Khởi động: motor 0 TRƯỚC servo 0, chưa có lệnh tiến/lái nào (phiếu: tốc độ/góc khởi đầu 0).
         stop_pair(self.events(), 'startup_stop')
         safe_range(self.events())
@@ -394,6 +395,14 @@ def symbols(cfg, root):
     need(code == 0 and output.strip() and 'not found' not in output.lower(),
          'ldd thiếu bằng chứng: ' + output, 'symbols_setup')
     need(not re.search(FORBIDDEN, output), 'Liên kết cảm biến bị cấm', 'no_tof')
+
+
+def nice(pid):
+    """Trường nice (thứ 19) của /proc/<pid>/stat; tên lệnh có thể chứa dấu cách nên tách sau ')'."""
+    try:
+        return int(Path('/proc/{}/stat'.format(pid)).read_text().rsplit(')', 1)[1].split()[16])
+    except (FileNotFoundError, IndexError, ValueError):
+        return None
 
 
 def stop_within(run, mark, stamp, allowance, tag):
@@ -624,7 +633,9 @@ def test_case(case, cfg, root):
             with running(cfg, root / mode, env=env) as run:
                 if mode == 'kill':
                     moving(run)
-                    children = run.children()
+                    # HĐ không quy định số tiến trình con (mã có thêm con camera); con cửa sổ của
+                    # collect_common/preview.cpp tự hạ ưu tiên nice 10 → chọn đúng con đó.
+                    children = {pid for pid in run.children() if nice(pid) == 10}
                     need(len(children) == 1, 'Cần đúng một cửa sổ giả', 'interface')
                     mark = len(run.events())
                     os.kill(next(iter(children)), signal.SIGKILL)
@@ -810,7 +821,9 @@ def banner(text, cfg, out):
     need(re.search(r'người giám sát đứng sát|nguoi giam sat dung sat', low), 'Thiếu câu người giám sát',
          'startup_banner')
     need('space/x' in low, 'Thiếu "Space/X dừng"', 'startup_banner')
-    need(re.search(r'\b5(?:[.,]0+)?\s*cm/s', low), 'Không in bước 5 cm/s', 'startup_banner')
+    # Chấp nhận "5 cm/s" hoặc dạng của mã "Tốc độ: bước=5 trần=40 phần cứng=60 cm/s" (cùng dòng).
+    need(re.search(r'\b5(?:[.,]0+)?\s*cm/s|(?:tốc độ|toc do)[^\n]*(?:bước|buoc)\s*[=:]\s*5(?:[.,]0+)?\b[^\n]*cm/s',
+                   low), 'Không in bước 5 cm/s', 'startup_banner')
     for number in (40, 60):
         need(re.search(r'\b{}(?:[.,]0+)?\b'.format(number), low), 'Không in hằng ' + str(number), 'startup_banner')
     need(re.search(r'\b500\b|\b0[.,]5\s*s\b', low), 'Không in ngưỡng mất ảnh 500 ms/0,5 s', 'startup_banner')
