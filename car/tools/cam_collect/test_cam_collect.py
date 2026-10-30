@@ -143,9 +143,9 @@ def stderr_text(stream):
     return os.pread(stream.fileno(), os.fstat(stream.fileno()).st_size, 0).decode('utf-8', errors='replace')
 
 
-def execute(args, root, code=0, hook=None, timeout=35):
+def execute(args, root, code=0, hook=None, timeout=35, preview_mode=None):
     started = time.monotonic()
-    with running(args, root, hook) as (process, stderr):
+    with running(args, root, hook, preview_mode=preview_mode) as (process, stderr):
         process.wait(timeout=timeout)
         error = stderr_text(stderr)
         valid = process.returncode != 0 if code is None else process.returncode == code
@@ -572,6 +572,10 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
 
         source = make_source(root)
         out = root / 'output'
+        # T32b: bản thường không DISPLAY thoát 1 vì cửa sổ; các ca này cần cửa sổ giả còn sống.
+        if scenario in ('default_off', 'corrupt', 'out_root'):
+            binary = hooks_binary
+        alive = 'ok' if binary == hooks_binary else None
         base = [binary, '--source', str(source), '--out-dir', str(out), '--min-free-mb', '0']
 
         # Quyết định 31/10: lỗi đĩa giữ 5; lỗi chung 1, tham số 2.
@@ -619,10 +623,26 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
             require(code in (1, 3) and pipeline in error, 'Sai lỗi/chẩn đoán pipeline')
             inspect_output(out, 'error' if code == 1 else 'no_frame_timeout', code, 0)
             return
-        if scenario in ('default_off', 'hooks_ignored'):
-            # Bản thường kiểm --source, không cần GTK hoặc hook phím.
+        if scenario == 'hooks_ignored':
+            # Bản thường không đọc UCR_DRIVE_FAKE_PREVIEW nên không DISPLAY thì luôn lỗi cửa sổ (T32b).
+            # Kiểm hành vi: có/không có hook nguồn 'never' (hook sẽ cho mã 3) kết quả phải như nhau.
+            results = []
+            for index, hook in enumerate((None, 'never')):
+                folder = root / ('run' + str(index))
+                folder.mkdir()
+                run_out = folder / 'output'
+                _, error, _ = execute([binary, '--source', str(source), '--out-dir', str(run_out),
+                                       '--min-free-mb', '0', '--max-seconds', '3'],
+                                      folder, 1, hook=hook, timeout=10)
+                require('cửa sổ ảnh' in error, 'Lỗi không phải lỗi cửa sổ ảnh: ' + error)
+                summary, _ = inspect_output(run_out, 'error', 1, 0)
+                default_off(off_snapshot(run_out))
+                results.append((summary['exit_reason'], summary['total_images']))
+            require(results[0] == results[1], 'Bản thường đổi hành vi theo hook: ' + repr(results))
+            return
+        if scenario == 'default_off':
             with running(base + ['--max-seconds', '3', '--interval-ms', '100'], root,
-                         hook='never' if scenario == 'hooks_ignored' else None) as (process, stderr):
+                         preview_mode=alive) as (process, stderr):
                 poll(lambda: (out / 'sessions.csv').exists(), process, 8, 'Chưa có sessions.csv')
                 observe(process, 0.4, lambda: default_off(off_snapshot(out)))
                 clean_exit(process, stderr)
@@ -631,7 +651,7 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
             return
         if scenario == 'no_frame_timeout':
             args = [hooks_binary, '--out-dir', str(out), '--min-free-mb', '0', '--warmup-frames', '0']
-            _, _, elapsed = execute(args, root, 3, hook='never', timeout=16)
+            _, _, elapsed = execute(args, root, 3, hook='never', timeout=16, preview_mode='ok')
             require(1.8 <= elapsed <= 14, 'Sai hạn watchdog 2000 ms với dung sai tải')
             inspect_output(out, 'no_frame_timeout', 3, 0)
             default_off(off_snapshot(out))
@@ -639,7 +659,7 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
         if scenario == 'corrupt':
             # Lỗi đọc nguồn không cần mở lượt; có thể xảy ra trước P đầu tiên.
             (source / '000.ppm').write_bytes(b'khong phai anh')
-            execute(base, root, 1)
+            execute(base, root, 1, preview_mode=alive)
             summary, _ = inspect_output(out, 'error', 1, 0)
             require(summary['empty_frames'] >= 1, 'Không ghi nhận ảnh hỏng')
             default_off(off_snapshot(out))
@@ -673,7 +693,7 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
             parent = root / 'sessions'
             argv = [binary, '--source', str(source), '--out-root', str(parent),
                     '--label', 'L1c a/b', '--min-free-mb', '0', '--max-seconds', '1']
-            execute(argv, root)
+            execute(argv, root, preview_mode=alive)
             first = list(parent.iterdir())
             require(len(first) == 1 and re.fullmatch(r'\d{8}_\d{6}_L1c_a_b', first[0].name), 'Sai tên phiên')
             stamp = datetime.strptime(first[0].name[:15], '%Y%m%d_%H%M%S')
@@ -687,11 +707,11 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
                     marker.write_bytes(b'cu')
                     markers.append(marker)
             before = set(parent.iterdir())
-            execute(argv, root)
+            execute(argv, root, preview_mode=alive)
             added = set(parent.iterdir()) - before
             require(len(added) == 1 and next(iter(added)).name.endswith('_4'), 'Không tránh trùng tên')
             require(all(p.read_bytes() == b'cu' for p in markers), 'Đã sửa phiên cũ')
-            execute(base + ['--out-root', str(parent), '--max-seconds', '1'], root)
+            execute(base + ['--out-root', str(parent), '--max-seconds', '1'], root, preview_mode=alive)
             require(set(parent.iterdir()) == before | added and out.exists(), 'Sai ưu tiên out-dir')
             return
 
