@@ -25,7 +25,7 @@ def reverse(run):
     mark = len(run.events())
     run.key('S')
     try:
-        event = run.event('motor_speed', -run.reverse_speed, mark)
+        event = run.event('motor_speed', run.hardware_speed(-run.reverse_speed), mark)
     except d.SafetyFailure as error:
         raise d.SafetyFailure('reverse_motion', str(error))
     d.need(d.matched(run.events()[mark:], 'state', 'CHAY_LUI'), 'S không vào CHAY_LUI', 'reverse_motion')
@@ -43,7 +43,8 @@ def quiet(run, mark):
 def test_case(n, cfg, root):
     if n == 114:
         for label, args in (('default', []), ('3', ['--reverse-speed-cms', '3']),
-                            ('5', ['--reverse-speed-cms', '5'])):
+                            ('5', ['--reverse-speed-cms', '5']),
+                            ('30', ['--reverse-speed-cms', '30'])):
             with d.running(cfg, root / label, args=args + ['--interval-ms', '100']) as run:
                 run.boot()
                 reverse(run)
@@ -125,7 +126,7 @@ def test_case(n, cfg, root):
             run.pump = False
             run.finish()
     elif n == 118:
-        for i, value in enumerate(('5.01', '0', '-1', 'nan', 'NaN', 'inf', '-inf', '3x')):
+        for i, value in enumerate(('31', '30.01', '0', '-1', 'nan', 'NaN', 'inf', '-inf', '3x')):
             d.rejected(cfg, root / str(i), ['--reverse-speed-cms', value])
     elif n == 119:
         for cap in (10, 20, 40):
@@ -172,5 +173,100 @@ def test_case(n, cfg, root):
             d.need(result.stdout.strip() == b'direction_pause', 'Lỗi thiết lập ca nghỉ: ' + repr(result.stdout),
                    'mutation_setup')
         d.need(result.returncode == 0, result.stdout.decode('utf-8', errors='replace'), 'direction_pause')
+    elif n in (122, 123, 124):
+        invert_case(n, cfg, root)
     else:
         raise AssertionError('Chưa cài đặt ca lùi ' + str(n))
+
+
+def invert_case(n, cfg, root):
+    """T31: dấu phần cứng tách khỏi tốc độ logic, giữ nguyên đường dừng/đổi hướng."""
+    if n == 122:
+        for invert in (False, True):
+            for key, logical, state in (('W', 7, 'CHAY_TIEN'), ('S', -30, 'CHAY_LUI')):
+                args = ['--speed-cms', '7', '--reverse-speed-cms', '30', '--interval-ms', '100']
+                if invert:
+                    args.append('--invert-motor-direction')
+                with d.running(cfg, root / ('{}_{}'.format(invert, key)), args=args) as run:
+                    run.boot()
+                    mark = len(run.events())
+                    run.key(key)
+                    run.event('motor_speed', -logical if invert else logical, mark)
+                    run.pump_key, run.pump = key, True
+                    run.next_w = d.time.monotonic() + 0.1
+                    run.wait(lambda: any(float(r['cmd_speed']) == logical and r['state'] == state
+                                         for r in run.rows()), message='CSV phải giữ dấu logic')
+                    run.pump = False
+                    mark = len(run.events())
+                    pressed = run.key(' ')
+                    d.stop_by(run, mark, pressed[0])
+                    quiet(run, mark)
+                    run.finish()
+                    zeros = [line.split()[2] for line in run.trace.read_text(encoding='utf-8').splitlines()
+                             if len(line.split()) >= 3 and line.split()[1] == 'motor_speed'
+                             and float(line.split()[2]) == 0]
+                    d.need(zeros and all(not value.startswith('-') for value in zeros), 'Lệnh dừng thành -0')
+        help_text = subprocess.check_output([cfg.hooks, '--help'], timeout=5).decode('utf-8')
+        d.need('--invert-motor-direction' in help_text and '>0..30' in help_text, 'Thiếu trợ giúp T31')
+    elif n == 123:
+        for initial in ('W', 'S'):
+            for action in (' ', 'X', 'deadman'):
+                with d.running(cfg, root / ('{}_{}'.format(initial, action)),
+                               args=['--invert-motor-direction', '--reverse-speed-cms', '30']) as run:
+                    run.boot()
+                    reverse(run) if initial == 'S' else run.keep_driving()
+                    d.steer(run, 'A', 5)
+                    run.pump = False
+                    mark = len(run.events())
+                    if action == 'deadman':
+                        row = reason(run, 'deadman')
+                        d.stop_by(run, mark, float(row['t_trigger_ms']))
+                    else:
+                        pressed = run.key(action)
+                        d.stop_by(run, mark, pressed[0])
+                        reason(run, 'key_x' if action == 'X' else 'key_space')
+                    quiet(run, mark)
+                    if action == 'X':
+                        run.event('servo_angle', 0, mark)
+                    else:
+                        # Space/deadman giữ góc; chỉ nhấn C sau khi nhả đủ hạn mới trả lái.
+                        d.need(not d.matched(run.events()[mark:], 'servo_angle'), 'Đường dừng tự đổi góc')
+                        run.ready()
+                        d.steer(run, 'C', 0)
+                    d.ordered_stop(run.events()[mark:])
+                    quiet(run, mark)
+                    run.finish()
+    else:
+        for initial in ('W', 'S'):
+            for mode in ('dir_change', 'reverse_conflict', 'batch_conflict'):
+                with d.running(cfg, root / (initial + '_' + mode),
+                               args=['--invert-motor-direction', '--reverse-speed-cms', '30']) as run:
+                    run.boot()
+                    reverse(run) if initial == 'S' else run.keep_driving()
+                    d.steer(run, 'A', 5)
+                    run.pump = False
+                    if mode == 'dir_change':
+                        run.event('motor_speed', 0, len(run.events()))
+                        reason(run, 'deadman')
+                        run.ready()
+                    mark = len(run.events())
+                    opposite = 'S' if initial == 'W' else 'W'
+                    stamp = d.monotonic_ms()
+                    if mode == 'batch_conflict':
+                        run.send('WS' if initial == 'W' else 'SW')
+                    else:
+                        stamp = run.key(opposite)[0]
+                    zero = d.stop_by(run, mark, stamp)
+                    reason(run, 'dir_change' if mode == 'dir_change' else 'reverse_conflict')
+                    quiet(run, mark)
+                    d.need(not d.matched(run.events()[mark:], 'servo_angle'), 'Đổi hướng tự đổi góc')
+                    run.ready()
+                    d.steer(run, 'C', 0)
+                    d.ordered_stop(run.events()[mark:])
+                    quiet(run, mark)
+                    fresh = len(run.events())
+                    run.key(opposite)
+                    logical = -30 if opposite == 'S' else 5
+                    moved = run.event('motor_speed', -logical, fresh)
+                    d.need(moved[0] - zero[0] >= 300, 'Đổi hướng trước 300 ms', 'direction_pause')
+                    run.finish()

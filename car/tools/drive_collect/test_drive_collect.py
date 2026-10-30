@@ -46,7 +46,7 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 122)]
+CASES += ['D{:02d}'.format(n) for n in range(65, 125)]
 CASES += ['M{:02d}'.format(n) for n in range(1, 17)]
 
 
@@ -124,7 +124,7 @@ def init_sequence(events, required=False, complete=False):
         need(pair_done is not None, 'Thiếu motor 0 rồi servo 0 thành công sau Init', 'init_order')
 
 
-def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800, max_speed=5):
+def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800, max_speed=5, invert=False):
     state, last_s = 'DUNG', None
     for stamp, kind, value, _ in events:
         if kind == 'state':
@@ -132,10 +132,11 @@ def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800, max_spe
         if kind == 'key' and str(value).upper() == 'S':
             last_s = stamp
         if kind == 'motor_speed':
-            need(-min(reverse_speed, 5) <= value <= max_speed if moving else value == 0,
+            logical = -value if invert else value
+            need(-min(reverse_speed, 30) <= logical <= max_speed if moving else logical == 0,
                  'Tốc độ bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'speed_limit')
-            if value < 0:
+            if logical < 0:
                 need(state == 'CHAY_LUI' and last_s is not None and 0 <= stamp - last_s < hold,
                      'Lùi ngoài CHAY_LUI hoặc không có S tươi', 'speed_limit')
         if kind == 'servo_angle':
@@ -243,6 +244,7 @@ class Run:
         self.reverse_speed = 3
         self.max_steer = 40
         self.hold_timeout = 800
+        self.invert = '--invert-motor-direction' in args
         for index, value in enumerate(args[:-1]):
             if value in ('--reverse-speed-cms', '--max-steer-deg'):
                 try:
@@ -391,13 +393,16 @@ class Run:
         self.ready()
         mark = len(self.events())
         self.key('W')
-        event = self.event('motor_speed', self.speed(), mark)
+        event = self.event('motor_speed', self.hardware_speed(self.speed()), mark)
         self.wait(lambda: matched(self.events(), 'state')[-1][1][2] == 'CHAY_TIEN',
                   message='Trạng thái gần nhất không phải CHAY')
         return event
 
     def speed(self):
         return self.command_speed
+
+    def hardware_speed(self, logical):
+        return 0 if logical == 0 else -logical if self.invert else logical
 
     def keep_driving(self):
         self.drive()
@@ -444,7 +449,7 @@ class Run:
         need(code in expected, 'Mã thoát {} cần {}: {}'.format(code, expected, self.text()))
         events = self.events()
         limits(events, max_steer=self.max_steer, reverse_speed=self.reverse_speed, hold=self.hold_timeout,
-               max_speed=self.command_speed)
+               max_speed=self.command_speed, invert=self.invert)
         if cleanup:
             final_stop(events)
         if reason != 'esc' and hasattr(self, 'stop_mark'):
@@ -457,8 +462,9 @@ class Run:
         folder = self.session_dir()
         session = json.loads((folder / 'session.json').read_text(encoding='utf-8'))
         summary = json.loads((folder / 'summary.json').read_text(encoding='utf-8'))
-        need({'started_utc', 'argv', 'width', 'height', 'speed_cms', 'max_steer_deg',
+        need({'started_utc', 'argv', 'width', 'height', 'speed_cms', 'invert_motor', 'max_steer_deg',
               'hold_timeout_ms'} <= set(session), 'Thiếu khóa session theo G5')
+        need(session['invert_motor'] is self.invert, 'Sai cờ đảo chiều trong session')
         need({'started_utc', 'ended_utc', 'images', 'exit_reason', 'exit_code',
               'emergency_stops', 'max_speed_cmd', 'max_steer_abs_cmd'} <= set(summary),
              'Thiếu khóa summary theo G5')
@@ -489,7 +495,7 @@ class Run:
             filenames.add(name)
             size, _ = read_jpeg(self.out / name)
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
-            need(-min(self.reverse_speed, 5) <= float(row['cmd_speed']) <= self.command_speed and abs(float(row['cmd_steer'])) <= self.max_steer,
+            need(-min(self.reverse_speed, 30) <= float(row['cmd_speed']) <= self.command_speed and abs(float(row['cmd_steer'])) <= self.max_steer,
                  'Lệnh CSV ngoài giới hạn')
             need(row['state'] in ('DUNG', 'CHAY_TIEN', 'CHAY_LUI'), 'Trạng thái CSV sai')
             need((float(row['cmd_speed']) < 0) == (row['state'] == 'CHAY_LUI'), 'Dấu lệnh CSV không khớp trạng thái')
@@ -2420,7 +2426,7 @@ def patch_mutant(case, folder):
     elif case == 'M15':
         pattern, replacement = r'kDirectionPauseMs = 300;', 'kDirectionPauseMs = 0;'
     elif case == 'M16':
-        pattern, replacement = r'\|\|\s*o\.reverseSpeed\s*>\s*5\b', ''
+        pattern, replacement = r'\|\|\s*o\.reverseSpeed\s*>\s*30\b', ''
     elif case == 'M06':
         pattern = r'terminal->discard\(\); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh\.'
         replacement = '// Mutation: cố ý giữ phím terminal cũ.'
@@ -2560,8 +2566,22 @@ def self_check():
         reverse_trace = [(100, 'key', 'S', False), (100, 'state', 'CHAY_LUI', False),
                          (100, 'motor_speed', -3, False), (899, 'motor_speed', -3, False)]
         limits(reverse_trace)
+        for invert in (False, True):
+            for logical, state, key in ((7, 'CHAY_TIEN', 'W'), (-30, 'CHAY_LUI', 'S')):
+                trace30 = [(100, 'key', key, False), (100, 'state', state, False),
+                           (100, 'motor_speed', -logical if invert else logical, False),
+                           (101, 'motor_speed', 0, False)]
+                limits(trace30, max_speed=7, reverse_speed=30, invert=invert)
+                for bad_speed in (7.01, -30.01):
+                    bad = trace30 + [(102, 'motor_speed', -bad_speed if invert else bad_speed, False)]
+                    try:
+                        limits(bad, max_speed=7, reverse_speed=30, invert=invert)
+                    except SafetyFailure as error:
+                        need(error.tag == 'speed_limit', 'Sai phép kiểm trần theo hướng logic')
+                    else:
+                        raise AssertionError('Bỏ lọt trần tiến/lùi khi đảo chiều')
         for bad in (reverse_trace + [(900, 'motor_speed', -3, False)],
-                    reverse_trace + [(200, 'motor_speed', -5.01, False)],
+                    reverse_trace + [(200, 'motor_speed', -30.01, False)],
                     [(100, 'state', 'CHAY_LUI', False), (100, 'motor_speed', -3, False)],
                     [(100, 'key', 'S', False), (100, 'state', 'CHAY_TIEN', False),
                      (100, 'motor_speed', -3, False)]):
@@ -2649,7 +2669,7 @@ def self_check():
             'M09': 'if (options.selftest) {\n        try { return selftest(options); }',
             'M14': "if (k == 'w' || k == 's') { run(); }",
             'M15': 'constexpr int64_t kDirectionPauseMs = 300;',
-            'M16': 'if (!finite || o.reverseSpeed <= 0 || o.reverseSpeed > 5) throw error;'}
+            'M16': 'if (!finite || o.reverseSpeed <= 0 || o.reverseSpeed > 30) throw error;'}
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()

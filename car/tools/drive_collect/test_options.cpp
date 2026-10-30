@@ -87,9 +87,13 @@ void parserTests() {
           "Phải nhận biên dưới hạn giữ");
     check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "2000"}).holdTimeout == 2000,
           "Phải nhận biên trên hạn giữ");
-    for (const auto& value : {"5.01", "0", "-1", "nan", "inf", "3x"})
+    check(!o.invertMotorDirection, "Đảo chiều motor mặc định phải tắt");
+    check(parseArgs({"--accept-no-obstacle-brake", "--invert-motor-direction"}).invertMotorDirection,
+          "Phải nhận cờ đảo chiều motor không giá trị");
+    reject({"--accept-no-obstacle-brake", "--invert-motor-direction", "true"});
+    for (const auto& value : {"30.01", "0", "-1", "nan", "inf", "3x"})
         reject({"--accept-no-obstacle-brake", "--reverse-speed-cms", value});
-    for (const auto& value : {"3", "5"})
+    for (const auto& value : {"3", "5", "30"})
         check(parseArgs({"--accept-no-obstacle-brake", "--reverse-speed-cms", value}).reverseSpeed == std::stod(value),
               "Sai tốc độ lùi hợp lệ");
     for (const auto& value : {"10", "20", "40"})

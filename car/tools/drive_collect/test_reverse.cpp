@@ -31,7 +31,7 @@ struct Rig {
     Control control{options, motor, servo, clock};
 };
 void reverseParser() {
-    for (const char* value : {"5.01", "0", "-1", "nan", "inf"}) {
+    for (const char* value : {"30.01", "0", "-1", "nan", "inf"}) {
         std::vector<std::string> args{"drive", "--accept-no-obstacle-brake", "--reverse-speed-cms", value};
         std::vector<char*> argv;
         for (auto& arg : args) argv.push_back(&arg[0]);
@@ -39,6 +39,15 @@ void reverseParser() {
         try { parse(static_cast<int>(argv.size()), argv.data()); }
         catch (const std::runtime_error&) { rejected = true; }
         need(rejected, "reverse_reject");
+    }
+    for (const bool invert : {false, true}) {
+        std::vector<std::string> args{"drive", "--accept-no-obstacle-brake", "--reverse-speed-cms", "30"};
+        if (invert) args.push_back("--invert-motor-direction");
+        std::vector<char*> argv;
+        for (auto& arg : args) argv.push_back(&arg[0]);
+        const auto o = parse(static_cast<int>(argv.size()), argv.data());
+        need(o.reverseSpeed == 30, "reverse_limit");
+        need(o.invertMotorDirection == invert && !Options{}.invertMotorDirection, "invert_option");
     }
 }
 void directionPause() {
@@ -58,6 +67,21 @@ void directionPause() {
 }
 void contract() {
     reverseParser();
+    for (const double cap : {3.0, 5.0, 30.0, 31.0}) {
+        Rig r; r.options.reverseSpeed = cap;
+        r.control.key('s');
+        need(r.control.speed == (cap <= 30 ? -cap : 0), "reverse_limit");
+        r.control.setSpeed(-30.01f);
+        need(r.control.speed == (cap <= 30 ? -cap : 0), "reverse_limit");
+    }
+    Rig inverted;
+    inverted.options.invertMotorDirection = true;
+    inverted.options.reverseSpeed = 30;
+    inverted.control.onCommand = [](int64_t, float speed, int, State state) {
+        need(speed == -30 && state == State::CHAY_LUI, "invert_logical_command");
+    };
+    inverted.control.key('s');
+    need(inverted.control.speed == -30 && inverted.motor.speeds.back() == -30, "invert_only_hardware");
     for (const uint64_t hold : {700u, 800u, 2000u}) {
         for (const bool reverse : {false, true}) {
             Rig r; r.options.holdTimeout = hold;
