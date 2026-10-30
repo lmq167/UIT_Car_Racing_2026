@@ -1,4 +1,9 @@
-"""Test hộp đen cho ucr_collect_cam; chỉ thư viện chuẩn Python 3.6."""
+"""T32: test hộp đen từ phiếu và quyết định 31/10; Python 3.6.
+
+Kỳ vọng không suy từ main.cpp; lúc chạy M1/M2 chỉ vá neo trên bản sao tạm.
+Hook preview stream dùng lại từ test drive.
+H1/H2/H3 tự kiểm bộ kiểm thử; M1/M2 dựng bản lỗi trong thư mục tạm.
+"""
 import csv
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -25,9 +30,18 @@ if sys.getfilesystemencoding().lower().replace('-', '') != 'utf8':
     os.execv(sys.executable, [sys.executable] + sys.argv)
 
 
+# Các trường CaptureColumns và filename/ts_ms được công bố ở pass_store.h.
+# Mẫu cố định: pass_tools.py PASS_COLUMNS; data_audit.py dùng pass/file/state/
+# cmd_speed/cmd_steer. Hai consumer không công bố đủ header; phần còn lại chốt từ
+# drive_collect/pass_store.cpp:24-26 và test_pass_store.cpp:79,115 trước khi chuyển.
 COLUMNS = ['frame', 'monotonic_ns', 'wall_time_unix_ms', 'filename', 'width',
            'height', 'mean_luma', 'lap_var', 'dropped_since_last']
-EXIT_CODES = dict(eof=0, max_frames=0, max_seconds=0, sigint=0, sigterm=0,
+CSV_HEADERS = {
+    'frames.csv': COLUMNS + ['cmd_speed', 'cmd_steer', 'state', 'pass', 'file'],
+    'passes.csv': ['pass', 'event', 'ts_ms', 'frames', 'end_reason'],
+    'sessions.csv': ['ts_ms', 'git', 'argv', 'label', 'pipeline'],
+}
+EXIT_CODES = dict(eof=0, max_frames=0, max_seconds=0, esc=0, sigint=0, sigterm=0,
                   sighup=0, no_frame_timeout=3, stall_timeout=4, disk_low=5, error=1)
 PARAMS = dict(interval_ms=1000, max_frames=0, max_seconds=0, warmup_frames=15,
               jpeg_quality=90, min_free_mb=1024, start_delay_s=0)
@@ -37,6 +51,10 @@ FLAGS = ['out-dir', 'out-root', 'label', 'who', 'weather', 'curtain', 'lights',
          'min-free-mb', 'help']
 FORBIDDEN = r'Motor|Servo|IMU|ToF|Backend|OLED|app_core|I2C|UART|i2c|uart'
 DEVICE_LIBS = r'(?i)motor|servo|imu|tof|backend|oled|app_core|wiringpi|pigpio|i2c|uart|gpiod|bno055|vl53|pca9685|sh1106'
+REC_DEFAULT = 'rec_default: không P vẫn ghi ảnh/lượt'
+REC_OFF = 'rec_off: ảnh/frames/lượt thay đổi khi đã tắt P'
+REC_OFF_ERROR = 'rec_off: saveFrame ngoài lượt làm thoát error/1'
+SAVE_WITHOUT_PASS = 'T32_SAVE_WITHOUT_PASS'
 
 
 def require(condition, message):
@@ -48,19 +66,38 @@ def read_json(path):
     return json.loads(path.read_text(encoding='utf-8'))
 
 
-def csv_rows(out, live=False):
-    path = out / 'metadata.csv'
+def table(out, name, live=False):
+    path = out / name
     if not path.exists():
         return []
     lines = path.read_text(encoding='utf-8').splitlines(True)
     # Khi đang ghi, chỉ quan sát các dòng đã hoàn chỉnh; kiểm chặt sau khi thoát.
-    if live:
-        lines = [line for line in lines if line.endswith('\n')]
-    reader = csv.DictReader(lines)
-    if live and reader.fieldnames != COLUMNS:
+    if live and lines and not lines[-1].endswith('\n'):
+        lines.pop()
+    if live and not lines:
         return []
-    require(reader.fieldnames == COLUMNS, 'Sai thứ tự cột CSV: ' + repr(reader.fieldnames))
-    return list(reader)
+    reader = csv.DictReader(lines)
+    require(reader.fieldnames and len(set(reader.fieldnames)) == len(reader.fieldnames),
+            'Thiếu/trùng header ' + name)
+    rows = list(reader)
+    require(all(None not in row and all(v is not None for v in row.values()) for row in rows),
+            'CSV thiếu/thừa giá trị: ' + name)
+    return rows
+
+
+def csv_rows(out, live=False):
+    rows = table(out, 'frames.csv', live)
+    require(all(set(COLUMNS) <= set(row) for row in rows), 'frames.csv thiếu cột capture')
+    return rows
+
+
+def fixed_headers(out, names=CSV_HEADERS, header_only=False):
+    for name in names:
+        with (out / name).open(encoding='utf-8', newline='') as stream:
+            reader = csv.reader(stream)
+            require(next(reader, None) == CSV_HEADERS[name], 'Sai header cố định: ' + name)
+            if header_only:
+                require(next(reader, None) is None, 'Có dữ liệu dù chưa P: ' + name)
 
 
 def poll(predicate, process, seconds, message):
@@ -75,15 +112,21 @@ def poll(predicate, process, seconds, message):
 
 
 @contextmanager
-def running(args, root, hook=None, timeout_ms=2000):
+def running(args, root, hook=None, timeout_ms=2000, preview=None, preview_mode=None):
     env = os.environ.copy()
-    for key in ('UCR_CAM_TEST_SOURCE', 'UCR_CAM_TEST_TIMEOUT_MS', 'DISPLAY', 'WAYLAND_DISPLAY'):
-        env.pop(key, None)
+    for key in list(env):
+        if key.startswith(('UCR_CAM_TEST_', 'UCR_DRIVE_FAKE_')) or key in ('DISPLAY', 'WAYLAND_DISPLAY'):
+            env.pop(key, None)
     if hook is not None:
         env.update(UCR_CAM_TEST_SOURCE=hook, UCR_CAM_TEST_TIMEOUT_MS=str(timeout_ms))
+    if preview is not None:
+        env['UCR_DRIVE_FAKE_PREVIEW'] = 'stream:' + str(preview)
+    if preview_mode is not None:
+        env['UCR_DRIVE_FAKE_PREVIEW'] = preview_mode
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
         process = subprocess.Popen(args, cwd=str(root), env=env, stdout=stdout,
-                                   stderr=stderr, start_new_session=True)
+                                   stderr=stderr, stdin=subprocess.DEVNULL,
+                                   start_new_session=True)
         try:
             yield process, stderr
         finally:
@@ -107,6 +150,7 @@ def execute(args, root, code=0, hook=None, timeout=35):
         error = stderr_text(stderr)
         valid = process.returncode != 0 if code is None else process.returncode == code
         require(valid, 'Sai mã thoát {} (cần {}): {}'.format(process.returncode, code, error))
+        children_reaped(process)
         return process.returncode, error, time.monotonic() - started
 
 
@@ -142,13 +186,15 @@ def inspect_output(out, reason, code, expected=None):
     filenames = set()
     for index, row in enumerate(rows, 1):
         require(None not in row and all(value is not None for value in row.values()), 'CSV thiếu/thừa giá trị')
-        require(int(row['frame']) == index, 'Số frame không liên tục')
+        require(int(row['frame']) == index, 'Số frame không liên tục toàn phiên')
         stamp = int(row['monotonic_ns'])
         require(stamp > previous, 'Timestamp không tăng')
         previous = stamp
         require(int(row['wall_time_unix_ms']) > 0, 'Thiếu thời gian đồng hồ')
         require(Path(row['filename']).name == row['filename'], 'Tên ảnh không được thoát thư mục')
         require(row['filename'] not in filenames, 'Lặp tên ảnh')
+        require(re.fullmatch(r'p[0-9]{4,}_[0-9]{4,}\.jpg', row['filename']),
+                'Tên ảnh không có nhãn lượt: ' + row['filename'])
         filenames.add(row['filename'])
         data = (out / row['filename']).read_bytes()
         require(data[:2] == b'\xff\xd8' and data[-2:] == b'\xff\xd9', 'JPEG không hoàn chỉnh')
@@ -237,246 +283,609 @@ def symbols_self_check(root):
     verify(clean[:2] + [(0, b'libc.so.6 => not found\n', b'')], False)
 
 
-def run_test(binary, scenario, nm, ldd, strings, hooks_binary):
-    root = Path(tempfile.mkdtemp(prefix='ucr_cam_'))
-    try:
-        require(not re.search(r'\s', str(root)), 'Đường dẫn tạm phải không có dấu cách')
-        # B15: kiểm bản xe, không dùng bản hook; cấm cả thư viện thiết bị trực tiếp/gián tiếp.
-        if scenario == 'symbols':
-            # đọc byte thô, bản hooks phải làm đối chứng có đủ hai tên biến.
-            normal_bytes = Path(binary).read_bytes()
-            hooks_bytes = Path(hooks_binary).read_bytes()
-            for name in (b'UCR_CAM_TEST_SOURCE', b'UCR_CAM_TEST_TIMEOUT_MS'):
-                require(name not in normal_bytes, 'Bản thường chứa biến hook: ' + name.decode('ascii'))
-                require(name in hooks_bytes, 'Bản hooks thiếu biến đối chứng: ' + name.decode('ascii'))
-            inspect_symbols(binary, nm, ldd, strings, root)
+def pass_events(out, event, live=False):
+    # Tên cột sự kiện không có trong header công khai; ca format so toàn schema.
+    return [r for r in table(out, 'passes.csv', live) if event in r.values()]
+
+
+def check_passes(out, labels):
+    rows = table(out, 'passes.csv')
+    require(len(rows) == 2 * len(labels), 'Mỗi lượt cần đúng hai dòng start/end')
+    for index, label in enumerate(labels):
+        start, end = rows[2 * index:2 * index + 2]
+        require(start['event'] == 'start' and end['event'] == 'end', 'Thiếu start/end hoặc sai thứ tự')
+        require(start['pass'] == end['pass'] == label[1:], 'Sai số lượt: ' + label)
+
+
+def off_snapshot(out):
+    return (table(out, 'frames.csv', True), table(out, 'passes.csv', True),
+            {str(p.relative_to(out)): p.read_bytes() for p in out.rglob('*.jpg')})
+
+
+def default_off(snapshot):
+    frames, passes, images = snapshot
+    require(not frames and not passes and not images, REC_DEFAULT)
+
+
+def off_guard(before, after):
+    require(before == after, REC_OFF)
+
+
+def observe_off(process, stderr, out, before, seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        off_guard(before, off_snapshot(out))
+        if process.poll() is not None:
+            # Chỉ dấu tại saveFrame của bản sao M2; lỗi khởi động không có dấu này.
+            if process.returncode == 1 and SAVE_WITHOUT_PASS in stderr_text(stderr).splitlines():
+                inspect_output(out, 'error', 1)
+                require(len(table(out, 'sessions.csv')) == 1, 'Lỗi thiết lập phiên M2')
+                children_reaped(process)
+                raise AssertionError(REC_OFF_ERROR)
+            raise AssertionError('Thoát sớm khi REC tắt: ' + stderr_text(stderr))
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
             return
-        if scenario == 'symbols_harness':
+        time.sleep(min(0.02, remaining))
+
+
+def observe(process, seconds, assertion):
+    deadline = time.monotonic() + seconds
+    while True:
+        assertion()
+        require(process.poll() is None, 'Thoát sớm trong khoảng quan sát tắt ghi')
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.02, remaining))
+
+
+def send_preview(keys, value):
+    # stream: đọc nối tiếp tệp; không đặt lịch phím theo sleep hay sửa preview.
+    with keys.open('ab') as stream:
+        stream.write(value.encode('ascii'))
+
+
+def clean_exit(process, stderr, code=0, timeout=15):
+    require(process.wait(timeout=timeout) == code,
+            'Sai mã thoát (cần {}): {}'.format(code, stderr_text(stderr)))
+    children_reaped(process)
+
+
+def children_reaped(process):
+    # Kiểm TRƯỚC finally dọn nhóm: không cho cleanup của test che rò Capture/GStreamer.
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            os.killpg(process.pid, 0)
+        except ProcessLookupError:
+            return
+        require(time.monotonic() < deadline, 'Còn tiến trình con trong nhóm sau khi cha thoát')
+        time.sleep(0.02)
+
+
+@contextmanager
+def collecting(binary, root, args=(), source=None, hook=None):
+    root.mkdir(parents=True, exist_ok=True)
+    source = source or make_source(root)
+    out, keys = root / 'output', root / 'preview_keys'
+    keys.write_bytes(b'')
+    require(b'UCR_DRIVE_FAKE_PREVIEW' in Path(binary).read_bytes(),
+            'Thiếu hook preview đối chứng trong bản cam hooks; xem T32_cases.md')
+    argv = [binary, '--out-dir', str(out), '--min-free-mb', '0',
+            '--interval-ms', '100', '--warmup-frames', '0']
+    if hook is None:
+        argv += ['--source', str(source)]
+    argv += list(args)
+    with running(argv, root, hook=hook, preview=keys) as (process, stderr):
+        poll(lambda: (out / 'sessions.csv').exists(), process, 10,
+             'Không khởi tạo PassStore/sessions.csv')
+        yield process, stderr, out, keys
+
+
+def start_pass(process, out, keys, key='p', minimum=1):
+    send_preview(keys, key)
+    poll(lambda: len(csv_rows(out, True)) >= minimum, process, 8, 'P không mở lượt/ghi ảnh')
+
+
+def stop_pass(process, out, keys, count=1):
+    send_preview(keys, 'P')
+    poll(lambda: len(pass_events(out, 'end', True)) == count, process, 5,
+         'P không đóng lượt vào passes.csv')
+
+
+def finish_preview(process, stderr, keys, key='E'):
+    send_preview(keys, key)
+    clean_exit(process, stderr)
+
+
+def format_reference(out, root, argv, label, pass_store_source, pass_store_include):
+    """So định dạng qua API công khai; không đọc nội dung nguồn sản xuất."""
+    common = Path(pass_store_include).resolve()
+    source = Path(pass_store_source).resolve()
+    require(common.name == 'collect_common' and source.parent == common and
+            source.name == 'pass_store.cpp', 'PassStore phải nằm trong collect_common')
+    require(source.is_file() and (common / 'pass_store.h').is_file(),
+            'Chưa có PassStore dùng chung sau DEV')
+    fixed_headers(out)
+    probe, binary, reference = root / 'schema.cpp', root / 'schema_probe', root / 'reference'
+    probe.write_text(
+        '#include "pass_store.h"\n#include <vector>\n#include <string>\n'
+        '#include <fstream>\n#include <iterator>\n'
+        'int main(int n, char** a) {\n'
+        ' drive_collect::SessionInfo s; s.ts_ms=1000; s.label=a[2];\n'
+        ' for(int i=4;i<n;++i) s.argv.emplace_back(a[i]);\n'
+        ' std::ifstream f(a[3],std::ios::binary);\n'
+        ' std::vector<unsigned char> jpeg((std::istreambuf_iterator<char>(f)),{});\n'
+        ' drive_collect::PassStore p(a[1],s); if(!p.status()) return 1;\n'
+        ' if(!p.beginPass(1001)) return 2;\n'
+        ' drive_collect::CaptureColumns c; c.frame=1; c.monotonic_ns=1000000000;\n'
+        ' c.width=32; c.height=24; c.state="DUNG";\n'
+        ' if(!p.saveFrame(jpeg,1002,c)) return 3;\n'
+        ' if(!p.endPass("exit",1003)) return 4; return 0;\n}\n', encoding='utf-8')
+    compiler = os.environ.get('CXX', 'c++')
+    command = [compiler, '-std=c++17', '-O0', '-g0', '-I', str(common), str(probe),
+               str(source), '-lstdc++fs', '-o', str(binary)]
+    # Cả compiler và probe đều có nhóm riêng để dọn con khi hết hạn.
+    execute(command, root, timeout=25)
+    image = out / csv_rows(out)[0]['filename']
+    execute([str(binary), str(reference), label, str(image)] + list(argv), root, timeout=5)
+    for name in ('frames.csv', 'passes.csv', 'sessions.csv'):
+        with (reference / name).open(encoding='utf-8', newline='') as stream:
+            expected = next(csv.reader(stream))
+        with (out / name).open(encoding='utf-8', newline='') as stream:
+            actual = next(csv.reader(stream))
+        require(actual == expected, 'Sai thứ tự/toàn bộ cột {}: {} != {}'.format(name, actual, expected))
+    expected_pass = table(reference, 'passes.csv')
+    actual_pass = table(out, 'passes.csv')
+    # Suy cột nhãn/sự kiện từ mẫu API thay vì đoán tên cột trong .cpp.
+    for row, expected in zip(actual_pass, expected_pass):
+        for key, value in expected.items():
+            if value in ('p1', 'start', 'end'):
+                require(row[key] == value, 'Sai cột nhãn/sự kiện: ' + key)
+    expected_session = table(reference, 'sessions.csv')[0]
+    actual_session = table(out, 'sessions.csv')
+    require(len(actual_session) == 1, 'Phải có đúng một session')
+    checked = []
+    for key, value in expected_session.items():
+        if value == label or (value and argv[0] in value):
+            require(actual_session[0][key] == value, 'Sai label/argv trong sessions.csv: ' + key)
+            checked.append(key)
+    require(len(checked) >= 2, 'Mẫu PassStore không cung cấp đủ label và argv để đối chiếu')
+
+
+def harness_oracle(case, root):
+    """H1/H2 tự kiểm phép khẳng định; không tính là kiểm ngược sản phẩm."""
+    out = root / 'output'
+    out.mkdir()
+    before = off_snapshot(out)
+    default_off(before)
+    off_guard(before, off_snapshot(out))
+    if case == 'H1':
+        (out / 'p0001_0001.jpg').write_bytes(b'anh ghi ngay khi mo')
+        checker = lambda: default_off(off_snapshot(out))
+        tag = 'rec_default:'
+    else:
+        # Mẫu tự kiểm có p1 đã đóng; không phải dữ liệu hợp đồng sản phẩm.
+        with (out / 'passes.csv').open('w', encoding='utf-8', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerows([['test_only'], ['start'], ['end']])
+        (out / 'p0001_0001.jpg').write_bytes(b'anh trong luot')
+        before = off_snapshot(out)
+        off_guard(before, off_snapshot(out))
+        (out / 'p0001_0002.jpg').write_bytes(b'anh khi da tat')
+        checker = lambda: off_guard(before, off_snapshot(out))
+        tag = 'rec_off:'
+    try:
+        checker()
+    except AssertionError as error:
+        require(str(error).startswith(tag), 'Harness hỏng sai phép kiểm')
+    else:
+        raise AssertionError('Oracle bỏ lọt ' + case)
+    print(case + ': oracle phát hiện dữ liệu lỗi; CHƯA kiểm ngược binary')
+
+
+def patch_mutant(case, folder):
+    """Neo do leader cấp; chỉ đọc/vá bản sao khi chạy kiểm ngược trên Linux."""
+    path = folder / 'main.cpp'
+    source = path.read_text(encoding='utf-8')
+    gate = 'if (!store->active()) {'
+    save = 'requireStore(store->saveFrame(encoded, h.wallMs, columns));'
+    if case == 'M1':
+        changes = [('bool recording = false;', 'bool recording = true;'),
+                   (gate, 'if (false) {'),
+                   (save, 'if (!store->active()) requireStore(store->beginPass(h.wallMs));\n'
+                    '            ' + save)]
+    else:
+        changes = [(gate, 'if (false) {'),
+                   (save, 'if (!store->active()) std::fputs("\\n' + SAVE_WITHOUT_PASS +
+                    '\\n", stderr);\n            ' + save)]
+    for anchor, replacement in changes:
+        require(source.count(anchor) == 1, 'Neo kiểm ngược không khớp đúng một lần: ' + anchor)
+        source = source.replace(anchor, replacement, 1)
+    if case == 'M2':
+        source = '#include <cstdio>\n' + source
+    path.write_text(source, encoding='utf-8')
+
+
+def mutation(case, root, binary, nm, ldd, strings, hooks_binary,
+             pass_store_source, pass_store_include, cmake, cxx):
+    scenario = {'M1': 'default_off', 'M2': 'off_guard'}[case]
+    expected = {'M1': (REC_DEFAULT,), 'M2': (REC_OFF, REC_OFF_ERROR)}[case]
+    # Bản sạch phải đạt toàn ca; không bắt lỗi baseline/build thành phát hiện.
+    run_test(binary, scenario, nm, ldd, strings, hooks_binary,
+             pass_store_source, pass_store_include)
+    folder = root / 'cam_collect'
+    original = Path(__file__).resolve().parent
+    ignored = shutil.ignore_patterns('build*', '__pycache__', '*.pyc')
+    shutil.copytree(str(original), str(folder), ignore=ignored)
+    shutil.copytree(str(original.parent / 'collect_common'), str(root / 'collect_common'),
+                    ignore=ignored)
+    patch_mutant(case, folder)
+    build = root / 'mutant-build'
+    build.mkdir()
+    configure = [cmake, '-DBUILD_TESTING=ON', '-DCMAKE_BUILD_TYPE=Release',
+                 '-DCMAKE_CXX_FLAGS=-O0 -g0', '-DCMAKE_CXX_FLAGS_RELEASE=-DNDEBUG']
+    if cxx:
+        configure.append('-DCMAKE_CXX_COMPILER=' + cxx)
+    configure.append(str(folder))
+    deadline = time.monotonic() + 360
+    # CMake 3.10: đúng một --target, -j1; không dựng bản xe hoặc chạy CTest con.
+    for command in (configure, [cmake, '--build', '.', '--target',
+                               'ucr_collect_cam_hooks', '--', '-j1']):
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, 'Hết hạn dựng bản lỗi ' + case)
+        execute(command, build, timeout=remaining)
+    mutant = str(build / 'ucr_collect_cam_hooks')
+    require(Path(mutant).is_file(), 'Không có binary kiểm ngược ' + case)
+    try:
+        run_test(mutant, scenario, nm, ldd, strings, mutant,
+                 pass_store_source, pass_store_include)
+    except AssertionError as error:
+        require(str(error) in expected, 'Kiểm ngược hỏng sai oracle: ' + str(error))
+        print('{} PHÁT HIỆN: {}'.format(case, error))
+    else:
+        raise AssertionError('Kiểm ngược sống sót: ' + case)
+
+
+def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
+             pass_store_source, pass_store_include, cmake='cmake', cxx=None):
+    with tempfile.TemporaryDirectory(prefix='ucr_cam_') as directory:
+        root = Path(directory)
+        if scenario in ('M1', 'M2'):
+            mutation(scenario, root, binary, nm, ldd, strings, hooks_binary,
+                     pass_store_source, pass_store_include, cmake, cxx)
+            return
+        if scenario in ('H1', 'H2'):
+            harness_oracle(scenario, root)
+            return
+        if scenario == 'H3':
             symbols_self_check(root)
             return
+        if scenario == 'symbols':
+            normal, hooks = Path(binary).read_bytes(), Path(hooks_binary).read_bytes()
+            for name in (b'UCR_CAM_TEST_SOURCE', b'UCR_CAM_TEST_TIMEOUT_MS', b'UCR_DRIVE_FAKE_PREVIEW'):
+                require(name not in normal, 'Hook lọt bản thường: ' + repr(name))
+                require(name in hooks, 'Bản hooks thiếu đối chứng: ' + repr(name))
+            inspect_symbols(binary, nm, ldd, strings, root)
+            return
+
         source = make_source(root)
         out = root / 'output'
         base = [binary, '--source', str(source), '--out-dir', str(out), '--min-free-mb', '0']
 
-        # B6/B8/B11: ảnh đổi cỡ, cột CSV, số liệu và JPEG nguyên vẹn sau max_frames.
-        if scenario == 'frames':
-            execute(base + ['--max-frames', '4', '--interval-ms', '40', '--jpeg-quality', '85'], root)
-            summary, rows = inspect_output(out, 'max_frames', 0, 4)
-            require(summary['empty_frames'] == 0, 'Sai thống kê khung rỗng')
-            require([(int(r['width']), int(r['height'])) for r in rows] == [(32, 24), (40, 30)] * 2, 'Ảnh bị đổi cỡ')
-            require((summary['width'], summary['height']) == (40, 30), 'Sai cỡ cuối')
-            require(sorted(summary['frame_sizes'], key=lambda s: s['width']) == [
-                {'width': 32, 'height': 24, 'count': 2}, {'width': 40, 'height': 30, 'count': 2}], 'Sai thống kê kích thước')
-            for left, right in zip(rows, rows[1:]):
-                require(int(right['monotonic_ns']) - int(left['monotonic_ns']) >= 40000000, 'Lưu ảnh quá dày')
-
-        # A1/B8/B9/B11: phải thấy ít nhất một dòng CSV đã flush rồi mới gửi tín hiệu.
-        elif scenario in ('signal_int', 'signal_term', 'signal_hup'):
-            sig, reason = {'signal_int': (signal.SIGINT, 'sigint'),
-                           'signal_term': (signal.SIGTERM, 'sigterm'),
-                           'signal_hup': (signal.SIGHUP, 'sighup')}[scenario]
-            with running(base + ['--interval-ms', '200'], root) as (process, stderr):
-                poll(lambda: len(csv_rows(out, live=True)) >= 1, process, 10, 'Không có CSV đã flush trước tín hiệu')
-                initial = read_json(out / 'session.json')
-                require(initial['started_utc'] and initial['params'], 'Thiếu session lúc bắt đầu')
-                for row in csv_rows(out, live=True):
-                    data = (out / row['filename']).read_bytes()
-                    require(data[:2] == b'\xff\xd8' and data[-2:] == b'\xff\xd9', 'CSV trỏ ảnh chưa xong')
-                process.send_signal(sig)
-                require(process.wait(timeout=20) == 0, 'Tín hiệu phải kết thúc mã 0: ' + stderr_text(stderr))
-            _, rows = inspect_output(out, reason, 0)
-            inspect_session(out)
-            require(1 <= len(rows) < 100, 'Không dừng giữa phiên')
-
-        # A1/B10/B13: lỗi pipeline phải rõ lý do, có gợi ý và không treo quá 5+10 s.
-        elif scenario == 'pipeline':
-            pipeline = 'ucr_missing_source ! videoconvert ! appsink'
-            code, error, elapsed = execute([binary, '--out-dir', str(out), '--min-free-mb', '0',
-                                            '--pipeline', pipeline], root, code=None, timeout=16)
-            require(elapsed <= 15, 'Pipeline lỗi vượt 5 s + 10 s dung sai')
-            require(pipeline in error and re.search(r'(?i)error|fail|cannot|could not|khong|không|lỗi|loi|timeout', error),
-                    'Thiếu chuỗi pipeline và lý do: ' + error)
-            require('pgrep -a main' in error, 'Thiếu gợi ý chương trình đang giữ camera')
-            inspect_output(out, 'no_frame_timeout' if code == 3 else 'error', code, 0)
-
-        # Test cũ/B6/B8: giữ kiểm tra nguồn GStreamer hợp lệ, bỏ warmup rõ ràng.
-        elif scenario == 'pipeline_frames':
-            pipeline = ('videotestsrc num-buffers=8 ! video/x-raw,width=80,height=60,format=BGR ! '
-                        'appsink drop=false max-buffers=1 sync=false')
-            with running([binary, '--out-dir', str(out), '--min-free-mb', '0', '--interval-ms', '0',
-                          '--warmup-frames', '0', '--max-frames', '3', '--pipeline', pipeline], root) as (process, stderr):
-                code = process.wait(timeout=35)
-                error = stderr_text(stderr)
-            if code == 0:
-                _, rows = inspect_output(out, 'max_frames', 0, 3)
-                require(all((int(row['width']), int(row['height'])) == (80, 60) for row in rows), 'Cỡ pipeline bị đổi')
-            else:
-                # Container có thể thiếu GStreamer; đường GStreamer thật được kiểm ở bản Ubuntu.
-                require(code == 1 and 'Không mở/đọc được nguồn' in error,
-                        'Pipeline trả kết quả ngoài dự kiến (mã {}): {}'.format(code, error))
-                require(pipeline in error, 'Thiếu chuỗi pipeline trong stderr: ' + error)
-                inspect_output(out, 'error', 1, 0)
-            require(inspect_session(out)['pipeline_used'] == pipeline, 'Sai pipeline thực tế trong session')
-
-        # B10/B8/B5: hook không trả khung hoặc dừng sau N khung; warmup bỏ đúng N.
-        elif scenario in ('no_frame_timeout', 'stall_timeout', 'warmup'):
-            hook = {'no_frame_timeout': 'never', 'stall_timeout': 'stall_after:8',
-                    'warmup': 'stall_after:1000'}[scenario]
-            warmup = 3 if scenario == 'warmup' else 0
-            args = [binary, '--out-dir', str(out), '--min-free-mb', '0', '--interval-ms', '0',
-                    '--warmup-frames', str(warmup)]
-            if scenario == 'warmup':
-                args += ['--max-frames', '5']
-            code = 0 if scenario == 'warmup' else EXIT_CODES[scenario]
-            _, _, elapsed = execute(args, root, code, hook, timeout=16)
-            require(elapsed <= 2 + 2 + 10, 'Watchdog vượt hạn + 2 s dọn + 10 s dung sai tải')
-            reason = 'max_frames' if scenario == 'warmup' else scenario
-            expected = 0 if scenario == 'no_frame_timeout' else (5 if scenario == 'warmup' else None)
-            summary, rows = inspect_output(out, reason, code, expected)
-            if scenario == 'stall_timeout':
-                require(1 <= len(rows) <= 8, 'Nguồn stall phải lưu được khung trước khi mất ảnh')
-            if scenario == 'no_frame_timeout':
-                require(elapsed >= 1.8, 'Watchdog thoát trước hạn hook 2000 ms')
-            require(summary['warmup_dropped'] == warmup, 'Sai số khung warmup đã bỏ')
-
-        # A1/B5/B8: PPM trong thư mục, không AVI/codec; thư mục bỏ qua warmup mặc định.
-        elif scenario == 'eof':
-            execute(base + ['--interval-ms', '0'], root)
-            summary, _ = inspect_output(out, 'eof', 0, 100)
-            require(summary['warmup_dropped'] == 0, 'Thư mục không được bỏ warmup')
-
-        # bản thường bỏ qua cả nguồn never và hạn thử 500 ms.
-        elif scenario == 'hooks_ignored':
-            with running(base + ['--interval-ms', '0'], root,
-                         hook='never', timeout_ms=500) as (process, stderr):
-                require(process.wait(timeout=35) == 0,
-                        'Bản thường kích hoạt hook: ' + stderr_text(stderr))
-            inspect_output(out, 'eof', 0, 100)
-
-        # B1/B3: kiểm mặc định từ JSON, không suy từ thời lượng chạy.
-        elif scenario == 'defaults':
-            execute([binary, '--source', str(source), '--max-frames', '1'], root)
-            sessions = list((root / 'runs_cam').iterdir())
-            require(len(sessions) == 1 and re.fullmatch(r'\d{8}_\d{6}_cam', sessions[0].name), 'Sai out-root/label mặc định')
-            out = sessions[0]
-            session = inspect_session(out)
-            expected = dict(PARAMS, max_frames=1)
-            require(all(session['params'][key] == value for key, value in expected.items()), 'Sai tham số mặc định')
-            inspect_output(out, 'max_frames', 0, 1)
-
-        # B2: đặt sẵn tên trong cửa sổ rộng để buộc xử lý trùng, không đua đồng hồ giây.
-        elif scenario == 'out_root':
-            parent = root / 'sessions'
-            args = [binary, '--source', str(source), '--out-root', str(parent), '--label', 'L1c a/b',
-                    '--min-free-mb', '0', '--interval-ms', '0', '--max-frames', '1']
-            execute(args, root)
-            first = list(parent.iterdir())
-            require(len(first) == 1 and re.fullmatch(r'\d{8}_\d{6}_L1c_a_b', first[0].name), 'Sai tên thư mục/nhãn')
-            timestamp = datetime.strptime(first[0].name[:15], '%Y%m%d_%H%M%S')
-            sentinels = []
-            for offset in range(-60, 61):
-                name = (timestamp + timedelta(seconds=offset)).strftime('%Y%m%d_%H%M%S') + '_L1c_a_b'
-                for suffix in ('', '_2', '_3'):
-                    directory = parent / (name + suffix)
-                    directory.mkdir(exist_ok=True)
-                    marker = directory / 'keep'
-                    marker.write_bytes(b'du lieu cu')
-                    sentinels.append(marker)
-            before = set(parent.iterdir())
-            execute(args, root)
-            added = set(parent.iterdir()) - before
-            require(len(added) == 1 and next(iter(added)).name.endswith('_4'), 'Không thêm hậu tố khi trùng tên')
-            require(all(path.read_bytes() == b'du lieu cu' for path in sentinels), 'Ghi đè thư mục cũ')
-            inspect_output(next(iter(added)), 'max_frames', 0, 1)
-            execute(base + ['--out-root', str(parent), '--max-frames', '1', '--interval-ms', '0'], root)
-            inspect_output(out, 'max_frames', 0, 1)
-            require(set(parent.iterdir()) == before | added, 'out-dir không ghi đè lựa chọn out-root')
-
-        # B3: đủ khóa và giữ nguyên Unicode/nháy/gạch chéo/ký tự điều khiển.
-        elif scenario == 'session':
-            values = {key: 'Tiếng Việt "đèn" \\ rèm\nxuống dòng\t\x01 ' + key
-                      for key in ('label', 'who', 'weather', 'curtain', 'lights', 'props', 'note')}
-            args = base + ['--interval-ms', '0', '--max-frames', '1', '--warmup-frames', '7', '--jpeg-quality', '85']
-            for key, value in values.items():
-                args += ['--' + key, value]
-            execute(args, root)
-            session = inspect_session(out, values)
-            require(session['pipeline_used'] == 'source:' + str(source), 'Sai nguồn thực tế trong session')
-            expected = dict(PARAMS, interval_ms=0, max_frames=1, warmup_frames=7, jpeg_quality=85, min_free_mb=0)
-            require(all(session['params'][key] == value for key, value in expected.items()), 'Sai params đã dùng')
-            inspect_output(out, 'max_frames', 0, 1)
-
-        # B4/B8: tự dừng theo đồng hồ đơn điệu, cho phép 10 s dung sai tải.
-        elif scenario == 'max_seconds':
-            _, _, elapsed = execute(base + ['--interval-ms', '200', '--max-seconds', '1'], root)
-            require(0.9 <= elapsed <= 11, 'max-seconds không đúng hạn có dung sai')
-            _, rows = inspect_output(out, 'max_seconds', 0)
-            require(1 <= len(rows) < 100, 'Không ghi/dừng giữa phiên max-seconds')
-
-        # B4: đếm lùi xuất hiện trên stderr trước ảnh; không sleep chờ cố định.
-        elif scenario == 'start_delay':
-            started = time.monotonic()
-            with running(base + ['--start-delay-s', '1', '--max-frames', '1'], root) as (process, stderr):
-                poll(lambda: bool(re.search(r'\b1\b', stderr_text(stderr))), process, 10, 'Không thấy đếm lùi stderr')
-                require(process.wait(timeout=20) == 0, 'Không kết thúc sau đếm lùi')
-            _, rows = inspect_output(out, 'max_frames', 0, 1)
-            require(int(rows[0]['monotonic_ns']) / 1e9 >= started + 0.9, 'Lưu ảnh trước hết start-delay')
-            require(inspect_session(out)['params']['start_delay_s'] == 1, 'Thiếu start_delay_s đã dùng')
-
-        # B12/B8/B11: ngưỡng hợp lệ nhưng lớn hơn dung lượng máy, phải là lỗi ổ đĩa mã 5.
-        elif scenario == 'disk':
-            _, error, _ = execute(base + ['--min-free-mb', '1000000000000'], root, 5)
-            require(error.strip(), 'Thiếu thông báo dung lượng thấp')
+        # Quyết định 31/10: lỗi đĩa giữ 5; lỗi chung 1, tham số 2.
+        if scenario in ('disk', 'disk_off'):
+            execute(base + ['--min-free-mb', '1000000000000'], root, 5)
             inspect_output(out, 'disk_low', 5, 0)
-
-        # CLI: mỗi đầu vào sai có cwd riêng; không được tạo bất kỳ đầu ra nào.
-        elif scenario == 'invalid':
-            bad_args = [['--width', '640'], ['--height', '384'], ['--unknown'], ['--out-dir'],
-                        ['--jpeg-quality', '101'], ['--jpeg-quality', '0'], ['--interval-ms', '-1'],
-                        ['--max-frames', '1x'], ['--max-frames', '-1'], ['--warmup-frames', '-1'],
-                        ['--max-seconds', '-1'], ['--start-delay-s', '-1'],
-                        ['--min-free-mb', '18446744073709551616'], ['--pipeline', ''],
-                        ['--source', str(source), '--pipeline', 'videotestsrc ! appsink']]
-            bad_args += [['--' + key] for key in FLAGS if key != 'help']
-            deadline = time.monotonic() + 95
-            for args in bad_args:
-                case_root = Path(tempfile.mkdtemp(prefix='invalid_', dir=str(root)))
-                prefix = [] if args == ['--out-dir'] else ['--out-dir', str(case_root / 'output')]
+            require(not table(out, 'passes.csv'), 'Đĩa thấp lúc mở vẫn tạo lượt')
+            default_off(off_snapshot(out))
+            return
+        if scenario == 'invalid':
+            bad = [['--unknown'], ['--out-dir'], ['--jpeg-quality', '101'],
+                   ['--jpeg-quality', '0'], ['--interval-ms', '-1'], ['--max-frames', '1x'],
+                   ['--max-frames', '-1'], ['--warmup-frames', '-1'], ['--max-seconds', '-1'],
+                   ['--start-delay-s', '-1'], ['--min-free-mb', '18446744073709551616'],
+                   ['--pipeline', ''], ['--source', str(source), '--pipeline', 'videotestsrc ! appsink']]
+            bad += [['--' + flag] for flag in FLAGS if flag != 'help']
+            deadline = time.monotonic() + 85
+            for index, args in enumerate(bad):
+                folder = root / str(index)
+                folder.mkdir()
                 remaining = deadline - time.monotonic()
-                require(remaining > 0, 'Ca invalid vượt tổng hạn 95 s')
-                execute([binary] + prefix + args, case_root, 2, timeout=min(20, remaining))
-                require(not list(case_root.iterdir()), 'Tham số lỗi vẫn tạo đầu ra: ' + repr(args))
-
-        # CLI: tên tham số đầy đủ, không có tác dụng phụ khi gọi help.
-        elif scenario == 'help':
-            result = subprocess.run([binary, '--help'], cwd=str(root), stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, timeout=30)
-            output = (result.stdout + result.stderr).decode('utf-8', errors='replace')
-            require(result.returncode == 0, '--help phải thoát 0')
-            require(all(re.search(r'--' + flag + r'(?![\w-])', output) for flag in FLAGS), 'Help thiếu tham số: ' + output)
-            require(set(root.iterdir()) == {source}, '--help tạo đầu ra')
-
-        # B8/B11: ảnh hỏng phải error/1, ghi nhận khung rỗng, không còn ảnh/tmp.
-        elif scenario == 'corrupt':
+                require(remaining > 0, 'Quá hạn ca invalid')
+                execute([binary] + args, folder, 2, timeout=min(10, remaining))
+                require(not list(folder.iterdir()), 'Tham số lỗi tạo đầu ra: ' + repr(args))
+            return
+        if scenario == 'help':
+            result = subprocess.run([binary, '--help'], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, cwd=str(root), timeout=10)
+            text = (result.stdout + result.stderr).decode('utf-8', errors='replace')
+            require(result.returncode == 0 and all('--' + flag in text for flag in FLAGS),
+                    '--help thiếu tham số/không thoát 0')
+            require(set(root.iterdir()) == {source}, '--help có tác dụng phụ')
+            return
+        if scenario == 'existing':
+            out.mkdir()
+            marker = out / 'keep'
+            marker.write_bytes(b'du lieu cu')
+            execute(base, root, code=None)
+            require(set(out.iterdir()) == {marker} and marker.read_bytes() == b'du lieu cu', 'Ghi đè dữ liệu')
+            return
+        if scenario == 'pipeline':
+            pipeline = 'ucr_missing_source ! videoconvert ! appsink'
+            code, error, _ = execute([binary, '--out-dir', str(out), '--min-free-mb', '0',
+                                      '--pipeline', pipeline], root, code=None, timeout=16)
+            require(code in (1, 3) and pipeline in error, 'Sai lỗi/chẩn đoán pipeline')
+            inspect_output(out, 'error' if code == 1 else 'no_frame_timeout', code, 0)
+            return
+        if scenario in ('default_off', 'hooks_ignored'):
+            # Bản thường kiểm --source, không cần GTK hoặc hook phím.
+            with running(base + ['--max-seconds', '3', '--interval-ms', '100'], root,
+                         hook='never' if scenario == 'hooks_ignored' else None) as (process, stderr):
+                poll(lambda: (out / 'sessions.csv').exists(), process, 8, 'Chưa có sessions.csv')
+                observe(process, 0.4, lambda: default_off(off_snapshot(out)))
+                clean_exit(process, stderr)
+            inspect_output(out, 'max_seconds', 0, 0)
+            default_off(off_snapshot(out))
+            return
+        if scenario == 'no_frame_timeout':
+            args = [hooks_binary, '--out-dir', str(out), '--min-free-mb', '0', '--warmup-frames', '0']
+            _, _, elapsed = execute(args, root, 3, hook='never', timeout=16)
+            require(1.8 <= elapsed <= 14, 'Sai hạn watchdog 2000 ms với dung sai tải')
+            inspect_output(out, 'no_frame_timeout', 3, 0)
+            default_off(off_snapshot(out))
+            return
+        if scenario == 'corrupt':
+            # Lỗi đọc nguồn không cần mở lượt; có thể xảy ra trước P đầu tiên.
             (source / '000.ppm').write_bytes(b'khong phai anh')
-            execute(base + ['--max-frames', '1'], root, 1)
+            execute(base, root, 1)
             summary, _ = inspect_output(out, 'error', 1, 0)
             require(summary['empty_frames'] >= 1, 'Không ghi nhận ảnh hỏng')
+            default_off(off_snapshot(out))
+            return
+        if scenario == 'defaults':
+            keys = root / 'preview_keys'
+            keys.write_bytes(b'')
+            require(b'UCR_DRIVE_FAKE_PREVIEW' in Path(hooks_binary).read_bytes(), 'Thiếu hook preview')
+            argv = [hooks_binary, '--source', str(source), '--min-free-mb', '0', '--max-frames', '3']
+            with running(argv, root, preview=keys) as (process, stderr):
+                def session_ready():
+                    return list((root / 'runs_cam').glob('*/sessions.csv'))
+                poll(session_ready, process, 10, 'Không có phiên trong runs_cam mặc định')
+                paths = session_ready()
+                require(len(paths) == 1, 'Sai số phiên mặc định')
+                out = paths[0].parent
+                require(re.fullmatch(r'\d{8}_\d{6}_cam', out.name), 'Sai tên phiên mặc định')
+                default_off(off_snapshot(out))
+                start_pass(process, out, keys)
+                clean_exit(process, stderr)
+            _, rows = inspect_output(out, 'max_frames', 0, 3)
+            check_passes(out, ['p1'])
+            session = inspect_session(out)
+            expected = dict(PARAMS, min_free_mb=0, max_frames=3)
+            require(all(session['params'][k] == v for k, v in expected.items()), 'Sai params mặc định')
+            for left, right in zip(rows, rows[1:]):
+                gap = (int(right['monotonic_ns']) - int(left['monotonic_ns'])) / 1e6
+                require(900 <= gap <= 2500, 'Nhịp mặc định ngoài 1000 ms + dung sai: ' + str(gap))
+            return
+        if scenario == 'out_root':
+            parent = root / 'sessions'
+            argv = [binary, '--source', str(source), '--out-root', str(parent),
+                    '--label', 'L1c a/b', '--min-free-mb', '0', '--max-seconds', '1']
+            execute(argv, root)
+            first = list(parent.iterdir())
+            require(len(first) == 1 and re.fullmatch(r'\d{8}_\d{6}_L1c_a_b', first[0].name), 'Sai tên phiên')
+            stamp = datetime.strptime(first[0].name[:15], '%Y%m%d_%H%M%S')
+            markers = []
+            for offset in range(-30, 31):
+                name = (stamp + timedelta(seconds=offset)).strftime('%Y%m%d_%H%M%S') + '_L1c_a_b'
+                for suffix in ('', '_2', '_3'):
+                    folder = parent / (name + suffix)
+                    folder.mkdir(exist_ok=True)
+                    marker = folder / 'keep'
+                    marker.write_bytes(b'cu')
+                    markers.append(marker)
+            before = set(parent.iterdir())
+            execute(argv, root)
+            added = set(parent.iterdir()) - before
+            require(len(added) == 1 and next(iter(added)).name.endswith('_4'), 'Không tránh trùng tên')
+            require(all(p.read_bytes() == b'cu' for p in markers), 'Đã sửa phiên cũ')
+            execute(base + ['--out-root', str(parent), '--max-seconds', '1'], root)
+            require(set(parent.iterdir()) == before | added and out.exists(), 'Sai ưu tiên out-dir')
+            return
 
-        # B2: tuyệt đối không ghi vào out-dir đã tồn tại.
-        elif scenario == 'existing':
-            out.mkdir()
-            sentinel = out / 'metadata.csv'
-            sentinel.write_bytes(b'du lieu cu')
-            execute(base, root, code=None)
-            require(sentinel.read_bytes() == b'du lieu cu' and set(out.iterdir()) == {sentinel}, 'Ghi đè dữ liệu đã có')
-        else:
-            raise AssertionError('Ca kiểm thử không biết: ' + scenario)
-    finally:
-        shutil.rmtree(str(root))
+        # Những ca còn lại cần P từ preview. Không đặt ra CLI/hook mới.
+        hook = {'stall_timeout': 'stall_after:100', 'warmup': 'stall_after:1000'}.get(scenario)
+        args = []
+        if scenario in ('frames', 'format'):
+            args = ['--max-frames', '4' if scenario == 'frames' else '1', '--interval-ms', '40']
+        elif scenario == 'max_frames_across_passes':
+            args = ['--max-frames', '6', '--interval-ms', '400']
+        elif scenario == 'warmup':
+            args = ['--max-frames', '5', '--warmup-frames', '3', '--interval-ms', '0']
+        elif scenario == 'eof':
+            args = ['--interval-ms', '0']
+        elif scenario == 'max_seconds':
+            args = ['--max-seconds', '4']
+        elif scenario == 'start_delay':
+            args = ['--start-delay-s', '2', '--max-frames', '1']
+        elif scenario == 'off_guard':
+            args = ['--interval-ms', '100']
+        elif scenario == 'pipeline_frames':
+            args = ['--pipeline', 'videotestsrc ! video/x-raw,width=80,height=60,format=BGR ! '
+                    'appsink drop=true max-buffers=1 sync=false', '--max-frames', '3']
+        values = {}
+        if scenario in ('session', 'format'):
+            values = {key: 'Tiếng Việt "đèn" \\ rèm\nxuống dòng\t ' + key
+                      for key in ('label', 'who', 'weather', 'curtain', 'lights', 'props', 'note')}
+            args += ['--max-frames', '1']
+            for key, value in values.items():
+                args += ['--' + key, value]
+        session_root = root / 'run'
+        # pipeline có nguồn riêng; dùng context riêng để không truyền --source cùng pipeline.
+        if scenario == 'pipeline_frames':
+            session_root.mkdir()
+            keys = session_root / 'keys'
+            keys.write_bytes(b'')
+            out = session_root / 'output'
+            require(b'UCR_DRIVE_FAKE_PREVIEW' in Path(hooks_binary).read_bytes(), 'Thiếu hook preview')
+            with running([hooks_binary, '--out-dir', str(out), '--min-free-mb', '0',
+                          '--warmup-frames', '0'] + args, session_root, preview=keys) as (process, stderr):
+                try:
+                    poll(lambda: (out / 'sessions.csv').exists(), process, 8, 'Không mở phiên pipeline')
+                    start_pass(process, out, keys)
+                    clean_exit(process, stderr)
+                except AssertionError:
+                    if process.poll() is None:
+                        raise
+                    error = stderr_text(stderr)
+                    require(process.returncode == 1 and 'Không mở/đọc được nguồn' in error,
+                            'Pipeline trả kết quả ngoài dự kiến: ' + error)
+                    require(args[1] in error, 'Thiếu chuỗi pipeline trong stderr: ' + error)
+                    children_reaped(process)
+                    inspect_output(out, 'error', 1, 0)
+                    require(inspect_session(out)['pipeline_used'] == args[1], 'Sai pipeline thực tế')
+                    raise AssertionError('CHƯA KIỂM pipeline_frames: cần backend GStreamer; '
+                                         'thật sự chạy được ở Ubuntu/xe. stderr: ' + error)
+            _, rows = inspect_output(out, 'max_frames', 0, 3)
+            require(all((int(r['width']), int(r['height'])) == (80, 60) for r in rows),
+                    'Cỡ pipeline bị đổi')
+            require(inspect_session(out)['pipeline_used'] == args[1], 'Sai pipeline thực tế')
+            check_passes(out, ['p1'])
+            return
+
+        started = time.monotonic()
+        with collecting(hooks_binary, session_root, args, source=source, hook=hook) as run:
+            process, stderr, out, keys = run
+            if scenario == 'esc_no_pass':
+                default_off(off_snapshot(out))
+                finish_preview(process, stderr, keys)
+                inspect_output(out, 'esc', 0, 0)
+                default_off(off_snapshot(out))
+                optional = [name for name in ('passes.csv', 'frames.csv') if (out / name).exists()]
+                fixed_headers(out, optional, header_only=True)
+                fixed_headers(out, ('sessions.csv',))
+                require(len(table(out, 'sessions.csv')) == 1, 'Phải có đúng một session khi Esc chưa P')
+                return
+            if scenario in ('pass_toggle', 'off_guard', 'pass_two', 'max_frames_across_passes'):
+                if scenario == 'off_guard':
+                    observe_off(process, stderr, out, ([], [], {}), 0.45)
+                else:
+                    default_off(off_snapshot(out))
+                start_pass(process, out, keys)
+                stop_pass(process, out, keys)
+                check_passes(out, ['p1'])
+                before = off_snapshot(out)
+                # Nhịp 100 ms thường; ca tổng ảnh dùng 400 ms và quan sát > 2 nhịp.
+                observe_off(process, stderr, out, before,
+                            0.9 if scenario == 'max_frames_across_passes' else 0.45)
+                if scenario in ('pass_two', 'max_frames_across_passes'):
+                    saved = len(csv_rows(out, True))
+                    if scenario == 'max_frames_across_passes':
+                        require(saved < 6, 'Thiết lập: lượt đầu đã chạm max-frames trước P tắt')
+                    start_pass(process, out, keys, key='P', minimum=saved + 1)
+                    if scenario == 'pass_two':
+                        stop_pass(process, out, keys, 2)
+                    else:
+                        clean_exit(process, stderr)
+                    check_passes(out, ['p1', 'p2'])
+                    names = [r['filename'] for r in csv_rows(out, True)]
+                    require('p0001_0001.jpg' in names and 'p0002_0001.jpg' in names,
+                            'Không đặt lại số ảnh trong tên theo lượt mới')
+                if scenario != 'max_frames_across_passes':
+                    finish_preview(process, stderr, keys)
+            else:
+                if scenario == 'start_delay':
+                    send_preview(keys, 'p')
+                    # Khẳng định liên tục trước hạn; chờ theo đồng hồ đơn điệu.
+                    until = started + 1.8
+                    while time.monotonic() < until:
+                        require(not list(out.glob('*.jpg')), 'Ghi trước hết start-delay')
+                        require(process.poll() is None, 'Thoát trước start-delay')
+                        time.sleep(0.02)
+                else:
+                    start_pass(process, out, keys)
+                if scenario in ('escape', 'preview_ctrl_c'):
+                    finish_preview(process, stderr, keys, 'E' if scenario == 'escape' else '3')
+                elif scenario in ('signal_int', 'signal_term', 'signal_hup'):
+                    sig = {'signal_int': signal.SIGINT, 'signal_term': signal.SIGTERM,
+                           'signal_hup': signal.SIGHUP}[scenario]
+                    process.send_signal(sig)
+                    clean_exit(process, stderr)
+                else:
+                    clean_exit(process, stderr, 4 if scenario == 'stall_timeout' else 0)
+
+        reason = {'escape': 'esc', 'preview_ctrl_c': 'sigint', 'signal_int': 'sigint',
+                  'signal_term': 'sigterm', 'signal_hup': 'sighup', 'pass_toggle': 'esc',
+                  'pass_two': 'esc', 'off_guard': 'esc', 'eof': 'eof',
+                  'stall_timeout': 'stall_timeout', 'max_seconds': 'max_seconds'}.get(scenario, 'max_frames')
+        count = {'frames': 4, 'format': 1, 'session': 1, 'warmup': 5,
+                 'start_delay': 1, 'eof': 100, 'max_frames_across_passes': 6}.get(scenario)
+        summary, rows = inspect_output(out, reason, EXIT_CODES[reason], count)
+        check_passes(out, ['p1', 'p2'] if scenario in ('pass_two', 'max_frames_across_passes') else ['p1'])
+        session = inspect_session(out, values)
+        if scenario == 'frames':
+            interval = 40
+            require(session['params']['interval_ms'] == interval, 'Sai nhịp đã dùng')
+            for left, right in zip(rows, rows[1:]):
+                gap = (int(right['monotonic_ns']) - int(left['monotonic_ns'])) / 1e6
+                require(interval - 20 <= gap <= interval + 2000, 'Nhịp lưu ngoài cận dung sai: ' + str(gap))
+        if scenario == 'warmup':
+            require(summary['warmup_dropped'] == 3, 'Sai số khung warmup')
+        if scenario == 'start_delay':
+            require(int(rows[0]['monotonic_ns']) / 1e9 >= started + 1.8, 'Lưu trước start-delay')
+        if scenario in ('session', 'format'):
+            # sessions.csv giữ label và argv; metadata khác vẫn ở session.json, không thêm cột.
+            format_reference(out, root, [hooks_binary, '--out-dir', str(out), '--min-free-mb', '0',
+                             '--interval-ms', '100', '--warmup-frames', '0', '--source', str(source)] + args,
+                             values['label'], pass_store_source, pass_store_include)
+
+
+def preview_failure(binary, scenario):
+    # T32b mục 1/2: lỗi cửa sổ phải kết thúc phiên, kể cả khi chưa bấm P.
+    modes = {'preview_no_display': None, 'preview_fail_start': 'fail_start',
+             'preview_die_off': 'die_after_frame',
+             'preview_close_off': 'close_after_frame'}
+    with tempfile.TemporaryDirectory(prefix='ucr_cam_t32b_') as directory:
+        root = Path(directory)
+        source = make_source(root)
+        out = root / 'output'
+        args = [binary, '--out-dir', str(out), '--source', str(source),
+                '--min-free-mb', '0', '--warmup-frames', '0',
+                '--interval-ms', '100', '--max-seconds', '20']
+        started = time.monotonic()
+        with running(args, root, preview_mode=modes[scenario]) as (process, stderr):
+            require(process.wait(timeout=5) == 1,
+                    'Lỗi cửa sổ phải thoát mã 1: ' + stderr_text(stderr))
+            require(time.monotonic() - started <= 5,
+                    'Lỗi cửa sổ không kết thúc trong 5 giây')
+            if scenario in ('preview_no_display', 'preview_fail_start'):
+                require('cửa sổ ảnh' in stderr_text(stderr),
+                        'Thiếu chẩn đoán tiếng Việt cửa sổ ảnh: ' + stderr_text(stderr))
+            children_reaped(process)
+        inspect_output(out, 'error', 1, 0)
+        default_off(off_snapshot(out))
+        inspect_session(out)
 
 
 if __name__ == '__main__':
-    run_test(str(Path(sys.argv[1]).resolve()), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5],
-             str(Path(sys.argv[6]).resolve()))
+    require(os.name == 'posix', 'Ca runtime cần Linux/POSIX; Windows chỉ kiểm cú pháp')
+    # Kiểm ngược: 360 s dựng + 200 s baseline/probe + 20 s dọn; CTest cho 600 s.
+    limit = 580 if sys.argv[2] in ('M1', 'M2') else 100
+    def expired(signum, frame):
+        raise AssertionError('Ca vượt hạn tổng {} s'.format(limit))
+    signal.signal(signal.SIGALRM, expired)
+    signal.alarm(limit)
+    try:
+        if sys.argv[2] in ('preview_no_display', 'preview_fail_start',
+                           'preview_die_off', 'preview_close_off'):
+            preview_failure(str(Path(sys.argv[1]).resolve()), sys.argv[2])
+        else:
+            run_test(str(Path(sys.argv[1]).resolve()), sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5],
+                     str(Path(sys.argv[6]).resolve()), sys.argv[7], sys.argv[8],
+                     sys.argv[9] if len(sys.argv) > 9 else 'cmake',
+                     sys.argv[10] if len(sys.argv) > 10 else None)
+    finally:
+        signal.alarm(0)
     print('PASS ' + sys.argv[2])

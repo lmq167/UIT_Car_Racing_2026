@@ -52,16 +52,35 @@ if(BUILD_TESTING)
     if(NOT CAM_COLLECT_NM OR NOT CAM_COLLECT_LDD OR NOT CAM_COLLECT_STRINGS)
         message(FATAL_ERROR "Can nm, ldd va strings de kiem tra binary khong lien ket ma thiet bi")
     endif()
-    foreach(scenario frames signal_int signal_term signal_hup disk invalid pipeline pipeline_frames eof corrupt existing
-                     symbols symbols_harness hooks_ignored defaults out_root session max_seconds start_delay no_frame_timeout stall_timeout warmup help)
+    set(CAM_COLLECT_PASS_STORE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/../collect_common/pass_store.cpp"
+        CACHE FILEPATH "Nguon PassStore dung chung cho ca format")
+    set(CAM_COLLECT_PASS_STORE_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/../collect_common"
+        CACHE PATH "Thu muc header PassStore dung chung cho ca format")
+    foreach(scenario frames signal_int signal_term signal_hup disk disk_off invalid pipeline pipeline_frames eof corrupt existing
+                     symbols hooks_ignored defaults out_root session max_seconds start_delay no_frame_timeout stall_timeout warmup help
+                     default_off pass_toggle pass_two off_guard escape esc_no_pass preview_ctrl_c
+                     max_frames_across_passes format H1 H2 H3 M1 M2
+                     preview_no_display preview_fail_start preview_die_off preview_close_off)
         set(CAM_COLLECT_TEST_BINARY $<TARGET_FILE:ucr_collect_cam>)
         if(scenario STREQUAL "no_frame_timeout" OR scenario STREQUAL "stall_timeout" OR scenario STREQUAL "warmup")
+            set(CAM_COLLECT_TEST_BINARY $<TARGET_FILE:ucr_collect_cam_hooks>)
+        endif()
+        if(scenario STREQUAL "preview_fail_start" OR scenario STREQUAL "preview_die_off" OR scenario STREQUAL "preview_close_off")
             set(CAM_COLLECT_TEST_BINARY $<TARGET_FILE:ucr_collect_cam_hooks>)
         endif()
         add_test(NAME cam_collect_${scenario} COMMAND ${PYTHON_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/test_cam_collect.py ${CAM_COLLECT_TEST_BINARY}
             ${scenario} ${CAM_COLLECT_NM} ${CAM_COLLECT_LDD} ${CAM_COLLECT_STRINGS}
-            $<TARGET_FILE:ucr_collect_cam_hooks>)
+            $<TARGET_FILE:ucr_collect_cam_hooks>
+            "${CAM_COLLECT_PASS_STORE_SOURCE}" "${CAM_COLLECT_PASS_STORE_INCLUDE}"
+            "${CMAKE_COMMAND}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(cam_collect_${scenario} PROPERTIES TIMEOUT 120 LABELS "acceptance")
+        if(scenario MATCHES "^H[123]$")
+            set_tests_properties(cam_collect_${scenario} PROPERTIES LABELS "acceptance;harness")
+        endif()
+        if(scenario MATCHES "^M[12]$")
+            # Dựng bản lỗi -j1 tối đa 360 s, cộng baseline/probe và dọn tiến trình.
+            set_tests_properties(cam_collect_${scenario} PROPERTIES TIMEOUT 600 LABELS "acceptance")
+        endif()
     endforeach()
 endif()
