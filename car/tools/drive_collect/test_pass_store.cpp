@@ -161,6 +161,30 @@ void temporaryIgnored() {
     CHECK(fs::exists(temp.root / "p9999_0001.jpg.tmp"));
 }
 
+void initializationProgress() {
+    Temp temp;
+    for (int i = 1; i <= 257; ++i)
+        write(temp.root / ("p" + std::to_string(i) + "_0001.jpg"), "ảnh cũ");
+    int beats = 0;
+    PassStore store(temp.root, {}, [&] {
+        ++beats;
+        CHECK(!fs::exists(temp.root / "sessions.csv"));
+    });
+    CHECK(store.status()); CHECK(store.nextPass() == 258);
+    CHECK(beats >= 259); // Đầu/cuối và từng mục, không chỉ báo sau cả lượt quét.
+    CHECK(!store.active()); CHECK(!fs::exists(temp.root / ".pass_counter"));
+
+    Temp csvTemp;
+    std::string passes = passHeader;
+    for (int i = 1; i <= 1024; ++i)
+        passes += std::to_string(i) + ",start,1,0,\n";
+    write(csvTemp.root / "passes.csv", passes);
+    beats = 0;
+    PassStore csvStore(csvTemp.root, {}, [&] { ++beats; });
+    CHECK(csvStore.status()); CHECK(csvStore.nextPass() == 1025);
+    CHECK(beats >= static_cast<int>(passes.size() / 1024) + 3);
+}
+
 void states() {
     Temp temp;
     PassStore store(temp.root);
@@ -327,7 +351,7 @@ void tornAndLargeNumbers() {
 int main(int argc, char** argv) {
     const std::vector<std::pair<std::string, std::function<void()>>> tests = {
         {"format-flush", formatAndFlush}, {"counter-recovery", counterRecovery},
-        {"tmp-ignored", temporaryIgnored}, {"states", states},
+        {"tmp-ignored", temporaryIgnored}, {"init-progress", initializationProgress}, {"states", states},
         {"sessions", sessionsWithoutRememberedLabels}, {"stopped-cadence", stoppedCadence},
         {"end-preserves", endPreservesImages},
         {"write-errors", writeErrors}, {"no-overwrite-header", noOverwriteAndBadHeader},

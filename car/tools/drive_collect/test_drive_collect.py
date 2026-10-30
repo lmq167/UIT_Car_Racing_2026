@@ -1088,6 +1088,14 @@ def test_case(case, cfg, root):
                             (100 if n in (29, 30) else 0))
                     run.finish('motor_fail' if n == 34 else reason)
                     no_restart(run.events()[mark:])
+                    if n == 31:
+                        with (run.out / 'passes.csv').open(encoding='utf-8', newline='') as stream:
+                            passes = list(csv.DictReader(stream))
+                        need(len(passes) == 2 and passes[0]['event'] == 'start' and
+                             passes[1]['event'] == 'end' and
+                             passes[1]['pass'] == passes[0]['pass'] and
+                             passes[1]['end_reason'] == 'disk_low',
+                             'Hết dung lượng phải đóng lượt bằng end,disk_low')
                     if n == 34:
                         motor_failed(run.events()[mark:], run.text())
         if n == 31:

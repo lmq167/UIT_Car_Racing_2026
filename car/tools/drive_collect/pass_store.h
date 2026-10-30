@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -55,7 +56,9 @@ bool frameDue(bool stopped, int64_t elapsed_ms);
 // Mọi lỗi I/O được chốt: caller dừng xe, thoát mã 4; lớp này không điều khiển xe.
 class PassStore {
 public:
-    explicit PassStore(pass_fs::path outRoot, const SessionInfo& session = {});
+    // Callback chỉ báo tiến độ khởi tạo, không che thao tác I/O bị treo.
+    explicit PassStore(pass_fs::path outRoot, const SessionInfo& session = {},
+                       const std::function<void()>& onProgress = {});
     PassStore(const PassStore&) = delete;
     PassStore& operator=(const PassStore&) = delete;
 
@@ -82,6 +85,6 @@ private:
     void append(const char* name, const char* header, const std::string& row);
     void replace(const pass_fs::path& target, const std::string& contents);
     void event(const char* kind, int64_t ts_ms, const std::string& reason);
-    void initialize(const SessionInfo& session);
+    void initialize(const SessionInfo& session, const std::function<void()>& onProgress);
 };
 } // namespace drive_collect

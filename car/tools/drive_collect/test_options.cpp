@@ -446,21 +446,21 @@ void recordingTests() {
     int accepted = 0, rejected = 0;
     c.onRecording = [&] { ++accepted; };
     c.onRecordingRejected = [&] { ++rejected; };
-    c.key('P'); c.key('p');
+    c.key('P'); clock.time = 1000; c.key('p');
     check(accepted == 2 && events.empty(), "P lúc dừng không được ghi motor/servo");
-    c.key('w'); const auto before = events.size(); c.key('p');
+    clock.time = 2000; c.key('w'); const auto before = events.size(); c.key('p');
     check(rejected == 1 && accepted == 2 && events.size() == before, "P lúc chạy phải bị bỏ");
     c.key('s'); const auto stopped = events.size(); c.key('P');
     check(rejected == 2 && events.size() == stopped, "P khi W còn giữ phải bị bỏ");
-    clock.time = 799; c.key('P'); check(accepted == 2, "P trước hạn nhả W");
-    clock.time = 800; c.key('P'); check(accepted == 3, "P sau hạn nhả W");
-    clock.time = 810; c.key('w'); c.key('s'); clock.time = 900; c.key('w');
-    clock.time = 1610; c.key('p'); check(accepted == 3, "W bị chặn vẫn là W đang giữ");
-    clock.time = 1700; c.key('p'); check(accepted == 4, "Không nhận P sau nhả W bị chặn");
-    clock.time = 1800; c.noteW('W'); // W bị vòng nhập bỏ trước Control::key.
-    clock.time = 2599; c.key('p'); check(accepted == 4, "P nhận khi W đuôi lô chưa nhả");
-    clock.time = 2600; c.key('p'); check(accepted == 5, "P không nhận sau nhả W đuôi lô");
-    clock.time = 2700; c.rejectKeyBurst(clock.time); c.key('p');
+    clock.time = 2799; c.key('P'); check(accepted == 2, "P trước hạn nhả W");
+    clock.time = 2800; c.key('P'); check(accepted == 3, "P sau hạn nhả W");
+    clock.time = 2910; c.key('w'); c.key('s'); clock.time = 3000; c.key('w');
+    clock.time = 3710; c.key('p'); check(accepted == 3, "W bị chặn vẫn là W đang giữ");
+    clock.time = 3800; c.key('p'); check(accepted == 4, "Không nhận P sau nhả W bị chặn");
+    clock.time = 4000; c.noteW('W'); // W bị vòng nhập bỏ trước Control::key.
+    clock.time = 4799; c.key('p'); check(accepted == 4, "P nhận khi W đuôi lô chưa nhả");
+    clock.time = 4800; c.key('p'); check(accepted == 5, "P không nhận sau nhả W đuôi lô");
+    clock.time = 4900; c.rejectKeyBurst(clock.time); c.key('p');
     check(accepted == 5, "P nhận ngay sau lô bị xả có W chưa đọc");
     KeyDecoder decoder; const unsigned char bytes[] = {'P', 'p'};
     check(decoder.decode(bytes, 2, 0) == std::vector<int>({'P', 'p'}), "TTY mất P/p");
@@ -469,8 +469,30 @@ void recordingTests() {
     check(drainSafetyKeys(retained, [&] { return reads++ ? std::vector<int>{} : std::vector<int>{'p', 'P', 'x', 27, 3}; }, [] { return 0; }), "Xả lô P lỗi");
     check(retained == std::vector<int>({'x', 27, 3}), "Xả lô phải bỏ P, giữ phím an toàn");
 }
+
+void recordingRepeatTests() {
+    for (const uint64_t hold : {700u, 800u, 1000u, 2000u}) {
+        Options o; o.holdTimeout = hold;
+        FakeClock clock; std::vector<std::string> events;
+        MotorStub motor(events); ServoStub servo(events); Control c(o, motor, servo, clock);
+        int toggles = 0;
+        c.onRecording = [&] { ++toggles; };
+        const auto window = static_cast<int64_t>(std::max<uint64_t>(hold, 1000));
+        c.key('P', true, 0);
+        for (clock.time = 0; clock.time < window; clock.time += 50) {
+            c.key('p', true, clock.time); // Cùng Control cho tty và preview.
+            check(toggles == 1 && events.empty(), "P tự lặp đổi REC hoặc phát lệnh xe");
+        }
+        clock.time = window - 1; c.key('P');
+        check(toggles == 1, "P trước biên chống lặp vẫn được nhận");
+        clock.time = window; c.key('p');
+        check(toggles == 2, "P đúng biên không được nhận; phím bỏ qua đã gia hạn cửa sổ");
+        clock.time = 2 * window + 1; c.key('P');
+        check(toggles == 3 && events.empty(), "P sau cửa sổ không được nhận độc lập W/motor/servo");
+    }
+}
 }
 int main() {
-    try { recordingTests(); parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); drainTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
+    try { recordingRepeatTests(); recordingTests(); parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); drainTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

@@ -605,7 +605,7 @@ class Capture {
             drive_collect::SessionInfo session;
             session.git = UCR_DRIVE_GIT_REVISION; session.argv = o_.argv;
             session.label = o_.label; session.pipeline = o_.pipeline;
-            owner.reset(new drive_collect::PassStore(o_.outRoot, session));
+            owner.reset(new drive_collect::PassStore(o_.outRoot, session, [this] { writerBeat = nowMs(); }));
             auto& store = *owner;
             requireStore(store.status());
             nextPass_ = store.nextPass();
@@ -638,7 +638,11 @@ class Capture {
 #endif
                 if (nowMs() - checkedSpace >= 100) {
                     stats.free = freeMB(o_.out); checkedSpace = nowMs();
-                    if (stats.free < o_.minFree) { fail(2); break; }
+                    if (stats.free < o_.minFree) {
+                        fail(2);
+                        if (store.active()) store.endPass("disk_low");
+                        break;
+                    }
                 }
                 cv::Mat frame;
                 Snapshot command;

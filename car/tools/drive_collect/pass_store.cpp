@@ -67,9 +67,10 @@ bool frameDue(bool stopped, int64_t elapsed_ms) {
     return !stopped || elapsed_ms >= 2000;
 }
 
-PassStore::PassStore(pass_fs::path outRoot, const SessionInfo& session)
+PassStore::PassStore(pass_fs::path outRoot, const SessionInfo& session,
+                     const std::function<void()>& onProgress)
     : root_(std::move(outRoot)) {
-    try { initialize(session); }
+    try { initialize(session, onProgress); }
     catch (const std::exception& error) { ioError(error.what()); }
 }
 
@@ -128,7 +129,8 @@ void PassStore::append(const char* name, const char* header, const std::string& 
     output.close();
 }
 
-void PassStore::initialize(const SessionInfo& session) {
+void PassStore::initialize(const SessionInfo& session, const std::function<void()>& onProgress) {
+    if (onProgress) onProgress();
     pass_fs::create_directories(root_);
     uint64_t counter = 0, csvMax = 0, imageMax = 0, value = 0;
     if (pass_fs::exists(root_ / ".pass_counter")) {
@@ -142,6 +144,7 @@ void PassStore::initialize(const SessionInfo& session) {
         std::string first;
         bool quoted = false, firstColumn = true;
         for (size_t i = 0; i < text.size(); ++i) {
+            if (i % 1024 == 0 && onProgress) onProgress();
             const char ch = text[i];
             if (ch == '"') {
                 if (quoted && i + 1 < text.size() && text[i + 1] == '"') ++i;
@@ -155,6 +158,7 @@ void PassStore::initialize(const SessionInfo& session) {
         }
     }
     for (const auto& entry : pass_fs::directory_iterator(root_)) {
+        if (onProgress) onProgress();
         const std::string name = entry.path().filename().string();
         const auto underscore = name.find('_');
         if (name.size() > 5 && name[0] == 'p' && underscore != std::string::npos &&
@@ -162,6 +166,7 @@ void PassStore::initialize(const SessionInfo& session) {
             pass_fs::is_regular_file(entry.path()) &&
             number(name.substr(1, underscore - 1), value)) imageMax = std::max(imageMax, value);
     }
+    if (onProgress) onProgress();
     const uint64_t maximum = std::max({counter, csvMax, imageMax});
     if (maximum == std::numeric_limits<uint64_t>::max()) {
         status_ = {StoreError::Exhausted, "Đã hết số lượt"};

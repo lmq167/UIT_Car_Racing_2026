@@ -250,6 +250,7 @@ class Control {
     bool awaitingPress_ = false;
     int64_t lastHeld_ = 0, lastW_ = 0, motor0Done_ = 0;
     int64_t lastWInput_ = -1;
+    int64_t lastRecordingInput_ = -1;
     void requireFreshPress() {
         awaitingPress_ = true;
         lastHeld_ = clock_.nowMs();
@@ -412,7 +413,13 @@ public:
     void key(int k, bool cameraReady = true, int64_t readAt = -1) {
         // P chỉ gửi yêu cầu ghi, không gọi đường điều khiển motor/servo hay gia hạn W.
         if (recordingKey(k)) {
-            if (canToggleRecording()) { if (onRecording) onRecording(); }
+            const auto now = clock_.nowMs();
+            if (lastRecordingInput_ >= 0 &&
+                now - lastRecordingInput_ < static_cast<int64_t>(std::max<uint64_t>(o_.holdTimeout, 1000))) return;
+            if (canToggleRecording()) {
+                lastRecordingInput_ = now;
+                if (onRecording) onRecording();
+            }
             else if (onRecordingRejected) onRecordingRejected();
             return;
         }
