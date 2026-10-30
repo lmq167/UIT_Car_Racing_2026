@@ -23,7 +23,9 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <exception>
 #include <poll.h>
+#include <pthread.h>
 #include <spawn.h>
 #include <sys/file.h>
 #include <sys/socket.h>
@@ -60,6 +62,27 @@ std::string utcNow() {
 struct Failure : std::runtime_error {
     int code;
     Failure(int c, const std::string& message) : std::runtime_error(message), code(c) {}
+};
+struct SignalStop {}; // Tín hiệu tới trong lúc Init: thoát mã 0 qua đường dừng chung.
+// Chép từ drive_collect: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
+// Tạo trước luồng watchdog để luồng đó thừa hưởng mặt nạ; tín hiệu chờ sẽ tới luồng chính sau restore().
+class InitSignalMask {
+    sigset_t original_{};
+    bool active_ = true;
+public:
+    InitSignalMask() {
+        sigset_t blocked;
+        sigemptyset(&blocked);
+        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) sigaddset(&blocked, s);
+        if (pthread_sigmask(SIG_BLOCK, &blocked, &original_) != 0)
+            throw Failure(1, "Không chặn được tín hiệu lúc Init");
+    }
+    void restore() {
+        if (active_ && pthread_sigmask(SIG_SETMASK, &original_, nullptr) != 0)
+            throw Failure(1, "Không khôi phục được mặt nạ tín hiệu");
+        active_ = false;
+    }
+    ~InitSignalMask() { if (active_) pthread_sigmask(SIG_SETMASK, &original_, nullptr); }
 };
 void warning() noexcept {
     const char text[] = "KIEM TRA XE, DUNG CONG TAC NGUON\n";
@@ -282,8 +305,23 @@ struct DriveServo {
         return device.SetAngle(static_cast<int16_t>(a));
 #endif
     }
-    bool SetAngle(int a) { HardwareCall call(2); return rawAngle(a); }
+    bool SetAngle(int a) {
+        HardwareCall call(2);
+        if (hardwareFault) return false; // Như motor: watchdog đã nhận quyền dừng.
+        return rawAngle(a);
+    }
 };
+// Chép từ drive_collect (emergencyTerminate): ngoại lệ không bắt được vẫn dừng motor rồi abort.
+DriveMotor* terminateMotor = nullptr;
+void emergencyTerminate() noexcept {
+    hardwareFault = true;
+    if (terminateMotor) {
+        terminateMotor->EmergencyStop();
+        for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); terminateMotor->EmergencyStop(); }
+    }
+    warning();
+    std::abort();
+}
 class Watchdog {
     DriveMotor& motor_;
     DriveServo& servo_;
@@ -299,6 +337,8 @@ class Watchdog {
             }).detach();
         } catch (...) { motor_.EmergencyStop(); _exit(code); }
         motor_.EmergencyStop();
+        // Như drive_collect: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
+        for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); motor_.EmergencyStop(); }
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }
         warning();
@@ -656,6 +696,7 @@ public:
 
 int collect(const Options& o, const Paths& paths, int lockFd, const std::string& host, int argc, char** argv) {
     DriveMotor motor(o.reverseMotor);
+    terminateMotor = &motor;
     DriveServo servo;
     Control control(motor, servo);
     std::unique_ptr<Camera> camera;
@@ -669,6 +710,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         camera.reset(new Camera(lockFd));
         if (preview.start() != drive::PreviewStartResult::Started)
             throw Failure(1, "Không chạy được cửa sổ ảnh: " + preview.diagnostic());
+        InitSignalMask initMask;
         watchdog.reset(new Watchdog(motor, servo, paths));
         trace("state", "DUNG");
         motorAttempted = true;
@@ -676,6 +718,8 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         if (!motor.SetSpeedCms(0)) throw Failure(1, "Không xác nhận motor 0 sau Init");
         if (!servo.open()) throw Failure(1, "Không mở được servo/PWM");
         if (!servo.SetAngle(0)) throw Failure(1, "Không trả được servo 0 sau motor 0");
+        initMask.restore();
+        if (stopping) throw SignalStop{}; // Xử lý ngay tín hiệu tới trong lúc Init.
         watchdog->heartbeat = nowMs(); watchdog->initialized = true;
         const auto started = nowMs();
         writer.reset(new Writer(o, host, utcNow(), argc, argv));
@@ -737,7 +781,8 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
                 nextSave = nowMs() + o.interval;
             }
         }
-    } catch (const Failure& e) { code = e.code; error = e.what(); }
+    } catch (const SignalStop&) {}
+    catch (const Failure& e) { code = e.code; error = e.what(); }
     catch (const std::exception& e) { code = 1; error = e.what(); }
     catch (...) { code = 1; error = "Ngoại lệ không xác định"; }
 
@@ -748,10 +793,10 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
     bool stopped = false;
     if (motorAttempted) stopped = control.stop();
     else {
-        const bool motorOk = motor.EmergencyStop();
-        bool servoOk = false;
-        try { servoOk = servo.SetAngle(0); } catch (...) {}
-        stopped = motorOk && servoOk;
+        // Chưa Init/mở servo nên chưa có lệnh nào; vẫn thử motor 0 rồi servo 0, chỉ tính kết quả motor
+        // (servo chưa mở luôn báo lỗi, tránh cảnh báo KIEM TRA XE sai; ucr_stop chạy sau vẫn đặt servo).
+        stopped = motor.EmergencyStop();
+        try { servo.SetAngle(0); } catch (...) {}
     }
     if (!stopped) { if (!code) code = 1; warning(); }
     if (watchdog) watchdog->cleanupCode = hungCode();
@@ -769,6 +814,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         writer.reset();
     }
     if (!error.empty()) std::cerr << "Lỗi: " << error << '\n';
+    terminateMotor = nullptr; // motor sắp hủy cùng hàm này.
     return code;
 }
 } // namespace
@@ -776,6 +822,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
 int main(int argc, char** argv) {
     // Như drive_collect: OpenCV một luồng trước mọi fork (preview.cpp dựa vào điều này, tránh TBB treo sau fork).
     cv::setNumThreads(1);
+    std::set_terminate(emergencyTerminate);
     Options o;
     try { o = parse(argc, argv); }
     catch (const std::exception& e) { std::cerr << "Lỗi tham số: " << e.what() << '\n'; return 2; }
@@ -787,7 +834,8 @@ int main(int argc, char** argv) {
         return 0;
     }
     struct sigaction action{}; action.sa_handler = signalStop; sigemptyset(&action.sa_mask);
-    for (int s : {SIGINT, SIGTERM, SIGHUP}) {
+    // Như drive_collect: cả SIGQUIT/SIGTSTP đi đường dừng (bắt SIGTSTP nên tiến trình không bị treo dừng).
+    for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) {
         if (sigaction(s, &action, nullptr) != 0) return 1;
     }
     signal(SIGPIPE, SIG_IGN);
