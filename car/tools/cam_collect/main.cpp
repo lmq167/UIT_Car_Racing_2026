@@ -1,4 +1,6 @@
 #include "options.h"
+#include "../collect_common/pass_store.h"
+#include "../collect_common/preview.h"
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -13,6 +15,7 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -142,15 +145,19 @@ class Capture {
     pid_t pid_ = -1, watchdog_ = -1;
     Clock::time_point lastValid_, end_;
     std::chrono::milliseconds timeout_;
+    std::function<bool()> tick_;
+    bool started_ = false;
 public:
-    Capture(const Options& o, Clock::time_point started, Clock::time_point end, int64_t timeout)
-        : lastValid_(started), end_(end), timeout_(timeout) {
+    Capture(const Options& o, Clock::time_point started, Clock::time_point end, int64_t timeout, const std::function<bool()>& tick)
+        : lastValid_(started), end_(end), timeout_(timeout), tick_(tick) {
         int sockets[2];
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) != 0) throw std::runtime_error("Không tạo được kênh đọc camera");
         pid_ = fork();
         if (pid_ == 0) {
             ::close(sockets[0]);
-            try { captureWorker(sockets[1], o); }
+            // Chờ preview khởi động xong rồi mới cho OpenCV mở camera.
+            char ready;
+            try { if (::recv(sockets[1], &ready, 1, 0) == 1) captureWorker(sockets[1], o); }
             catch (...) { ::close(sockets[1]); _exit(1); }
             ::close(sockets[1]);
             _exit(0);
@@ -225,6 +232,7 @@ public:
     bool receive(void* data, size_t size) {
         auto* p = static_cast<char*>(data);
         while (size && !stopping) {
+            if (!tick_()) return false;
             const auto now = Clock::now();
             if (now >= end_ && end_ <= lastValid_ + timeout_) return false;
             if (watchdogExpired || now >= lastValid_ + timeout_) throw WatchdogTimeout();
@@ -249,6 +257,10 @@ public:
     bool read(cv::Mat& frame, Header& h) {
         if (watchdogExpired) throw WatchdogTimeout();
         const char request = 1;
+        if (!started_) {
+            if (!sendAll(fd_, &request, 1)) return false;
+            started_ = true;
+        }
         if (!sendAll(fd_, &request, 1)) {
             if (stopping) return false;
             // Tiến trình đọc có thể đã báo lỗi mở nguồn rồi đóng kênh; đọc lý do còn trong bộ đệm.
@@ -371,7 +383,7 @@ void writeSummary(const Options& o, const Stats& s, double elapsed) {
     fs::rename(o.out / "summary.json.tmp", o.out / "summary.json");
 }
 
-int collect(Options o, Clock::time_point started, const std::string& startedUtc) {
+int collect(Options o, Clock::time_point started, const std::string& startedUtc, int argc, char** argv) {
     fs::create_directories(o.out.parent_path().empty() ? fs::path(".") : o.out.parent_path());
     const auto base = o.out;
     for (uint64_t suffix = 2; ; ++suffix) {
@@ -382,7 +394,13 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc)
         o.out = base.string() + '_' + std::to_string(suffix);
     }
     Stats stats;
-    std::ofstream csv;
+    std::unique_ptr<drive_collect::PassStore> store;
+    drive::PreviewHost preview(drive::PreviewOptions{});
+    std::unique_ptr<Capture> capture;
+    bool recording = false;
+    const auto requireStore = [](const drive_collect::StoreStatus& status) {
+        if (!status) throw std::runtime_error(status.message);
+    };
     const auto end = o.maxSeconds ? started + std::chrono::seconds(o.maxSeconds) : Clock::time_point::max();
     const auto saveAfter = started + std::chrono::seconds(o.startDelay);
     auto nextSave = saveAfter;
@@ -414,6 +432,32 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc)
                 warned = true;
             }
         }
+        if (store) {
+            for (unsigned char key : preview.pollKeys()) {
+                if (key == 'E' || key == '3') {
+                    stats.reason = key == 'E' ? "esc" : "sigint";
+                    return false;
+                }
+                if (key == 'p' || key == 'P') {
+                    recording = !recording;
+                    if (recording) {
+                        requireStore(store->beginPass(wallMs()));
+                        dropped = 0;
+                    } else requireStore(store->endPass("p", wallMs()));
+                }
+            }
+            const auto child = preview.pollChild();
+            if (child == drive::PreviewChildStatus::Closed || child == drive::PreviewChildStatus::Died) {
+                std::cerr << "Lỗi: Cửa sổ ảnh đã đóng hoặc tiến trình hiển thị đã dừng\n";
+                stats.reason = "error";
+                return false;
+            }
+            drive::PreviewState state;
+            state.recording = recording;
+            state.pass = store->active() ? store->pass() : store->nextPass();
+            state.images = stats.saved;
+            preview.publishState(state);
+        }
         if (now >= nextProgress) {
             const double elapsed = std::chrono::duration<double>(now - started).count();
             std::cerr << "tien do: saved=" << stats.saved << " read_fps=" << stats.read / elapsed
@@ -429,9 +473,14 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc)
     try {
         stats.freeStart = stats.freeEnd = freeMB(o.out);
         writeSession(o, startedUtc, "");
-        csv.exceptions(std::ios::badbit | std::ios::failbit);
-        csv.open((o.out / "metadata.csv").string());
-        csv << "frame,monotonic_ns,wall_time_unix_ms,filename,width,height,mean_luma,lap_var,dropped_since_last\n" << std::flush;
+        drive_collect::SessionInfo session;
+        session.git = UCR_CAM_GIT_REVISION;
+        session.argv.assign(argv, argv + argc);
+        session.label = o.label;
+        session.pipeline = o.source.empty() ? o.pipeline : "source:" + o.source.string();
+        store.reset(new drive_collect::PassStore(o.out, session));
+        requireStore(store->status());
+        if (recording) requireStore(store->beginPass(wallMs()));
         if (tick()) {
             std::vector<fs::path> images;
             const bool directory = !o.source.empty() && fs::is_directory(o.source);
@@ -444,52 +493,66 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc)
                 }
                 std::sort(images.begin(), images.end());
             }
-            std::unique_ptr<Capture> capture;
-            if (!directory) capture.reset(new Capture(o, started, end, timeoutMs()));
+            // Tạo hết tiến trình khi cha chưa có luồng; camera chờ yêu cầu đọc đầu tiên.
+            if (!directory) capture.reset(new Capture(o, started, end, timeoutMs(), tick));
+            if (preview.start() == drive::PreviewStartResult::Unavailable)
+                throw std::runtime_error("Không mở được cửa sổ ảnh; cần màn hình có cửa sổ ảnh / DISPLAY: " + preview.diagnostic());
             size_t index = 0;
+            cv::Mat pending;
             while (tick()) {
                 if (o.maxFrames && stats.saved >= o.maxFrames) { stats.reason = "max_frames"; break; }
                 cv::Mat frame;
                 Header h{};
                 if (directory) {
-                    if (index == images.size()) { stats.reason = "eof"; break; }
-                    while (Clock::now() < nextSave && tick()) std::this_thread::sleep_for(10ms);
-                    if (!tick()) break;
-                    const auto path = images[index++];
-                    frame = cv::imread(path.string(), cv::IMREAD_COLOR);
-                    if (frame.empty()) { ++stats.empty; throw std::runtime_error("Không đọc được ảnh: " + path.string()); }
+                    if (index == images.size()) {
+                        if (recording) { stats.reason = "eof"; break; }
+                        std::this_thread::sleep_for(10ms);
+                        continue;
+                    }
+                    if (pending.empty()) {
+                        pending = cv::imread(images[index].string(), cv::IMREAD_COLOR);
+                        if (pending.empty()) { ++stats.empty; throw std::runtime_error("Không đọc được ảnh: " + images[index].string()); }
+                        ++stats.read;
+                    }
+                    frame = pending;
                     h.monotonicNs = monotonicNs(); h.wallMs = wallMs();
                 } else {
                     if (!capture->read(frame, h)) {
-                        stats.reason = stopping ? signalReason() : "max_seconds";
+                        if (stopping) stats.reason = signalReason();
                         break;
                     }
                     if (h.status == -1) { stats.reason = "eof"; break; }
                     if (h.status == 0) { ++stats.empty; continue; }
+                    ++stats.read;
                 }
-                ++stats.read;
+                preview.publishFrame(frame, h.monotonicNs / 1000000);
                 if (!directory && stats.warmup < o.warmup) { ++stats.warmup; continue; }
                 if (!tick()) break;
-                if (Clock::now() < nextSave) { ++dropped; continue; }
+                if (!store->active()) {
+                    if (directory) std::this_thread::sleep_for(10ms);
+                    continue;
+                }
+                if (Clock::now() < nextSave) {
+                    ++dropped;
+                    if (directory) std::this_thread::sleep_for(10ms);
+                    continue;
+                }
                 const auto quality = imageQuality(frame);
-                std::ostringstream filename;
-                filename << "frame_" << std::setw(8) << std::setfill('0') << stats.saved + 1 << ".jpg";
-                const auto target = o.out / filename.str();
-                const fs::path temp = target.string() + ".tmp";
                 std::vector<unsigned char> encoded;
                 if (!cv::imencode(".jpg", frame, encoded, {cv::IMWRITE_JPEG_QUALITY, o.quality}))
                     throw std::runtime_error("Không mã hoá được ảnh JPEG");
-                std::ofstream image;
-                image.exceptions(std::ios::badbit | std::ios::failbit);
-                image.open(temp.string(), std::ios::binary);
-                image.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
-                image.close();
-                fs::rename(temp, target);
+                if (stopping) { stats.reason = signalReason(); break; }
+                drive_collect::CaptureColumns columns;
+                columns.frame = stats.saved + 1; columns.monotonic_ns = h.monotonicNs;
+                columns.width = frame.cols; columns.height = frame.rows;
+                columns.mean_luma = quality.first; columns.lap_var = quality.second;
+                columns.dropped_since_last = dropped;
+                columns.cmd_speed = 0; columns.cmd_steer = 0; columns.state = "DUNG";
+                requireStore(store->saveFrame(encoded, h.wallMs, columns));
                 stats.width = frame.cols; stats.height = frame.rows;
                 ++stats.saved; stats.bytes += encoded.size();
                 ++stats.sizes[{stats.width, stats.height}];
-                csv << std::setprecision(12) << stats.saved << ',' << h.monotonicNs << ',' << h.wallMs << ',' << filename.str()
-                    << ',' << stats.width << ',' << stats.height << ',' << quality.first << ',' << quality.second << ',' << dropped << '\n' << std::flush;
+                if (directory) { ++index; pending.release(); }
                 dropped = 0;
                 nextSave = Clock::now() + std::chrono::milliseconds(o.interval);
             }
@@ -504,8 +567,11 @@ int collect(Options o, Clock::time_point started, const std::string& startedUtc)
         stats.reason = "error";
     }
     if (stopping) stats.reason = signalReason();
-    try { if (csv.is_open()) { csv.flush(); csv.close(); } }
-    catch (const std::exception& e) { std::cerr << "Lỗi đóng CSV: " << e.what() << '\n'; stats.reason = "error"; }
+    try { if (store && store->active()) requireStore(store->endPass(stats.reason, wallMs())); }
+    catch (const std::exception& e) { std::cerr << "Lỗi đóng lượt: " << e.what() << '\n'; stats.reason = "error"; }
+    recording = false;
+    preview.shutdown();
+    capture.reset();
     try { stats.freeEnd = freeMB(o.out); }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; stats.reason = "error"; }
     try { writeSession(o, startedUtc, utcNow()); }
@@ -543,6 +609,6 @@ int main(int argc, char** argv) {
     Options options;
     try { options = parse(argc, argv); }
     catch (const std::exception& e) { std::cerr << "Lỗi tham số: " << e.what() << '\n'; return 2; }
-    try { return collect(options, started, startedUtc); }
+    try { return collect(options, started, startedUtc, argc, argv); }
     catch (const std::exception& e) { std::cerr << "Lỗi: " << e.what() << '\n'; return 1; }
 }
