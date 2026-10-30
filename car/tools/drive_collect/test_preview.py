@@ -150,7 +150,7 @@ def blocked_display(case, cfg, root):
         run.wait(lambda: len(run.rows()) >= rows + 2, 3, 'Preview chặn ghi ảnh')
         run.pump = False
         mark = len(run.events())
-        key = run.key('S')
+        key = run.key(' ')
         d.stop_by(run, mark, key[0])
         run.drive()
         mark = len(run.events())
@@ -195,7 +195,7 @@ def child_loss(case, cfg, root):
         d.held_then_fresh(run, len(run.events()))
         run.pump = False
         mark = len(run.events())
-        run.key('S')
+        run.key(' ')
         run.event('motor_speed', 0, mark)
         rows = len(run.rows())
         run.wait(lambda: len(run.rows()) > rows, 3, 'Không ghi ảnh sau khi mất preview')
@@ -218,7 +218,7 @@ def key_effects(events):
     expected = [('W', ('motor_speed', 5)),
                 ('A', ('servo_angle', 5)), ('A', ('servo_angle', 10)),
                 ('D', ('servo_angle', 5)), ('C', ('servo_angle', 0)),
-                ('A', ('servo_angle', 5)), ('S', ('motor_speed', 0)),
+                ('A', ('servo_angle', 5)), (' ', ('motor_speed', 0)),
                 ('W', ('motor_speed', 5)), (' ', ('motor_speed', 0)),
                 ('W', ('motor_speed', 5)), ('X', ('motor_speed', 0)),
                 ('W', None),
@@ -236,8 +236,8 @@ def key_effects(events):
         chunk = events[index:end]
         if effect:
             d.need(d.matched(chunk, *effect), 'Thiếu hiệu lực phím ' + wanted, 'window_keys')
-        if wanted == 'S' or wanted == ' ':
-            d.need(not d.matched(chunk, 'servo_angle', 0), 'S/Space làm mất góc', 'window_keys')
+        if wanted == ' ':
+            d.need(not d.matched(chunk, 'servo_angle', 0), 'Space làm mất góc', 'window_keys')
         if wanted == 'X':
             d.ordered_stop(chunk, 'window_keys')
             d.need(d.matched(chunk, 'state', 'DUNG'), 'X không về DUNG', 'window_keys')
@@ -246,8 +246,8 @@ def key_effects(events):
 
 
 def window_keys(cfg, root):
-    # '?' vô hại, kéo giãn 100 ms giữa phím; trước S chưa hết deadman 800 ms.
-    sequence = 'WAADCASW WXWWDC'
+    # '?' vô hại, kéo giãn 100 ms giữa phím; trước Space chưa hết deadman 800 ms.
+    sequence = 'WAADCA W WXWWDC'
     for source in ('window', 'terminal'):
         for end, code, reason in (('E', 0, 'esc'), ('3', 130, 'sigint')):
             stream = '?' * 200 + ''.join(key + '?' * (45 if i in (6, 8, 11) else 4)
@@ -324,7 +324,7 @@ def queue_fresh(rows, stop_ms):
 
 def queue_stop_key(events, key):
     # Vết ghi byte đã giải mã: E thành ESC, 3 thành Ctrl+C (0x03).
-    names = {'E': ('E', 'ESC'), '3': ('3', '\x03')}.get(key, (key,))
+    names = {'E': ('E', 'ESC'), '3': ('3', '\x03'), ' ': (' ', 'SPACE')}.get(key, (key,))
     return next((e for e in events if e[1] == 'key' and str(e[2]).upper() in names), None)
 
 
@@ -341,7 +341,7 @@ def terminal_pending(run):
 def queues(cfg, root):
     """§4: dồn byte vào CẢ HAI nguồn khi cha tạm ngừng; không có W mới sau resume."""
     for source in ('terminal', 'window'):
-        for key in ('S', 'X', 'E'):
+        for key in (' ', 'X', 'E'):
             stream = '?' * 200 + 'w' + ('w' * 3 + key + 'w' * 30
                                                    if source == 'window' else 'w' * 200)
             with preview(cfg, root / (source + key), 'keys:' + stream) as run:
@@ -349,7 +349,7 @@ def queues(cfg, root):
                 queue_pause(run, pid)
                 run.boot()
                 os.kill(pid, signal.SIGCONT)
-                running = run.event('state', 'CHAY', seconds=10)
+                running = run.event('state', 'CHAY_TIEN', seconds=10)
                 d.need(d.matched(run.events(), 'motor_speed', 5),
                        'Dựng P08 sai: CHAY chưa có lệnh tiến', 'setup')
                 run.pump = False
@@ -635,7 +635,7 @@ def no_close_driving(cfg, root):
         mark = len(run.events())
 
         def unchanged():
-            same_preview(run, pid, token, 'CHAY')
+            same_preview(run, pid, token, 'CHAY_TIEN')
             no_zero(run.events()[mark:])
 
         run.observe(2, unchanged)
@@ -880,7 +880,7 @@ def self_check():
         else:
             raise AssertionError('Không bắt W tồn đọng dù guard chặn motor')
     queue_fresh([], 100)
-    queue_fresh([dict(reason='key_s', t_trigger_ms='90'),
+    queue_fresh([dict(reason='key_space', t_trigger_ms='90'),
                  dict(reason='frame_stale', t_trigger_ms='101')], 100)
     for stamp in ('99', '100'):
         try:
@@ -889,7 +889,7 @@ def self_check():
             assert error.tag == 'setup'
         else:
             raise AssertionError('Không bắt frame_stale trước phím dừng')
-    for key, names in (('S', ('s', 'S')), ('X', ('x', 'X')), ('E', ('E', 'ESC')),
+    for key, names in ((' ', (' ', 'SPACE')), ('X', ('x', 'X')), ('E', ('E', 'ESC')),
                        ('3', ('3', '\x03'))):
         for name in names:
             event = (101, 'key', name, False)
@@ -904,7 +904,7 @@ def self_check():
     operations = [('W', ('motor_speed', 5)),
                   ('A', ('servo_angle', 5)), ('A', ('servo_angle', 10)),
                   ('D', ('servo_angle', 5)), ('C', ('servo_angle', 0)),
-                  ('A', ('servo_angle', 5)), ('S', ('motor_speed', 0)),
+                  ('A', ('servo_angle', 5)), (' ', ('motor_speed', 0)),
                   ('W', ('motor_speed', 5)), (' ', ('motor_speed', 0)),
                   ('W', ('motor_speed', 5)), ('X', ('motor_speed', 0)),
                   ('W', None),
@@ -963,7 +963,7 @@ def self_check():
             (folder / row['filename']).write_bytes(jpeg)
         recording(rows, folder)
         bad_rows = []
-        for key, value in (('width', '640'), ('state', 'CHAY'), ('cmd_speed', '5'),
+        for key, value in (('width', '640'), ('state', 'CHAY_TIEN'), ('cmd_speed', '5'),
                            ('cmd_steer', '5'), ('monotonic_ns', '2999999999'),
                            ('monotonic_ns', '1100000000'), ('filename', rows[0]['filename'])):
             altered = [dict(row) for row in rows]

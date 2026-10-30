@@ -46,8 +46,8 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 114)]
-CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09', 'M10', 'M11', 'M12', 'M13']
+CASES += ['D{:02d}'.format(n) for n in range(65, 122)]
+CASES += ['M{:02d}'.format(n) for n in range(1, 17)]
 
 
 class SafetyFailure(AssertionError):
@@ -117,18 +117,27 @@ def init_sequence(events, required=False, complete=False):
             zero_motor = index
         if zero_motor is not None and index > zero_motor and kind == 'servo_angle' and value == 0 and not failed:
             pair_done = index
-        if kind == 'key' or (kind == 'motor_speed' and value > 0):
+        if kind == 'key' or (kind == 'motor_speed' and value != 0):
             need(pair_done is not None and index > pair_done,
                  'Xử lý phím/lệnh tiến trước cặp dừng thành công sau Init', 'init_order')
     if complete:
         need(pair_done is not None, 'Thiếu motor 0 rồi servo 0 thành công sau Init', 'init_order')
 
 
-def limits(events, moving=True, max_steer=40):
-    for _, kind, value, _ in events:
+def limits(events, moving=True, max_steer=40, reverse_speed=3, hold=800):
+    state, last_s = 'DUNG', None
+    for stamp, kind, value, _ in events:
+        if kind == 'state':
+            state = value
+        if kind == 'key' and str(value).upper() == 'S':
+            last_s = stamp
         if kind == 'motor_speed':
-            need(0 <= value <= (5 if moving else 0), 'Tốc độ bị cấm: ' + str(value),
+            need(-min(reverse_speed, 5) <= value <= 5 if moving else value == 0,
+                 'Tốc độ bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'speed_limit')
+            if value < 0:
+                need(state == 'CHAY_LUI' and last_s is not None and 0 <= stamp - last_s < hold,
+                     'Lùi ngoài CHAY_LUI hoặc không có S tươi', 'speed_limit')
         if kind == 'servo_angle':
             need(abs(value) <= (max_steer if moving else 0), 'Góc bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'steer_limit')
@@ -229,10 +238,17 @@ class Run:
         self.log = tempfile.TemporaryFile()
         self.next_w = 0
         self.pump = False
+        self.pump_key = 'W'
         self.command_speed = 5
+        self.reverse_speed = 3
         self.max_steer = 40
         self.hold_timeout = 800
         for index, value in enumerate(args[:-1]):
+            if value in ('--reverse-speed-cms', '--max-steer-deg'):
+                try:
+                    setattr(self, 'reverse_speed' if value == '--reverse-speed-cms' else 'max_steer', float(args[index + 1]))
+                except ValueError:
+                    pass
             if value == '--hold-timeout-ms':
                 try:
                     self.hold_timeout = int(args[index + 1])
@@ -321,7 +337,7 @@ class Run:
 
     def pulse(self):
         if self.pump and self.process.poll() is None and time.monotonic() >= self.next_w:
-            self.send('W')
+            self.send(self.pump_key)
             self.next_w = time.monotonic() + 0.10
 
     def key(self, key):
@@ -362,12 +378,12 @@ class Run:
         events = self.events()
         states = matched(events, 'state')
         stopped = states and states[-1][1][2] == 'DUNG'
-        resumed = any(e[1] == 'state' and e[2] == 'CHAY' for e in events) or any(
-            e[1] == 'key' and str(e[2]).upper() in ('X', 'S', ' ', 'SPACE') for e in events)
+        resumed = any(e[1] == 'state' and e[2] in ('CHAY_TIEN', 'CHAY_LUI') for e in events) or any(
+            e[1] == 'key' and str(e[2]).upper() in ('X', ' ', 'SPACE') for e in events)
         if stopped and resumed:
             self.pump = False
             relevant = [e[0] for e in events if (e[1] == 'motor_speed' and e[2] == 0) or
-                        (e[1] == 'key' and str(e[2]).upper() in ('W', 'A', 'D', 'C'))]
+                        (e[1] == 'key' and str(e[2]).upper() in ('W', 'S', 'A', 'D', 'C'))]
             end = max(relevant) + self.hold_timeout + 40
             self.observe(max(0, (end - monotonic_ms()) / 1000))
 
@@ -376,7 +392,7 @@ class Run:
         mark = len(self.events())
         self.key('W')
         event = self.event('motor_speed', self.speed(), mark)
-        self.wait(lambda: matched(self.events(), 'state')[-1][1][2] == 'CHAY',
+        self.wait(lambda: matched(self.events(), 'state')[-1][1][2] == 'CHAY_TIEN',
                   message='Trạng thái gần nhất không phải CHAY')
         return event
 
@@ -427,7 +443,7 @@ class Run:
         expected = {REASONS[reason]} if codes is None else set(codes)
         need(code in expected, 'Mã thoát {} cần {}: {}'.format(code, expected, self.text()))
         events = self.events()
-        limits(events, max_steer=self.max_steer)
+        limits(events, max_steer=self.max_steer, reverse_speed=self.reverse_speed, hold=self.hold_timeout)
         if cleanup:
             final_stop(events)
         if reason != 'esc' and hasattr(self, 'stop_mark'):
@@ -452,7 +468,7 @@ class Run:
         xs = sum(1 for e in events if e[1] == 'key' and str(e[2]).upper() == 'X')
         need(summary['emergency_stops'] == xs, 'Sai bộ đếm X')
         if reason not in ('motor_fail', 'servo_fail'):
-            max_speed = max([0] + [e[2] for e in events if e[1] == 'motor_speed' and not e[3]])
+            max_speed = max([0] + [abs(e[2]) for e in events if e[1] == 'motor_speed' and not e[3]])
             max_steer = max([0] + [abs(e[2]) for e in events if e[1] == 'servo_angle' and not e[3]])
             need(summary['max_speed_cmd'] == max_speed and summary['max_steer_abs_cmd'] == max_steer,
                  'Sai cực đại tốc độ/góc: ' + repr(summary))
@@ -472,9 +488,10 @@ class Run:
             filenames.add(name)
             size, _ = read_jpeg(self.out / name)
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
-            need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= self.max_steer,
+            need(-min(self.reverse_speed, 5) <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= self.max_steer,
                  'Lệnh CSV ngoài giới hạn')
-            need(row['state'] in ('DUNG', 'CHAY'), 'Trạng thái CSV sai')
+            need(row['state'] in ('DUNG', 'CHAY_TIEN', 'CHAY_LUI'), 'Trạng thái CSV sai')
+            need((float(row['cmd_speed']) < 0) == (row['state'] == 'CHAY_LUI'), 'Dấu lệnh CSV không khớp trạng thái')
         return summary, rows
 
     def close(self):
@@ -538,7 +555,7 @@ def stop_by(run, mark, start_ms, allowance=0, tag='fault_stop'):
     need(stops and stops[0][0] <= deadline, 'Dừng quá hạn {:.1f} ms'.format(deadline), tag)
     after = run.events()[mark:]
     first = next(i for i, e in enumerate(after) if e == stops[0])
-    need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in after[first + 1:]),
+    need(not any(e[1] == 'motor_speed' and e[2] != 0 for e in after[first + 1:]),
          'Tự chạy lại sau lỗi')
     return stops[0]
 
@@ -548,17 +565,18 @@ def rejected(cfg, root, args, code=2, accepted=True, env=None, pipe=False):
         try:
             run.wait(lambda: run.process.poll() is not None, 10, 'Không từ chối đầu vào', alive=False)
         except SafetyFailure as error:
-            if '--speed-cms' in args:
-                raise SafetyFailure('speed_reject', str(error))
+            if '--speed-cms' in args or '--reverse-speed-cms' in args:
+                raise SafetyFailure('reverse_reject' if '--reverse-speed-cms' in args else 'speed_reject', str(error))
             raise
         need(run.process.returncode == code, 'Cần mã {} thay vì {}: {}'.format(
-            code, run.process.returncode, run.text()), 'speed_reject' if '--speed-cms' in args else 'contract')
+            code, run.process.returncode, run.text()), 'reverse_reject' if '--reverse-speed-cms' in args else
+             'speed_reject' if '--speed-cms' in args else 'contract')
         need(run.text().strip(), 'Không giải thích lý do từ chối')
         limits(run.events(), moving=False)
 
 
 def motion_quiet(events, tag='fresh_press'):
-    need(not any((e[1] == 'motor_speed' and e[2] > 0) or
+    need(not any((e[1] == 'motor_speed' and e[2] != 0) or
                  (e[1] == 'servo_angle' and e[2] != 0) for e in events),
          'Phím giữ cũ làm xe chạy/lái lại trước khi im đủ H', tag)
 
@@ -685,7 +703,8 @@ def burst_case(n, cfg, root):
         return
     if n == 100:
         for index, (key, reason) in enumerate((('X', 'key_x'), (' ', 'key_space'),
-                                               ('S', 'key_s'), ('\x1b', 'esc'), ('\x03', 'sigint'))):
+                                               ('x', 'key_x'), ('\x1b', 'esc'), ('\x03', 'sigint'))):
+            # S nay là lùi (bị bỏ như chuyển động trong lô); x thường thay chỗ phím dừng chữ thường.
             with running(cfg, root / str(index)) as run:
                 run.boot()
                 run.drive()
@@ -803,7 +822,8 @@ def selftest_case(n, cfg, root):
 def unread_safety_case(n, cfg, root):
     if n == 104:
         for end, reason, code in (('E', 'esc', 0), ('3', 'sigint', 130),
-                                  ('x', 'key_x', None), ('s', 'key_s', None), (' ', 'key_space', None)):
+                                  ('x', 'key_x', None), ('X', 'key_x', None), (' ', 'key_space', None)):
+            # S nay là lùi nên không còn là phím an toàn thứ 65; X hoa thay chỗ.
             folder = root / str(ord(end))
             batch = folder / 'batch'
             with running(cfg, folder, env={'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)}) as run:
@@ -1025,6 +1045,9 @@ def test_case(case, cfg, root):
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n >= 114:
+        from test_reverse import test_case as reverse_case
+        return reverse_case(n, cfg, root)
     if n >= 106:
         return recording_case(n, cfg, root)
     if n in (104, 105):
@@ -1091,36 +1114,36 @@ def test_case(case, cfg, root):
                     run.finish()
         if n == 8:
             # Dấu đọc phím có trước dừng/xả hàng; mỗi phím cần phiên riêng.
-            for index, key in enumerate(('W', 'S', ' ', 'C', 'A', 'D', 'X', 'S')):
+            for index, key in enumerate(('W', 'w', ' ', 'C', 'A', 'D', 'X', 'x')):
                 with running(cfg, root / ('key_' + str(index))) as run:
                     moving(run)
                     run.pump = False
                     mark = len(run.events())
                     pressed = run.key(key)
-                    if key in ('S', ' ', 'X'):
+                    if key in (' ', 'X', 'x'):
                         stop_by(run, mark, pressed[0])
                         run.event('state', 'DUNG', mark)
-                        if key == 'X':
+                        if key.upper() == 'X':
                             run.event('servo_angle', 0, mark)
                             ordered_stop(run.events()[mark:])
-                    elif key == 'W':
+                    elif key.upper() == 'W':
                         run.event('motor_speed', run.speed(), mark)
                     else:
                         run.event('servo_angle', {'C': 0, 'A': 10, 'D': 0}[key], mark)
-                    # Không gửi Esc vào đúng cửa sổ xóa phím sau S/Space/X.
+                    # Không gửi Esc vào đúng cửa sổ xóa phím sau Space/X.
                     run.process.send_signal(signal.SIGTERM)
                     run.finish('sigterm')
         return
 
     if n in (21, 22, 23, 24):
         signals = [(signal.SIGINT, 'sigint'), (signal.SIGTERM, 'sigterm'), (signal.SIGHUP, 'sighup')]
-        for state in (('DUNG',) if n == 24 else ('CHAY',)):
+        for state in (('DUNG',) if n == 24 else ('CHAY_TIEN',)):
             for sig, reason in signals if n == 24 else [signals[n - 21]]:
                 with running(cfg, root / (state + reason)) as run:
                     run.boot()
                     if state != 'DUNG':
                         run.ready()
-                    if state == 'CHAY':
+                    if state == 'CHAY_TIEN':
                         run.keep_driving()
                         steer(run, 'A', 5)
                     mark, stamp = len(run.events()), monotonic_ms()
@@ -1291,7 +1314,7 @@ def test_case(case, cfg, root):
                 run.ready()
                 run.keep_driving()
                 run.observe((hold + 300) / 1000, lambda: need(
-                    matched(run.events(), 'state')[-1][1][2] == 'CHAY', 'Dừng khi W vẫn còn được cấp'))
+                    matched(run.events(), 'state')[-1][1][2] == 'CHAY_TIEN', 'Dừng khi W vẫn còn được cấp'))
                 run.pump = False
                 mark = len(run.events())
                 key = [e for e in run.events() if e[1] == 'key' and str(e[2]).upper() == 'W'][-1]
@@ -1450,7 +1473,7 @@ def test_case(case, cfg, root):
                 if n == 11:
                     steer(run, 'C', 0)
             elif n == 12:
-                for stop_key, turn, angle in (('S', 'A', 5), (' ', 'D', -5)):
+                for stop_key, turn, angle in ((' ', 'A', 5), (' ', 'D', -5)):
                     run.keep_driving()
                     steer(run, turn, angle)
                     run.pump = False
@@ -1459,7 +1482,7 @@ def test_case(case, cfg, root):
                     stop_by(run, mark, key[0])
                     run.observe(1, lambda: need(not any(e[1] == 'servo_angle' and e[2] != angle
                                                                      for e in run.events()[mark:]),
-                                               'S/Space đổi góc lái'))
+                                               'Space đổi góc lái'))
                     steer(run, 'C', 0)
             elif n == 13:
                 run.keep_driving()
@@ -1492,7 +1515,7 @@ def test_case(case, cfg, root):
                 run.wait(lambda: any(r['state'] == 'DUNG' for r in run.rows()))
                 run.keep_driving()
                 steer(run, 'A', 5)
-                run.wait(lambda: any(r['state'] == 'CHAY' and float(r['cmd_speed']) == 5 and
+                run.wait(lambda: any(r['state'] == 'CHAY_TIEN' and float(r['cmd_speed']) == 5 and
                                      float(r['cmd_steer']) == 5 for r in run.rows()))
                 check_capture_states(run)
             else:
@@ -1503,8 +1526,8 @@ def test_case(case, cfg, root):
             with running(cfg, root / 'override', args=['--interval-ms', '250', '--pipeline', pipeline]) as other:
                 other.boot()
                 other.keep_driving()
-                other.wait(lambda: len([row for row in other.rows() if row['state'] == 'CHAY']) >= 3, 5)
-                stamps = [int(row['monotonic_ns']) for row in other.rows() if row['state'] == 'CHAY']
+                other.wait(lambda: len([row for row in other.rows() if row['state'] == 'CHAY_TIEN']) >= 3, 5)
+                stamps = [int(row['monotonic_ns']) for row in other.rows() if row['state'] == 'CHAY_TIEN']
                 need(all(b - a >= 250000000 for a, b in zip(stamps, stamps[1:])), 'Không giữ interval 250 ms')
                 need(stamps[2] - stamps[0] < 1800000000, 'Bỏ qua interval ghi đè, vẫn dùng 1000 ms')
                 other.finish()
@@ -1746,7 +1769,7 @@ def cleanup_deadline(n, cfg, root):
                     else:
                         run.inject('free_mb 1' if reason == 'disk_low' else 'motor_fail')
                         if reason == 'motor_fail':
-                            run.send('S')
+                            run.send(' ')
                     stop_by(run, mark, stamp)
                     run.event('servo_angle', 0, mark)
                     stopped = matched(run.events()[mark:], 'servo_angle', 0)[0][1][0]
@@ -1871,15 +1894,15 @@ def check_capture_states(run):
                 actual = row[column] if kind == 'state' else float(row[column])
                 need(actual == expected, 'CSV khác lệnh/trạng thái tại lúc chụp: ' + column)
         checked.add(row['state'])
-    need({'DUNG', 'CHAY'} <= checked, 'Thiếu ảnh có mốc ổn định ở đủ hai trạng thái')
+    need({'DUNG', 'CHAY_TIEN'} <= checked, 'Thiếu ảnh có mốc ổn định ở đủ hai trạng thái')
 
 
 def no_restart(events):
     stops = matched(events, 'motor_speed', 0) + matched(events, 'motor_emergency')
     need(stops, 'Không có dừng để kiểm chốt lỗi')
     first = min(i for i, _ in stops)
-    need(not any(e[1] == 'motor_speed' and e[2] > 0 for e in events[first + 1:]),
-         'Lệnh tiến xuất hiện sau khi đã dừng lỗi')
+    need(not any(e[1] == 'motor_speed' and e[2] != 0 for e in events[first + 1:]),
+         'Lệnh chuyển động xuất hiện sau khi đã dừng lỗi')
 
 
 def added_case(n, cfg, root):
@@ -1906,7 +1929,7 @@ def added_case(n, cfg, root):
                 run.finish()
         return
     if n == 67:
-        for key in ('S', ' ', 'X'):
+        for key in (' ', 'X', 'x'):
             with running(cfg, root / str(ord(key))) as run:
                 moving(run)
                 run.pump = False
@@ -2025,7 +2048,7 @@ def stop_journal(cfg, root):
     with running(cfg, root / 'journal', args=['--interval-ms', '100']) as run:
         moving(run)
         run.pump = False
-        run.key('S')
+        run.key(' ')
         run.event('state', 'DUNG')
         run.drive()
         mark = len(run.events())
@@ -2045,7 +2068,7 @@ def stop_journal(cfg, root):
             rows = list(csv.DictReader(stream))
         required = {'reason', 't_trigger_ms', 't_motor0_done_ms', 'latency_ms'}
         need(rows and all(required <= set(row) for row in rows), 'Nhật ký dừng thiếu cột')
-        for reason in ('key_s', 'key_x', 'deadman', 'sigterm'):
+        for reason in ('key_space', 'key_x', 'deadman', 'sigterm'):
             selected = [row for row in rows if row['reason'] == reason]
             need(len(selected) == 1, 'Cần đúng 1 dòng dừng cho ' + reason)
             row = selected[0]
@@ -2060,17 +2083,17 @@ def stop_journal(cfg, root):
         summary = json.loads((folder / 'summary.json').read_text(encoding='utf-8'))
         need(isinstance(summary.get('stops'), list) and len(summary['stops']) <= 100,
              'Summary thiếu/sai mảng stops')
-        for reason in ('key_s', 'key_x', 'deadman', 'sigterm'):
+        for reason in ('key_space', 'key_x', 'deadman', 'sigterm'):
             need(sum(row.get('reason') == reason for row in summary['stops']) == 1,
                  'Summary thiếu/lặp lý do dừng ' + reason)
 
 
 def key_variants(n, cfg, root):
     if n in (16, 17):
-        for state in ('DUNG', 'CHAY'):
+        for state in ('DUNG', 'CHAY_TIEN'):
             with running(cfg, root / state) as run:
                 run.boot()
-                if state == 'CHAY':
+                if state == 'CHAY_TIEN':
                     run.ready()
                     run.keep_driving()
                 for seq in (b'\x1b[A', b'\x1b[B', b'\x1b[C', b'\x1b[D',
@@ -2390,6 +2413,13 @@ def patch_mutant(case, folder):
         replacement = (r'\1if (reason == "key_x" && center) setAngle(0);\n        \2')
     elif case == 'M04':
         pattern, replacement = r'if \(awaitingPress_\) \{', 'if (false && awaitingPress_) {'
+    elif case == 'M14':
+        pattern = r"if \(k == 'w' \|\| k == 's'\) \{"
+        replacement = "if (k == 's') { stop(\"key_s\", clock_.nowMs()); return; }\n        if (k == 'w') {"
+    elif case == 'M15':
+        pattern, replacement = r'kDirectionPauseMs = 300;', 'kDirectionPauseMs = 0;'
+    elif case == 'M16':
+        pattern, replacement = r'\|\|\s*o\.reverseSpeed\s*>\s*5\b', ''
     elif case == 'M06':
         pattern = r'terminal->discard\(\); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh\.'
         replacement = '// Mutation: cố ý giữ phím terminal cũ.'
@@ -2430,10 +2460,12 @@ def patch_mutant(case, folder):
 
 def mutation(case, cfg, root):
     original = dict(M01='D18', M02='D07', M03='D13', M04='D96', M05='D80', M06='D94', M07='D95',
-                    M08='D98', M09='D102', M10='D106', M11='D107', M12='D109', M13='D106')[case]
+                    M08='D98', M09='D102', M10='D106', M11='D107', M12='D109', M13='D106',
+                    M14='D114', M15='D121', M16='D118')[case]
     expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='fresh_press', M05='init_once',
                     M06='startup_stdin', M07='startup_preview', M08='key_burst', M09='selftest_hardware', M10='rec_default', M11='rec_moving',
-                     M12='rec_counter', M13='rec_default')[case]
+                     M12='rec_counter', M13='rec_default', M14='reverse_motion',
+                    M15='direction_pause', M16='reverse_reject')[case]
     # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
     test_case(original, cfg, root / 'baseline')
     folder = root / 'source'
@@ -2455,8 +2487,12 @@ def mutation(case, cfg, root):
         ' target_compile_definitions(mutant PRIVATE UCR_DRIVE_HAVE_HIGHGUI=1)\nendif()\n'
         'target_include_directories(mutant PRIVATE ${OpenCV_INCLUDE_DIRS})\n'
         'target_link_libraries(mutant PRIVATE ${OpenCV_LIBS} Threads::Threads)\n'
+        'add_executable(reverse_contract "${SOURCE}/test_reverse.cpp")\n'
+        'target_include_directories(reverse_contract PRIVATE ${OpenCV_INCLUDE_DIRS})\n'
+        'target_link_libraries(reverse_contract PRIVATE Threads::Threads)\n'
         'if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 9)\n'
-        ' target_link_libraries(mutant PRIVATE stdc++fs)\nendif()\n', encoding='utf-8')
+        ' target_link_libraries(mutant PRIVATE stdc++fs)\n'
+        ' target_link_libraries(reverse_contract PRIVATE stdc++fs)\nendif()\n', encoding='utf-8')
     # Tổng hạn build 65 s + baseline/probe nằm dưới TIMEOUT=120.
     started = time.monotonic()
     for argv in ([cfg.cmake, '-DSOURCE=' + str(folder), '-DCMAKE_BUILD_TYPE=Release',
@@ -2480,6 +2516,7 @@ def mutation(case, cfg, root):
              'mutation_setup')
     mutant = argparse.Namespace(**vars(cfg))
     mutant.hooks = str(build / 'mutant')
+    mutant.contract = str(build / 'reverse_contract')
     mutant.slack = 0  # Bản sao vừa biên dịch Release, không áp dung sai sanitizer.
     mutant.tsan_slack = 0
     if case == 'M02':
@@ -2519,6 +2556,20 @@ def self_check():
              'Bộ đọc vết sai')
         final_stop(events)
         ordered_stop(events)
+        reverse_trace = [(100, 'key', 'S', False), (100, 'state', 'CHAY_LUI', False),
+                         (100, 'motor_speed', -3, False), (899, 'motor_speed', -3, False)]
+        limits(reverse_trace)
+        for bad in (reverse_trace + [(900, 'motor_speed', -3, False)],
+                    reverse_trace + [(200, 'motor_speed', -5.01, False)],
+                    [(100, 'state', 'CHAY_LUI', False), (100, 'motor_speed', -3, False)],
+                    [(100, 'key', 'S', False), (100, 'state', 'CHAY_TIEN', False),
+                     (100, 'motor_speed', -3, False)]):
+            try:
+                limits(bad)
+            except SafetyFailure as error:
+                need(error.tag == 'speed_limit', 'Sai phép kiểm bất biến lùi')
+            else:
+                raise AssertionError('Bỏ lọt lùi sai trạng thái/tuổi S/trần')
         valid_init = [(1, 'state', 'DUNG', False), (2, 'motor_init', '', False),
                       (3, 'motor_speed', 0, False), (4, 'servo_angle', 0, False),
                       (5, 'key', 'R', False), (6, 'motor_speed', 5, False)]
@@ -2583,8 +2634,8 @@ def self_check():
         data = b'\xff\xd8\xff\xc0\x00\x0b\x08\x02\xd0\x05\x00\x01\x01\x11\x00\xff\xd9'
         need(jpeg_info(data)[0] == (1280, 720), 'Đọc cỡ JPEG sai')
         fixtures = {
-            'M01': 'if (state == State::CHAY && lastW_ == received) return;\n'
-                   'if (state == State::CHAY && now >= deadmanAt()) { stop("deadman", deadmanAt()); }',
+            'M01': 'if (state == State::CHAY_TIEN && lastW_ == received) return;\n'
+                   'if (state == State::CHAY_TIEN && now >= deadmanAt()) { stop("deadman", deadmanAt()); }',
             'M02': 'if (!finite || o.speed < 0 || o.speed > 5) throw error;',
             'M03': 'void stop(const std::string& reason, int64_t trigger, bool center = false) {\n'
                    ' std::exception_ptr failure;\n try { setSpeed(0); }\n'
@@ -2594,7 +2645,10 @@ def self_check():
             'M07': 'terminal->discard(); // Bỏ phím gõ trước và trong Init, W mới sau đó chạy ngay khi có ảnh.\n        preview.discardKeys();',
             'M05': 'if (!motor.init()) throw Failure(3, "motor_init_fail", "Init hỏng");',
             'M08': 'const bool burst = control.keyBurst(keys, previewKeys, readAt);',
-            'M09': 'if (options.selftest) {\n        try { return selftest(options); }'}
+            'M09': 'if (options.selftest) {\n        try { return selftest(options); }',
+            'M14': "if (k == 'w' || k == 's') { run(); }",
+            'M15': 'constexpr int64_t kDirectionPauseMs = 300;',
+            'M16': 'if (!finite || o.reverseSpeed <= 0 || o.reverseSpeed > 5) throw error;'}
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()
@@ -2619,7 +2673,7 @@ def self_check():
                 need(error.tag == 'selftest_hardware', 'Sai mã phép kiểm tự kiểm không động cơ')
             else:
                 raise AssertionError('Bộ kiểm tự kiểm bỏ lọt ' + event)
-    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG, không động cơ và 13 neo hiện tại; chưa chạy binary sản phẩm')
+    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng phím, đăng ký ca, JPEG, không động cơ và 16 neo hiện tại; chưa chạy binary sản phẩm')
 
 
 def main():
@@ -2633,6 +2687,7 @@ def main():
     parser.add_argument('--self-check', action='store_true')
     parser.add_argument('--hooks')
     parser.add_argument('--real')
+    parser.add_argument('--contract')
     parser.add_argument('--cam')
     parser.add_argument('--source', default=str(Path(__file__).resolve().parent))
     parser.add_argument('--wrapper', default=str(Path(__file__).resolve().parents[2] / 'scripts' / 'run_drive.sh'))
@@ -2651,7 +2706,9 @@ def main():
         return
     need(os.name == 'posix', 'Ca PTY cần Linux/POSIX; không kết luận đạt trên Windows')
     need(cfg.case and cfg.hooks and cfg.real, 'Thiếu --case/--hooks/--real')
-    for key in ('hooks', 'real', 'cam', 'source', 'wrapper'):
+    if not cfg.contract:
+        cfg.contract = str(Path(cfg.hooks).resolve().parent / 'test_drive_collect_reverse')
+    for key in ('hooks', 'real', 'contract', 'cam', 'source', 'wrapper'):
         if getattr(cfg, key):
             setattr(cfg, key, str(Path(getattr(cfg, key)).resolve()))
     need(Path(cfg.hooks).is_file(), 'Thiếu binary hooks')

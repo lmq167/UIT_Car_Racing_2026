@@ -301,7 +301,7 @@ struct DriveMotor : IMotor {
     }
     void SetSpeedCms(float v) override {
         HardwareCall call;
-        if (v > 0 && hardwareFault) { good = false; return; }
+        if (v != 0 && hardwareFault) { good = false; return; }
         good = !failMotor();
         hookEvent("motor_speed", std::to_string(v) + (good ? "" : " fail"));
         if (hooks.motorHang) std::this_thread::sleep_for(2s);
@@ -347,7 +347,7 @@ struct DriveMotor : IMotor {
         // Không thử lại poll khi EINTR: tín hiệu phải đưa vòng lái sang DỪNG ngay.
         good = poll(&uart, 1, 50) > 0 && (uart.revents & POLLOUT) &&
                !(uart.revents & (POLLERR | POLLHUP | POLLNVAL));
-        if (good && !(v > 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
+        if (good && !(v != 0 && hardwareFault)) { device.SetSpeedCms(v); good = device.LastWriteOk(); }
         else good = false;
     }
     bool EmergencyStop() noexcept override {
@@ -516,6 +516,7 @@ void writeSession(const Options& o, const std::string& started, const std::strin
          << ",\n\"preview_monitor_values\":" << jsonString(values.str())
          << ",\n\"preview_monitor_calibrated\":" << (monitor.calibrated ? "true" : "false")
          << ",\n\"version\":\"ucr_drive_collect/1\",\n\"speed_cms\":" << o.speed
+         << ",\n\"reverse_speed_cms\":" << o.reverseSpeed
          << ",\"steer_step_deg\":" << o.steerStep << ",\"max_steer_deg\":" << o.maxSteer
          << ",\"hold_timeout_ms\":" << o.holdTimeout << ",\"interval_ms\":" << o.interval
          << ",\"min_free_mb\":" << o.minFree << ",\"jpeg_quality\":90,\"accept_no_obstacle_brake\":true\n}\n";
@@ -980,7 +981,7 @@ int run(Options o) {
                 throw Failure(4, "camera_stall", "Luồng ghi ảnh mất nhịp sống");
             }
             const bool fresh = frameNs && now - lastFrame <= 500;
-            if (!fresh && control.state == State::CHAY) control.stop("frame_stale", lastFrame + 500, true);
+            if (!fresh && moving(control.state)) control.stop("frame_stale", lastFrame + 500, true);
             control.tick();
             const bool pendingDiscard = control.discardPending;
             control.discardPending = false;
@@ -1007,13 +1008,24 @@ int run(Options o) {
                 journal->warn("key_burst: bỏ lô phím chuyển động, cần nhả rồi nhấn mới");
                 control.discardPending = false;
             }
-            if (pendingDiscard || burst) drainPendingKeys();
-            bool discardMotion = pendingDiscard || burst;
+            const auto hasKey = [&](int lower) {
+                return std::find(keys.begin(), keys.end(), lower) != keys.end() ||
+                       std::find(keys.begin(), keys.end(), lower - 'a' + 'A') != keys.end();
+            };
+            // Lô dồn/đuôi sau dừng đã bỏ mọi phím chạy; chỉ lô còn được xử lý mới cần xét WS/SW.
+            const bool conflict = !pendingDiscard && !burst && hasKey('w') && hasKey('s');
+            if (conflict) {
+                // Nhìn cả lô trước khi gửi motor: WS/SW không được chạy thoáng một hướng.
+                control.directionStop("reverse_conflict", readAt);
+                control.discardPending = false;
+            }
+            if (pendingDiscard || burst || conflict) drainPendingKeys();
+            bool discardMotion = pendingDiscard || burst || conflict;
             // Giữ vết phân loại lô dồn; chỉ bỏ ngầm đuôi sau phím dừng.
-            bool stoppedInBatch = pendingDiscard;
+            bool stoppedInBatch = pendingDiscard || conflict;
             for (size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
                 const int key = keys[keyIndex];
-                control.noteW(key, readAt); // Tính cả W bị bỏ ở đuôi lô cho điều kiện nhận P.
+                control.noteW(key, readAt); // Tính cả W/S bị bỏ ở đuôi lô cho điều kiện nhận P.
                 if (!acceptBatchKey(key, stoppedInBatch)) continue;
                 trigger = nowMs();
                 // Kiểm lại cờ/fault trước mỗi phím, không cho W cùng lô vượt qua lỗi.
@@ -1275,14 +1287,17 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root data_raw] [--rec-on-start] [--label drive]\n"
-                  << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 40 [0..60]\n"
+                  << "  --pipeline CHUỖI --speed-cms 5 --reverse-speed-cms 3 (trần 5 cm/s)\n"
+                  << "  --steer-step-deg 5 --max-steer-deg 40 [0..60]\n"
                   << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
                   << "  --selftest [--out-root DIR] [--pipeline CHUỖI]: tự kiểm không động cơ, không cần tty\n"
                   << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"
-                  << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; P bật/tắt REC khi xe dừng, mặc định REC tắt.\n"
+                  << "S = LÙI (giữ). DỪNG = Space / X / Esc. S KHÔNG CÒN LÀ DỪNG.\n"
+                  << "X dừng khẩn rồi DUNG; Esc thoát; Ctrl+C dừng và thoát; P bật/tắt REC khi xe dừng, mặc định REC tắt.\n"
+                  << "Đổi hướng: motor 0, nghỉ ít nhất 300 ms, nhả đủ hạn giữ rồi nhấn mới.\n"
                   << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới để chạy lại.\n"
                   << "Chạy qua scripts/run_drive.sh để có đường dừng độc lập.\n";
         return 0;
@@ -1297,7 +1312,9 @@ int main(int argc, char** argv) {
         catch (const std::exception& e) { std::cerr << "FAIL total: " << e.what() << '\n'; return 1; }
     }
     std::cerr << "CANH BAO: KHONG CO PHANH ToF; người giám sát phải ở sẵn bên xe.\n"
-              << "Mở là DUNG; W tiến; A/D lái; C trả lái; S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát.\n"
+              << "Mở là DUNG; W tiến; A/D lái; C trả lái; X dừng khẩn rồi DUNG; Esc/Ctrl+C thoát.\n"
+              << "S = LÙI (giữ). DỪNG = Space / X / Esc. S KHÔNG CÒN LÀ DỪNG.\n"
+              << "Đổi hướng: motor 0, nghỉ ít nhất 300 ms; W+S xung đột thì dừng.\n"
               << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới.\n"
               << "Ctrl+C chỉ là một cách dừng. Nếu mất điều khiển: DUNG CONG TAC NGUON motor.\n";
     try { return run(options); }

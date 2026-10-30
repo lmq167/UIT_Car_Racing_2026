@@ -59,7 +59,7 @@ void parserTests() {
     reject({"--selftest", "--pipeline"});
     reject({"--selftest", "--speed-cms", "6"});
     auto o = parseArgs({"--accept-no-obstacle-brake"});
-    check(o.speed == 5 && o.maxSteer == 40 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
+    check(o.speed == 5 && o.reverseSpeed == 3 && o.steerStep == 5 && o.maxSteer == 40 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
           "Sai giá trị mặc định");
     check(!o.recOnStart && o.outRoot == fs::path("data_raw"), "REC mặc định phải tắt, data_raw");
     check(parseArgs({"--accept-no-obstacle-brake", "--rec-on-start"}).recOnStart, "Thiếu cờ REC lúc mở");
@@ -86,6 +86,14 @@ void parserTests() {
           "Phải nhận biên dưới hạn giữ");
     check(parseArgs({"--accept-no-obstacle-brake", "--hold-timeout-ms", "2000"}).holdTimeout == 2000,
           "Phải nhận biên trên hạn giữ");
+    for (const auto& value : {"5.01", "0", "-1", "nan", "inf", "3x"})
+        reject({"--accept-no-obstacle-brake", "--reverse-speed-cms", value});
+    for (const auto& value : {"3", "5"})
+        check(parseArgs({"--accept-no-obstacle-brake", "--reverse-speed-cms", value}).reverseSpeed == std::stod(value),
+              "Sai tốc độ lùi hợp lệ");
+    for (const auto& value : {"10", "20", "40"})
+        check(parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", value}).maxSteer == std::stoi(value),
+              "Sai trần góc hợp lệ");
     check(!o.preview.no_preview && !o.preview.require_preview && o.preview.preview_scale == 0.5 &&
           o.preview.preview_fps == 10, "Sai mặc định preview");
     o = parseArgs({"--accept-no-obstacle-brake", "--require-preview", "--preview-scale", "0.2", "--preview-fps", "1"});
@@ -146,12 +154,19 @@ void decoderTests() {
     check(decoder.decode(unlock, 1, 1452) == std::vector<int>{'R'}, "CSI cụt hết hạn 50 ms không được nuốt R");
     decoder.decode(cut, sizeof(cut), 1500);
     check(decoder.decode(arrow, 1, 1510).empty(), "CSI phân mảnh trong 10 ms phải nuốt cả A");
-    for (const unsigned char stop : std::vector<unsigned char>{3, 'X', 'x', 'S', 's', ' '}) {
+    for (const unsigned char stop : std::vector<unsigned char>{3, 'X', 'x', ' '}) {
         KeyDecoder pending;
         pending.decode(esc, 1, 0);
         check(pending.decode(&stop, 1, 10) == std::vector<int>{stop}, "Phím dừng sau Esc đang chờ bị nuốt");
         pending.discard();
         check(pending.decode(nullptr, 0, 50) == std::vector<int>{27}, "Phím dừng/xả lô làm mất Esc đang chờ");
+    }
+    // S nay là lùi: chen sau Esc phải bị bỏ như W, không trì hoãn hay làm mất Esc.
+    for (const unsigned char held : std::vector<unsigned char>{'S', 's'}) {
+        KeyDecoder pending;
+        pending.decode(esc, 1, 0);
+        check(pending.decode(&held, 1, 10).empty(), "S chen sau Esc không được thành phím lùi");
+        check(pending.decode(nullptr, 0, 50) == std::vector<int>{27}, "S chen làm mất Esc đang chờ");
     }
     KeyDecoder interrupted;
     interrupted.decode(cut, sizeof(cut), 0);
@@ -176,10 +191,10 @@ void controlTests() {
     Control c(o, motor, servo, clock);
     check(c.state == State::DUNG && c.speed == 0 && c.angle == 0, "Mở phải là DUNG");
     c.key('r'); c.key('y'); check(events.empty(), "R/Y phải bị bỏ qua");
-    c.key('W'); check(c.speed == 5 && c.state == State::CHAY, "W mới phải chạy ngay, không mở khóa");
+    c.key('W'); check(c.speed == 5 && c.state == State::CHAY_TIEN, "W mới phải chạy ngay, không mở khóa");
     for (int i = 0; i < 10; ++i) c.key('a');
     check(c.angle == 40, "A phải dương và kẹp 40");
-    c.key('s'); check(c.angle == 40 && c.speed == 0 && c.state == State::DUNG, "S phải dừng, giữ góc");
+    c.key(' '); check(c.angle == 40 && c.speed == 0 && c.state == State::DUNG, "Space phải dừng, giữ góc");
     clock.time += 800; c.key('w'); c.key(' ');
     check(c.angle == 40 && c.speed == 0, "Space phải giữ góc");
     clock.time += 800;
@@ -201,7 +216,7 @@ void controlTests() {
     try { c.halt(); } catch (const MotorError&) { failed = true; }
     check(failed && events.size() == 5 && events[1] == "emergency" && events[2] == "emergency" &&
           events[3] == "emergency" && events[4] == "servo:0", "Thiếu 3 dừng dự phòng trước trả lái");
-    for (const auto& event : events) check(event.find("motor:-") == std::string::npos, "T24 không được thêm lùi");
+    for (const auto& event : events) check(event.find("motor:-") == std::string::npos, "Đường dừng không được phát lệnh âm");
     motor.failing = false;
     auto largeStep = parseArgs({"--accept-no-obstacle-brake", "--steer-step-deg", "2147483647"});
     Control large(largeStep, motor, servo, clock);
@@ -274,7 +289,7 @@ void revisedSafetyTests() {
     events.clear(); clock.time += 800; badServo.key('w'); check(events.empty(), "W sau lỗi servo vẫn chạy");
     servo.failing = false;
     Control ring(o, motor, servo, clock);
-    for (int i = 0; i < 105; ++i) { clock.time = i; ring.key('s'); }
+    for (int i = 0; i < 105; ++i) { clock.time = i; ring.key(' '); }
     check(ring.stopCount == 105 && ring.stops[4].trigger == 104 && ring.stops[5].trigger == 5, "Sai vòng nhật ký");
     Control signal(o, motor, servo, clock);
     motor.clock = &clock; motor.delayMs = 7; clock.time = 1000;
@@ -294,6 +309,7 @@ void burstTests() {
         check(!guard.reject({'W'}, {}, hold*4), "Nhấn đơn sau im vẫn nhận");
         check(!guard.reject({'w','w','w','w'}, {}, hold*4 + 10), "Giữ phím liên tục vẫn nhận");
         check(guard.reject({'X','w','A','d','C',' ',27,3}, {}, hold*5), "Phím dừng không làm lọt lô dồn");
+        check(guard.reject({'s','S','w','a'}, {}, hold*7), "S (lùi) phải được đếm vào lô dồn");
         Options o; o.holdTimeout = hold;
         FakeClock clock;
         std::vector<std::string> events;
@@ -311,7 +327,7 @@ void burstTests() {
         check(events == std::vector<std::string>({"motor:0.000000", "servo:0"}), "Lô phải motor 0 trước servo 0");
         clock.time += hold; c.key('w'); check(c.speed == 5, "Nhấn mới sau lô CHAY không được mất");
     }
-    for (const int key : std::vector<int>{27, 'X', 'S', ' '}) {
+    for (const int key : std::vector<int>{27, 'X', ' '}) {
         Options o;
         FakeClock clock;
         std::vector<std::string> events;
@@ -321,8 +337,7 @@ void burstTests() {
         clock.time = o.holdTimeout;
         c.key(key);
         check(c.speed == 0 && c.state == State::DUNG, "Phím an toàn tại hạn deadman không dừng");
-        check(c.stops[c.stopCount-1].reason == (key == 27 ? "key_esc" : key == 'X' ? "key_x" :
-                                              key == 'S' ? "key_s" : "key_space"),
+        check(c.stops[c.stopCount-1].reason == (key == 27 ? "key_esc" : key == 'X' ? "key_x" : "key_space"),
               "Deadman nuốt phím dừng/thoát cùng lượt");
         check(c.exiting == (key == 27) && c.emergencyStops == (key == 'X' ? 1u : 0u),
               "Thiếu thoát/bộ đếm dừng khẩn tại hạn deadman");
@@ -333,7 +348,7 @@ void batchKeyTests() {
     for (const int key : std::string("wAdC"))
         check(acceptBatchKey(key, false), "Lô chưa gặp phím dừng phải giữ vết để kiểm D98/D99/D101");
     check(keyTrace == std::vector<std::string>({"w", "A", "d", "C"}), "Mất vết phân loại lô dồn");
-    for (const int stop : std::vector<int>{'s', 'S', ' ', 'x', 'X'}) {
+    for (const int stop : std::vector<int>{' ', 'x', 'X'}) {
         Options o;
         FakeClock clock;
         std::vector<std::string> events;
@@ -344,16 +359,17 @@ void batchKeyTests() {
         c.key(stop);
         check(c.discardPending && c.speed == 0, "Phím dừng chưa yêu cầu bỏ đuôi lô");
         events.clear(); keyTrace.clear();
-        for (const int key : std::string("wWaAdDcC")) {
+        // S (lùi) cũng là đuôi chuyển động phải bỏ.
+        for (const int key : std::string("wWsSaAdDcC")) {
             if (acceptBatchKey(key, true)) c.key(key);
         }
         check(keyTrace.empty(), "Đuôi chuyển động sau dừng vẫn phát sự kiện key");
         check(events.empty(), "Đuôi chuyển động sau dừng vẫn ghi motor/servo");
-        for (const int key : std::vector<int>{'s', 'S', ' ', 'x', 'X', 27, 3}) {
+        for (const int key : std::vector<int>{' ', 'x', 'X', 27, 3}) {
             check(acceptBatchKey(key, true), "Quét đuôi lô làm mất phím an toàn");
             if (key != 3) c.key(key); // Ctrl+C được main xử lý bằng đường thoát riêng.
         }
-        check(keyTrace == std::vector<std::string>({"s", "S", " ", "x", "X", "ESC", std::string(1, char(3))}),
+        check(keyTrace == std::vector<std::string>({" ", "x", "X", "ESC", std::string(1, char(3))}),
               "Vết phím an toàn sau dừng bị thiếu hoặc lẫn phím chuyển động");
         check(c.exiting && c.emergencyStops >= 2 && c.angle == 0,
               "Phím an toàn sau dừng chưa thoát/dừng khẩn/trả lái");
@@ -363,7 +379,7 @@ void batchKeyTests() {
           "Lô mới sau dừng vẫn bị bỏ ngầm");
 }
 void drainTests() {
-    for (const int safe : std::vector<int>{27, 3, 'X', 'S', ' '}) {
+    for (const int safe : std::vector<int>{27, 3, 'X', ' '}) {
         Options o;
         FakeClock clock;
         std::vector<std::string> events;
@@ -376,15 +392,15 @@ void drainTests() {
         c.rejectKeyBurst(clock.time);
         int reads = 0;
         check(drainSafetyKeys(keys, [&]() {
-            return reads++ == 0 ? std::vector<int>{safe, 'W', 'a', 'd', 'c'} : std::vector<int>{};
+            return reads++ == 0 ? std::vector<int>{safe, 'W', 'S', 's', 'a', 'd', 'c'} : std::vector<int>{};
         }, [&]() { return clock.time; }), "Không đọc hết phần hàng còn lại");
         check(reads == 2 && keys.size() == 65 && keys.back() == safe, "Mất phím thứ 65 hoặc giữ chuyển động cũ");
         for (int key : keys) if (safetyKey(key) && key != 3) c.key(key);
         check(c.speed == 0 && events.end() == std::find(events.begin(), events.end(), "motor:5.000000"),
               "Lô bị xả vẫn có tốc độ dương");
         if (safe != 3) {
-            check(c.stops[c.stopCount-1].reason == (safe == 27 ? "key_esc" : safe == 'X' ? "key_x" :
-                                                  safe == 'S' ? "key_s" : "key_space"), "Sai lý do phím thứ 65");
+            check(c.stops[c.stopCount-1].reason == (safe == 27 ? "key_esc" : safe == 'X' ? "key_x" : "key_space"),
+                  "Sai lý do phím thứ 65");
         }
         // Đúng lượt tick deadman, sau đó mới đọc và lọc hàng chưa đọc.
         Control deadman(o, motor, servo, clock);
@@ -430,7 +446,7 @@ void commandCompletionTests() {
         applied.push_back({ns, speed, angle, state});
     };
     c.key('w'); c.key('a');
-    check(applied.back().speed == 5 && applied.back().angle == 5 && applied.back().state == State::CHAY,
+    check(applied.back().speed == 5 && applied.back().angle == 5 && applied.back().state == State::CHAY_TIEN,
           "Thiếu công bố lệnh đã hoàn tất");
     servo.beforeWrite = [&](int angle) {
         check(angle == 0 && applied.back().speed == 0 && applied.back().angle == 5 &&
@@ -465,11 +481,11 @@ void recordingTests() {
     check(accepted == 2 && events.empty(), "P lúc dừng không được ghi motor/servo");
     clock.time = 2000; c.key('w'); const auto before = events.size(); c.key('p');
     check(rejected == 1 && accepted == 2 && events.size() == before, "P lúc chạy phải bị bỏ");
-    c.key('s'); const auto stopped = events.size(); c.key('P');
+    c.key(' '); const auto stopped = events.size(); c.key('P');
     check(rejected == 2 && events.size() == stopped, "P khi W còn giữ phải bị bỏ");
     clock.time = 2799; c.key('P'); check(accepted == 2, "P trước hạn nhả W");
     clock.time = 2800; c.key('P'); check(accepted == 3, "P sau hạn nhả W");
-    clock.time = 2910; c.key('w'); c.key('s'); clock.time = 3000; c.key('w');
+    clock.time = 2910; c.key('w'); c.key(' '); clock.time = 3000; c.key('w');
     clock.time = 3710; c.key('p'); check(accepted == 3, "W bị chặn vẫn là W đang giữ");
     clock.time = 3800; c.key('p'); check(accepted == 4, "Không nhận P sau nhả W bị chặn");
     clock.time = 4000; c.noteW('W'); // W bị vòng nhập bỏ trước Control::key.
@@ -477,6 +493,9 @@ void recordingTests() {
     clock.time = 4800; c.key('p'); check(accepted == 5, "P không nhận sau nhả W đuôi lô");
     clock.time = 4900; c.rejectKeyBurst(clock.time); c.key('p');
     check(accepted == 5, "P nhận ngay sau lô bị xả có W chưa đọc");
+    clock.time = 6000; c.noteW('S'); // S (lùi) giữ cũng chặn P như W.
+    clock.time = 6799; c.key('p'); check(accepted == 5, "P nhận khi S còn giữ");
+    clock.time = 6800; c.key('p'); check(accepted == 6, "P không nhận sau nhả S");
     KeyDecoder decoder; const unsigned char bytes[] = {'P', 'p'};
     check(decoder.decode(bytes, 2, 0) == std::vector<int>({'P', 'p'}), "TTY mất P/p");
     check(!acceptBatchKey('P', true) && !acceptBatchKey('p', true), "Đuôi sau dừng còn P");

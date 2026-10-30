@@ -189,14 +189,18 @@ void frames() {
     check(!writePreviewFrame(*shared, cv::Mat(2, 2, CV_8UC1), 0), "nhận ảnh sai định dạng");
     check(!writePreviewFrame(*shared, cv::Mat(721, 1280, CV_8UC3), 0), "tràn vùng ảnh");
     PreviewState state;
-    std::strcpy(state.state, "CHAY"); state.cmd_speed = 5; state.cmd_steer = -10;
+    std::strcpy(state.state, "CHAY_TIEN"); state.cmd_speed = 5; state.cmd_steer = -10;
     state.images = 77; state.recording = false; state.frame_age_ms = 42;
-    std::strcpy(state.stop_reason, "key_s"); shared->state.write(state);
+    std::strcpy(state.stop_reason, "reverse_conflict"); shared->state.write(state);
     PreviewState snapshot;
     check(shared->state.read(snapshot) && snapshot.images == 77 && snapshot.cmd_speed == 5 &&
           snapshot.cmd_steer == -10 && !snapshot.recording && snapshot.frame_age_ms == 42 &&
-          std::strcmp(snapshot.state, "CHAY") == 0 && std::strcmp(snapshot.stop_reason, "key_s") == 0,
+          std::strcmp(snapshot.state, "CHAY_TIEN") == 0 && std::strcmp(snapshot.stop_reason, "reverse_conflict") == 0,
           "sai ảnh chụp trạng thái");
+    std::strcpy(state.state, "CHAY_LUI"); state.cmd_speed = -3;
+    shared->state.write(state);
+    check(shared->state.read(snapshot) && snapshot.cmd_speed == -3 && std::strcmp(snapshot.state, "CHAY_LUI") == 0,
+          "mất dấu tốc độ hoặc trạng thái lùi khi truyền sang cửa sổ");
     shared->monitor.write(PreviewMonitor{true, PreviewWindowProperty::Visible, -1, 1});
     PreviewMonitor monitor;
     check(shared->monitor.read(monitor) && monitor.calibrated && monitor.autosize == -1 && monitor.visible == 1 &&
