@@ -131,6 +131,8 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
     if (mode == "hang") for (;;) ::pause();
     size_t key_index = 5;
     bool batch_sent = false;
+    off_t stream_offset = 0;
+    const bool stream = mode.compare(0, 7, "stream:") == 0;
     auto next_key = Clock::now();
     while (!shared.stop.load(std::memory_order_acquire)) {
         // Con giả chỉ cần biết có khung hoàn chỉnh, không sao chép ảnh làm chậm phím 20 ms.
@@ -146,17 +148,22 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 if (samplePreviewWindow(shared, tracker, 260, -1, -1)) return 10;
             }
         }
-        // Chỉ bản giả: ghi nguyên lô để tái hiện chính xác biên đọc 64 byte.
-        if (!batch_sent && mode.compare(0, 6, "batch:") == 0) {
-            const int input = ::open(mode.substr(6).c_str(), O_RDONLY | O_NONBLOCK);
+        // Chỉ bản giả: batch gửi một lô; stream gửi phần file được nối thêm, không phát lại.
+        if (stream || (!batch_sent && mode.compare(0, 6, "batch:") == 0)) {
+            const int input = ::open(mode.substr(stream ? 7 : 6).c_str(), O_RDONLY | O_NONBLOCK);
             if (input >= 0) {
+                if (stream && ::lseek(input, stream_offset, SEEK_SET) < 0) {
+                    ::close(input);
+                    return 11;
+                }
                 char bytes[4096];
                 const auto count = ::read(input, bytes, sizeof(bytes));
                 ::close(input);
                 if (count > 0) {
                     const auto written = ::write(key_fd, bytes, size_t(count));
                     if (written != count) return 11;
-                    batch_sent = true;
+                    if (stream) stream_offset += count;
+                    else batch_sent = true;
                 }
             }
         }

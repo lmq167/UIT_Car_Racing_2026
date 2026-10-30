@@ -41,7 +41,7 @@ struct Options {
     std::string started;
     std::vector<std::string> argv;
     double speed = 5;
-    int steerStep = 5, maxSteer = 10;
+    int steerStep = 5, maxSteer = 40;
     uint64_t holdTimeout = 800, interval = 1000, minFree = 1024;
     bool accepted = false, selftest = false, recOnStart = false;
 };
@@ -112,8 +112,8 @@ inline Options parse(int argc, char** argv) {
             if (n > static_cast<uint64_t>(std::numeric_limits<int>::max()))
                 throw std::runtime_error("Giá trị quá lớn: " + key);
             if (key == "--steer-step-deg" || key == "--max-steer-deg") {
-                if ((key == "--steer-step-deg" && n < 1) || (key == "--max-steer-deg" && n > 10))
-                    throw std::runtime_error(key + " cần bước dương và trần góc từ 0 đến 10 độ");
+                if ((key == "--steer-step-deg" && n < 1) || (key == "--max-steer-deg" && n > 60))
+                    throw std::runtime_error(key + " cần bước dương và trần góc từ 0 đến 60 độ");
                 if (key == "--steer-step-deg") o.steerStep = static_cast<int>(n);
                 else o.maxSteer = static_cast<int>(n);
             } else if (key == "--hold-timeout-ms") {

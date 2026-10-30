@@ -124,13 +124,13 @@ def init_sequence(events, required=False, complete=False):
         need(pair_done is not None, 'Thiếu motor 0 rồi servo 0 thành công sau Init', 'init_order')
 
 
-def limits(events, moving=True):
+def limits(events, moving=True, max_steer=40):
     for _, kind, value, _ in events:
         if kind == 'motor_speed':
             need(0 <= value <= (5 if moving else 0), 'Tốc độ bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'speed_limit')
         if kind == 'servo_angle':
-            need(abs(value) <= (10 if moving else 0), 'Góc bị cấm: ' + str(value),
+            need(abs(value) <= (max_steer if moving else 0), 'Góc bị cấm: ' + str(value),
                  'startup_stopped' if not moving else 'steer_limit')
 
 
@@ -230,6 +230,7 @@ class Run:
         self.next_w = 0
         self.pump = False
         self.command_speed = 5
+        self.max_steer = 40
         self.hold_timeout = 800
         for index, value in enumerate(args[:-1]):
             if value == '--hold-timeout-ms':
@@ -237,6 +238,11 @@ class Run:
                     self.hold_timeout = int(args[index + 1])
                 except ValueError:
                     pass  # Ca đầu vào hỏng không gọi các helper điều khiển.
+            if value == '--max-steer-deg':
+                try:
+                    self.max_steer = int(args[index + 1])
+                except ValueError:
+                    pass  # Ca tham số hỏng không kiểm đầu ra điều khiển.
             if value == '--speed-cms':
                 try:
                     self.command_speed = float(args[index + 1])
@@ -421,7 +427,7 @@ class Run:
         expected = {REASONS[reason]} if codes is None else set(codes)
         need(code in expected, 'Mã thoát {} cần {}: {}'.format(code, expected, self.text()))
         events = self.events()
-        limits(events)
+        limits(events, max_steer=self.max_steer)
         if cleanup:
             final_stop(events)
         if reason != 'esc' and hasattr(self, 'stop_mark'):
@@ -466,7 +472,7 @@ class Run:
             filenames.add(name)
             size, _ = read_jpeg(self.out / name)
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
-            need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= 10,
+            need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= self.max_steer,
                  'Lệnh CSV ngoài giới hạn')
             need(row['state'] in ('DUNG', 'CHAY'), 'Trạng thái CSV sai')
         return summary, rows
@@ -908,7 +914,7 @@ def recording_case(n, cfg, root):
                 need(len(ends) == 1 and ends[0]['end_reason'] == 'error',
                      'Lỗi ghi không đóng lượt error: ' + repr(ends), 'rec_error')
         return
-    sources = ('tty', 'preview') if n in (108, 113) else ('tty',)
+    sources = ('tty', 'preview') if n in (108, 110, 111, 113) else ('tty',)
     scenarios = [(source, hold) for source in sources
                  for hold in ((800, 1400) if n == 113 else (800,))]
     for source, hold in scenarios:
@@ -917,7 +923,8 @@ def recording_case(n, cfg, root):
             folder = folder / str(hold)
         folder.mkdir(parents=True)
         batch = folder / 'keys'
-        env = {'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)} if source == 'preview' else {}
+        mode = 'batch:' if n == 111 else 'stream:'
+        env = {'UCR_DRIVE_FAKE_PREVIEW': mode + str(batch)} if source == 'preview' else {}
         args = ['--interval-ms', '100']
         if n == 113:
             args += ['--hold-timeout-ms', str(hold)]
@@ -939,7 +946,8 @@ def recording_case(n, cfg, root):
             elif n in (108, 110, 113):
                 mark = len(run.events())
                 if source == 'preview':
-                    batch.write_bytes(b'P')
+                    with batch.open('ab') as stream:
+                        stream.write(b'P')
                     first_p = run.event('key', 'P', mark)
                 else:
                     first_p = run.key('P')
@@ -950,7 +958,8 @@ def recording_case(n, cfg, root):
                     run.observe(max(0, (first_p[0] + rec_window - 100 - monotonic_ms()) / 1000))
                     if source == 'preview':
                         repeat_mark = len(run.events())
-                        batch.write_bytes(b'P')
+                        with batch.open('ab') as stream:
+                            stream.write(b'P')
                         repeat_p = run.event('key', 'P', repeat_mark)
                     else:
                         repeat_p = run.key('p')
@@ -972,7 +981,8 @@ def recording_case(n, cfg, root):
                 run.observe(max(0, (first_p[0] + rec_window + 150 - monotonic_ms()) / 1000))
                 if source == 'preview':
                     off_mark = len(run.events())
-                    batch.write_bytes(b'P')
+                    with batch.open('ab') as stream:
+                        stream.write(b'P')
                     off_p = run.event('key', 'P', off_mark)
                 else:
                     off_p = run.key('p')
@@ -985,13 +995,26 @@ def recording_case(n, cfg, root):
                 rows = pass_rows(run)
                 need(len(rows) == 2 and rows[1]['end_reason'] == 'user' and int(rows[1]['frames']) == count,
                      'Sai dòng end/user/số ảnh', 'rec_toggle')
+                need(len(matched(run.events()[mark:], 'key', 'P')) +
+                     len(matched(run.events()[mark:], 'key', 'p')) == (3 if n == 113 else 2),
+                     'Nguồn phím làm mất/phát lại P', 'rec_toggle')
                 if n == 113:
                     need(count > 0, 'P lặp tạo lượt rỗng', 'rec_debounce')
                 need(not any(e[1] in ('motor_speed', 'servo_angle') for e in run.events()[mark:]),
                      'P ghi lệnh phần cứng', 'rec_toggle')
             elif n == 111:
-                run.send(b'wwwwP')
+                burst_mark = len(run.events())
+                if source == 'preview':
+                    batch.write_bytes(b'wwwwP')
+                else:
+                    run.send(b'wwwwP')
+                run.event('key_burst', mark=burst_mark)
+                if source == 'preview':
+                    with batch.open('ab') as stream:
+                        stream.write(b'P')
                 run.observe(0.3)
+                need(len(matched(run.events()[burst_mark:], 'key_burst')) == 1,
+                     'Nguồn phím phát lại lô dồn', 'rec_burst')
                 need(not pass_rows(run) and not run.rows(), 'Lô dồn vẫn nhận P', 'rec_burst')
                 limits(run.events(), moving=False)
             run.finish()
@@ -1026,7 +1049,7 @@ def test_case(case, cfg, root):
         elif n == 8:
             variants = [('--speed-cms', v) for v in ('-1', 'nan', 'inf', '-inf')]
         elif n == 10:
-            variants = [('--max-steer-deg', '30'), ('--max-steer-deg', '10.01')]
+            variants = [('--max-steer-deg', '61'), ('--max-steer-deg', '-1'), ('--max-steer-deg', '60.01')]
         elif n == 60:
             variants = [('--unknown',), ('--speed-cms',), ('--speed-cms', 'rác'),
                         ('--hold-timeout-ms', '0'), ('--interval-ms', '-1'),
@@ -1042,7 +1065,9 @@ def test_case(case, cfg, root):
                 run.boot()
                 run.ready()
                 run.keep_driving()
-                for key, target in (('A', 10), ('A', 10), ('D', -1), ('D', -10), ('D', -10)):
+                for key, target in (('A', 11), ('A', 22), ('A', 33), ('A', 40), ('A', 40),
+                                    ('D', 29), ('D', 18), ('D', 7), ('D', -4), ('D', -15),
+                                    ('D', -26), ('D', -37), ('D', -40), ('D', -40)):
                     steer(run, key, target)
                 run.finish()
         if n == 10:
@@ -1054,6 +1079,16 @@ def test_case(case, cfg, root):
                 for target in (4, 1, -2, -5, -7, -7):
                     steer(run, 'D', target)
                 run.finish()
+            for cap in (0, 10, 40, 60):
+                with running(cfg, root / ('cap' + str(cap)),
+                             args=['--max-steer-deg', str(cap)]) as run:
+                    run.boot()
+                    run.ready()
+                    run.keep_driving()
+                    for target in [min(cap, 5 * i) for i in range(1, cap // 5 + 3)]:
+                        steer(run, 'A', target)
+                    steer(run, 'C', 0)
+                    run.finish()
         if n == 8:
             # Dấu đọc phím có trước dừng/xả hàng; mỗi phím cần phiên riêng.
             for index, key in enumerate(('W', 'S', ' ', 'C', 'A', 'D', 'X', 'S')):
@@ -1405,11 +1440,12 @@ def test_case(case, cfg, root):
                     for key, target in (('A', 5), ('C', 0), ('D', -5), ('C', 0)):
                         steer(run, key, target)
                 run.keep_driving()
-                for target in (5, 10, 10, 10):
+                for target in (5, 10, 15, 20, 25, 30, 35, 40, 40, 40):
                     steer(run, 'A', target)
                 if n == 11:
                     steer(run, 'C', 0)
-                for target in ((-5, -10, -10) if n == 11 else (5, 0, -5, -10, -10)):
+                for target in (tuple(range(-5, -41, -5)) + (-40,) if n == 11 else
+                               tuple(range(35, -41, -5)) + (-40,)):
                     steer(run, 'D', target)
                 if n == 11:
                     steer(run, 'C', 0)
@@ -2523,6 +2559,10 @@ def self_check():
                 ([(1, 'servo_angle', 0, False), (1, 'motor_speed', 0, False)], 'x_order',
                  lambda es: ordered_stop(es, 'x_order')),
                 ([(1, 'motor_speed', 6, False)], 'speed_limit', limits),
+                ([(1, 'servo_angle', 41, False)], 'steer_limit', limits),
+                ([(1, 'servo_angle', -41, False)], 'steer_limit', limits),
+                ([(1, 'servo_angle', 11, False)], 'steer_limit',
+                 lambda es: limits(es, max_steer=10)),
                 ([(1, 'motor_speed', -1, False)], 'speed_limit', limits),
                 ([(1, 'motor_speed', 5, False)], 'startup_stopped', lambda es: limits(es, False)),
                 (valid_init + [(7, 'motor_init', '', False)], 'init_once', init_sequence),

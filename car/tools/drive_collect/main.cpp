@@ -1275,7 +1275,7 @@ int main(int argc, char** argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && std::string(argv[1]) == "--help") {
         std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root data_raw] [--rec-on-start] [--label drive]\n"
-                  << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 10\n"
+                  << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 40 [0..60]\n"
                   << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
                   << "  --no-preview | --require-preview; --preview-scale 0.5 [0.2..1.0]\n"

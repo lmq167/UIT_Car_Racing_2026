@@ -59,7 +59,7 @@ void parserTests() {
     reject({"--selftest", "--pipeline"});
     reject({"--selftest", "--speed-cms", "6"});
     auto o = parseArgs({"--accept-no-obstacle-brake"});
-    check(o.speed == 5 && o.maxSteer == 10 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
+    check(o.speed == 5 && o.maxSteer == 40 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
           "Sai giá trị mặc định");
     check(!o.recOnStart && o.outRoot == fs::path("data_raw"), "REC mặc định phải tắt, data_raw");
     check(parseArgs({"--accept-no-obstacle-brake", "--rec-on-start"}).recOnStart, "Thiếu cờ REC lúc mở");
@@ -67,7 +67,7 @@ void parserTests() {
     reject({});
     for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
             {"--speed-cms", "20"}, {"--speed-cms", "-1"}, {"--speed-cms", "nan"},
-            {"--speed-cms", "inf"}, {"--speed-cms", "5x"}, {"--max-steer-deg", "30"},
+            {"--speed-cms", "inf"}, {"--speed-cms", "5x"}, {"--max-steer-deg", "61"},
             {"--steer-step-deg", "0"}, {"--max-steer-deg", "-1"}, {"--hold-timeout-ms", "0"},
             {"--hold-timeout-ms", "1.5"}, {"--hold-timeout-ms", "99"}, {"--hold-timeout-ms", "699"}, {"--hold-timeout-ms", "2001"},
             {"--lock-file", "other.lock"}, {"--interval-ms", "0"}, {"--min-free-mb", "-1"},
@@ -177,14 +177,14 @@ void controlTests() {
     check(c.state == State::DUNG && c.speed == 0 && c.angle == 0, "Mở phải là DUNG");
     c.key('r'); c.key('y'); check(events.empty(), "R/Y phải bị bỏ qua");
     c.key('W'); check(c.speed == 5 && c.state == State::CHAY, "W mới phải chạy ngay, không mở khóa");
-    for (int i = 0; i < 5; ++i) c.key('a');
-    check(c.angle == 10, "A phải dương và kẹp 10");
-    c.key('s'); check(c.angle == 10 && c.speed == 0 && c.state == State::DUNG, "S phải dừng, giữ góc");
+    for (int i = 0; i < 10; ++i) c.key('a');
+    check(c.angle == 40, "A phải dương và kẹp 40");
+    c.key('s'); check(c.angle == 40 && c.speed == 0 && c.state == State::DUNG, "S phải dừng, giữ góc");
     clock.time += 800; c.key('w'); c.key(' ');
-    check(c.angle == 10 && c.speed == 0, "Space phải giữ góc");
+    check(c.angle == 40 && c.speed == 0, "Space phải giữ góc");
     clock.time += 800;
-    for (int i = 0; i < 8; ++i) c.key('D');
-    check(c.angle == -10, "D phải âm và kẹp -10");
+    for (int i = 0; i < 20; ++i) c.key('D');
+    check(c.angle == -40, "D phải âm và kẹp -40");
     c.key('C'); check(c.angle == 0, "C không trả lái");
     c.key('w'); clock.time += 799; c.tick(); check(c.speed == 5, "Dừng trước hạn W");
     ++clock.time; c.tick(); check(c.speed == 0 && c.state == State::DUNG, "Deadman không về DUNG");
@@ -196,7 +196,7 @@ void controlTests() {
     c.key('w'); check(c.speed == 0, "W cũ chạy lại sau X");
     clock.time += 800; c.key('w'); check(c.speed == 5, "W mới sau X không cần R/Y");
     c.key(27); check(c.exiting && c.speed == 0 && c.angle == 0, "Esc phải dừng và thoát");
-    check(c.maxSpeed == 5 && c.maxAngle == 10, "Sai thống kê lệnh tối đa");
+    check(c.maxSpeed == 5 && c.maxAngle == 40, "Sai thống kê lệnh tối đa");
     motor.failing = true; events.clear(); bool failed = false;
     try { c.halt(); } catch (const MotorError&) { failed = true; }
     check(failed && events.size() == 5 && events[1] == "emergency" && events[2] == "emergency" &&
@@ -205,9 +205,24 @@ void controlTests() {
     motor.failing = false;
     auto largeStep = parseArgs({"--accept-no-obstacle-brake", "--steer-step-deg", "2147483647"});
     Control large(largeStep, motor, servo, clock);
-    large.key('a'); check(large.angle == 10, "Bước lớn tràn số bên trái");
-    large.key('d'); check(large.angle == -10, "Bước lớn tràn số bên phải");
+    large.key('a'); check(large.angle == 40, "Bước lớn tràn số bên trái");
+    large.key('d'); check(large.angle == -40, "Bước lớn tràn số bên phải");
     check(parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", "0"}).maxSteer == 0, "Phải nhận góc 0");
+    for (const int limit : {0, 10, 40, 60}) {
+        auto custom = parseArgs({"--accept-no-obstacle-brake", "--max-steer-deg", std::to_string(limit)});
+        check(custom.maxSteer == limit && custom.steerStep == 5, "Sai trần tùy chọn hoặc bước mặc định");
+        Control steering(custom, motor, servo, clock);
+        for (int i = 0; i < 15; ++i) {
+            steering.key('A');
+            check(steering.angle == std::min(limit, (i + 1) * 5), "A không tăng đúng bước/kẹp trần");
+        }
+        for (int i = 0; i < 30; ++i) {
+            steering.key('D');
+            check(steering.angle == std::max(-limit, limit - (i + 1) * 5), "D không giảm đúng bước/kẹp trần");
+        }
+        steering.key('C'); check(steering.angle == 0, "C phải trả 0 với mọi trần");
+    }
+    reject({"--accept-no-obstacle-brake", "--max-steer-deg", "60.01"});
 }
 void revisedSafetyTests() {
     for (const uint64_t hold : {700u, 800u, 2000u}) {
