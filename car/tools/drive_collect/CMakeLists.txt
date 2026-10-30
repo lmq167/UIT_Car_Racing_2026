@@ -9,7 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc OPTIONAL_COMPONENTS highgui)
 find_package(Threads REQUIRED)
 get_filename_component(UCR_DRIVE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-add_executable(ucr_drive_collect main.cpp preview.cpp
+add_executable(ucr_drive_collect main.cpp preview.cpp pass_store.cpp
     ${UCR_DRIVE_ROOT}/src/hardware/Motor.cpp
     ${UCR_DRIVE_ROOT}/src/hardware/Servo.cpp
     ${UCR_DRIVE_ROOT}/src/common/Logger.cpp)
@@ -35,12 +35,18 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_L
     target_link_libraries(ucr_drive_collect PRIVATE stdc++fs)
 endif()
 
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE _drive_git OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET TIMEOUT 1)
+if(NOT _drive_git)
+    set(_drive_git "unknown")
+endif()
+target_compile_definitions(ucr_drive_collect PRIVATE UCR_DRIVE_GIT_REVISION="${_drive_git}")
 include(CTest)
 if(BUILD_TESTING)
     # Bản giả không mở UART/I2C; không truyền định nghĩa giả sang bản xe.
-    add_executable(ucr_drive_collect_hooks main.cpp preview.cpp)
+    add_executable(ucr_drive_collect_hooks main.cpp preview.cpp pass_store.cpp)
     set_target_properties(ucr_drive_collect_hooks PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
-    target_compile_definitions(ucr_drive_collect_hooks PRIVATE UCR_DRIVE_TEST_HOOKS=1)
+    target_compile_definitions(ucr_drive_collect_hooks PRIVATE UCR_DRIVE_TEST_HOOKS=1 UCR_DRIVE_GIT_REVISION="${_drive_git}")
     target_include_directories(ucr_drive_collect_hooks PRIVATE ${OpenCV_INCLUDE_DIRS})
     target_link_libraries(ucr_drive_collect_hooks PRIVATE ${OpenCV_LIBS} Threads::Threads)
     add_executable(test_drive_collect_options test_options.cpp)
@@ -62,6 +68,7 @@ if(BUILD_TESTING)
     target_link_libraries(test_preview_protocol PRIVATE ${OpenCV_LIBS} Threads::Threads)
     add_test(NAME drive_collect_preview_protocol COMMAND test_preview_protocol)
     set_tests_properties(drive_collect_preview_protocol PROPERTIES TIMEOUT 30)
+    include(${CMAKE_CURRENT_LIST_DIR}/pass_store_tests.cmake)
     include(${CMAKE_CURRENT_LIST_DIR}/tests.cmake OPTIONAL)
     include(${CMAKE_CURRENT_LIST_DIR}/tests_preview.cmake OPTIONAL)
 endif()

@@ -36,14 +36,14 @@ constexpr const char* defaultPipeline =
 
 struct Options {
     PreviewOptions preview;
-    fs::path outRoot = "runs_drive", out;
+    fs::path outRoot = "data_raw", out;
     std::string pipeline = defaultPipeline, label = "drive";
     std::string started;
     std::vector<std::string> argv;
     double speed = 5;
     int steerStep = 5, maxSteer = 10;
     uint64_t holdTimeout = 800, interval = 1000, minFree = 1024;
-    bool accepted = false, selftest = false;
+    bool accepted = false, selftest = false, recOnStart = false;
 };
 
 inline uint64_t number(const std::string& text, const std::string& name) {
@@ -85,6 +85,7 @@ inline Options parse(int argc, char** argv) {
         if (preview == PreviewOptionResult::Parsed) continue;
         const std::string key = argv[i];
         if (key == "--selftest") { o.selftest = true; continue; }
+        if (key == "--rec-on-start") { o.recOnStart = true; continue; }
         if (key == "--accept-no-obstacle-brake") { o.accepted = true; continue; }
         if (key != "--out-root" && key != "--label" && key != "--pipeline" &&
             key != "--speed-cms" && key != "--steer-step-deg" && key != "--max-steer-deg" &&
@@ -185,6 +186,7 @@ inline bool motionKey(int key) {
     if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
     return key == 'w' || key == 'a' || key == 'd' || key == 'c';
 }
+inline bool recordingKey(int key) { return key == 'p' || key == 'P'; }
 inline bool safetyKey(int key) {
     return key == 27 || key == 3 || key == 'x' || key == 'X' ||
            key == 's' || key == 'S' || key == ' ';
@@ -232,7 +234,7 @@ void hookEvent(const char* event, const std::string& value);
 #endif
 inline bool acceptBatchKey(int key, bool stoppedInBatch) {
     // Đuôi chuyển động sau phím dừng phải bị bỏ trước cả ghi vết.
-    if (stoppedInBatch && motionKey(key)) return false;
+    if (stoppedInBatch && (motionKey(key) || recordingKey(key))) return false;
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
     hookEvent("key", key == 27 ? "ESC" : std::string(1, static_cast<char>(key)));
 #endif
@@ -247,6 +249,7 @@ class Control {
     KeyBurstGuard burstGuard_;
     bool awaitingPress_ = false;
     int64_t lastHeld_ = 0, lastW_ = 0, motor0Done_ = 0;
+    int64_t lastWInput_ = -1;
     void requireFreshPress() {
         awaitingPress_ = true;
         lastHeld_ = clock_.nowMs();
@@ -300,6 +303,7 @@ public:
         return burstGuard_.reject(tty, preview, readAt);
     }
     void rejectKeyBurst(int64_t readAt) {
+        lastWInput_ = readAt;
         requireFreshPress();
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
         hookEvent("key_burst", "");
@@ -312,6 +316,14 @@ public:
     std::mutex commandMutex;
     std::function<void(int64_t, float, int, State)> onCommand;
     std::function<void(const StopRecord&)> onStop;
+    std::function<void()> onRecording, onRecordingRejected;
+    void noteW(int key, int64_t readAt = -1) {
+        if (key == 'w' || key == 'W') lastWInput_ = readAt >= 0 ? readAt : clock_.nowMs();
+    }
+    bool canToggleRecording() const {
+        return state == State::DUNG && speed == 0 && !latched_error && !exiting &&
+               (lastWInput_ < 0 || clock_.nowMs() - lastWInput_ >= static_cast<int64_t>(o_.holdTimeout));
+    }
     Control(const Options& o, IMotor& m, IServo& s, IClock& c)
         : o_(o), motor_(m), servo_(s), clock_(c), burstGuard_(o.holdTimeout, c.nowMs()) {
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
@@ -398,6 +410,13 @@ public:
         }
     }
     void key(int k, bool cameraReady = true, int64_t readAt = -1) {
+        // P chỉ gửi yêu cầu ghi, không gọi đường điều khiển motor/servo hay gia hạn W.
+        if (recordingKey(k)) {
+            if (canToggleRecording()) { if (onRecording) onRecording(); }
+            else if (onRecordingRejected) onRecordingRejected();
+            return;
+        }
+        noteW(k, readAt);
         const auto stopsBeforeTick = stopCount;
         tick();
         if (k >= 'A' && k <= 'Z') k += 'a' - 'A';

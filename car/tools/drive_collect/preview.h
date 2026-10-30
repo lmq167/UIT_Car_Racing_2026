@@ -67,7 +67,9 @@ struct PreviewState {
     double cmd_speed = 0;
     double cmd_steer = 0;
     uint64_t images = 0;
-    bool recording = true;
+    bool recording = false;
+    uint64_t pass = 0;
+    bool recording_rejected = false;
     double frame_age_ms = 0;
     char stop_reason[64] = {};
 };

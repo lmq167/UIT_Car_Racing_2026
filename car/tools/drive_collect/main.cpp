@@ -1,4 +1,8 @@
 #include "options.h"
+#include "pass_store.h"
+#ifndef UCR_DRIVE_GIT_REVISION
+#define UCR_DRIVE_GIT_REVISION "unknown"
+#endif
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/videoio.hpp>
@@ -16,6 +20,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <poll.h>
@@ -531,6 +536,16 @@ class Capture {
     Event stats_;
     std::atomic<bool> quit_{false}, cameraDone_{false}, writerDone_{false};
     std::thread camera_, writer_;
+    struct RecordingRequest { bool on; std::string reason; int64_t wall, ns; uint64_t epoch; };
+    std::mutex recordingMutex_;
+    std::deque<RecordingRequest> recordingRequests_;
+    std::string endReason_ = "exit";
+    std::atomic<uint64_t> recordingEpoch_{0};
+    std::atomic<bool> recording_{false};
+    std::atomic<uint64_t> pass_{0}, nextPass_{0};
+    static void requireStore(const drive_collect::StoreStatus& status) {
+        if (!status) throw std::runtime_error(status.message);
+    }
     void fail(int status) { int expected = 0; failure.compare_exchange_strong(expected, status); }
     void rememberCommand() {
         history_.push_back(command_);
@@ -585,17 +600,38 @@ class Capture {
         cameraDone_ = true;
     }
     void writerLoop() noexcept {
+        std::unique_ptr<drive_collect::PassStore> owner;
         try {
-            std::ofstream csv;
-            csv.exceptions(std::ios::badbit | std::ios::failbit);
-            csv.open((o_.out / "metadata.csv").string());
-            csv << "frame,monotonic_ns,wall_time_unix_ms,filename,width,height,mean_luma,lap_var,dropped_since_last,cmd_speed,cmd_steer,state\n" << std::flush;
-            int64_t nextSave = 0, checkedSpace = 0;
+            drive_collect::SessionInfo session;
+            session.git = UCR_DRIVE_GIT_REVISION; session.argv = o_.argv;
+            session.label = o_.label; session.pipeline = o_.pipeline;
+            owner.reset(new drive_collect::PassStore(o_.outRoot, session));
+            auto& store = *owner;
+            requireStore(store.status());
+            nextPass_ = store.nextPass();
+            int64_t nextSave = 0, lastSaved = 0, passStarted = 0, checkedSpace = 0;
+            uint64_t appliedEpoch = 0;
             bool sessionWritten = false, monitorWritten = false;
             uint64_t dropped = 0;
             Event stats;
-            while (!quit_) {
+            while (true) {
                 writerBeat = nowMs();
+                std::deque<RecordingRequest> requests;
+                std::string endReason;
+                { std::lock_guard<std::mutex> guard(recordingMutex_);
+                  requests.swap(recordingRequests_); endReason = endReason_; }
+                for (const auto& request : requests) {
+                    if (request.on) {
+                        requireStore(store.beginPass(request.wall));
+                        passStarted = request.ns;
+                    } else if (store.active()) requireStore(store.endPass(request.reason, request.wall));
+                    appliedEpoch = request.epoch;
+                    pass_ = store.pass(); nextPass_ = store.nextPass();
+                }
+                if (quit_) {
+                    if (store.active()) requireStore(store.endPass(endReason));
+                    break;
+                }
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
                 if (hooks.jpegFail || hooks.csvFail) throw std::runtime_error("Tiêm lỗi ghi JPEG/CSV");
                 if (hooks.jpegHang || hooks.csvHang) while (true) std::this_thread::sleep_for(100ms);
@@ -610,7 +646,7 @@ class Capture {
                 {
                     std::unique_lock<std::mutex> guard(frameMutex_);
                     available_.wait_for(guard, 20ms, [&] { return quit_ || !pending_.empty(); });
-                    if (quit_) break;
+                    if (quit_) continue;
                     if (pending_.empty()) continue;
                     frame = std::move(pending_); command = pendingCommand_; wall = pendingWall_;
                 }
@@ -619,31 +655,38 @@ class Capture {
                     writeSession(o_, o_.started, "", frame.cols, frame.rows, monitor);
                     sessionWritten = true; monitorWritten = monitor.calibrated;
                 }
-                if (command.ns < nextSave) { ++dropped; continue; }
+                const bool stopped = command.state == State::DUNG && command.speed == 0;
+                if (!store.active() || !recording_ || appliedEpoch != recordingEpoch_ ||
+                    command.ns < passStarted || command.ns < nextSave ||
+                    (lastSaved && !drive_collect::frameDue(stopped, (command.ns - lastSaved) / 1000000))) {
+                    ++dropped; continue;
+                }
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
                 if (hooks.jpegSlow) std::this_thread::sleep_for(1500ms);
 #endif
                 const auto quality = imageQuality(frame);
-                std::ostringstream filename;
-                filename << "frame_" << std::setw(8) << std::setfill('0') << stats.saved + 1 << ".jpg";
-                const auto target = o_.out / filename.str();
-                const fs::path temp = target.string() + ".tmp";
                 std::vector<unsigned char> encoded;
                 if (!cv::imencode(".jpg", frame, encoded, {cv::IMWRITE_JPEG_QUALITY, 90})) throw std::runtime_error("Không mã hóa được JPEG");
-                std::ofstream image;
-                image.exceptions(std::ios::badbit | std::ios::failbit);
-                image.open(temp.string(), std::ios::binary);
-                image.write(reinterpret_cast<const char*>(encoded.data()), static_cast<std::streamsize>(encoded.size()));
-                image.close(); fs::rename(temp, target);
+                // Bỏ khung cũ nếu P/đường dừng đổi lượt trong lúc mã hóa.
+                if (!recording_ || appliedEpoch != recordingEpoch_) continue;
+                drive_collect::CaptureColumns columns;
+                columns.frame = stats.saved + 1; columns.monotonic_ns = command.ns;
+                columns.width = frame.cols; columns.height = frame.rows;
+                columns.mean_luma = quality.first; columns.lap_var = quality.second;
+                columns.dropped_since_last = dropped; columns.cmd_speed = command.speed;
+                columns.cmd_steer = command.angle; columns.state = stateName(command.state);
+                requireStore(store.saveFrame(encoded, wall, columns));
                 ++stats.saved; stats.bytes += encoded.size();
-                csv << std::setprecision(12) << stats.saved << ',' << command.ns << ',' << wall << ',' << filename.str()
-                    << ',' << frame.cols << ',' << frame.rows << ',' << quality.first << ',' << quality.second << ',' << dropped
-                    << ',' << command.speed << ',' << command.angle << ',' << stateName(command.state) << '\n' << std::flush;
                 { std::lock_guard<std::mutex> guard(statsMutex_); stats_ = stats; }
+                lastSaved = command.ns;
                 dropped = 0; nextSave = command.ns + static_cast<int64_t>(o_.interval) * 1000000;
                 writerBeat = nowMs();
             }
-        } catch (...) { fail(1); }
+        } catch (...) {
+            fail(1); recording_ = false;
+            // Lỗi đĩa có thể ngăn cả dòng end; vẫn cố đóng nếu kho còn ghi được.
+            if (owner && owner->active()) { try { owner->endPass("error"); } catch (...) {} }
+        }
         writerDone_ = true;
     }
 public:
@@ -651,6 +694,7 @@ public:
     std::atomic<int64_t> lastFrameNs{0}, writerBeat{0};
     std::atomic<int> width{0}, height{0};
     Capture(const Options& o, Control& control, PreviewHost& preview) : o_(o), control_(control), preview_(preview) {
+        if (o_.recOnStart) requestRecording(true);
         writerBeat = nowMs();
         writer_ = std::thread([this] { writerLoop(); });
         try { camera_ = std::thread([this] { cameraLoop(); }); }
@@ -677,7 +721,21 @@ public:
         auto result = stats_; result.width = width; result.height = height;
         return result;
     }
-    void requestStop() { quit_ = true; available_.notify_all(); }
+    bool recording() const { return recording_; }
+    uint64_t displayedPass() const { return recording_ ? pass_.load() : nextPass_.load(); }
+    void requestRecording(bool on, const std::string& reason = "user") {
+        std::lock_guard<std::mutex> guard(recordingMutex_);
+        if (recording_ == on) return;
+        if (recordingRequests_.size() >= 256) { fail(1); return; }
+        const auto epoch = recordingEpoch_.load() + 1;
+        recordingRequests_.push_back({on, reason, wallMs(), monotonicNs(), epoch});
+        recordingEpoch_ = epoch; recording_ = on;
+        available_.notify_one();
+    }
+    void requestStop(const std::string& reason) {
+        { std::lock_guard<std::mutex> guard(recordingMutex_); endReason_ = reason; quit_ = true; }
+        recording_ = false; available_.notify_all();
+    }
     bool finished() const { return cameraDone_ && writerDone_; }
     void join() { camera_.join(); writer_.join(); }
     // Đường thoát có hạn: luồng đã xong thì join, luồng treo thì detach để _exit không báo rò luồng.
@@ -779,6 +837,7 @@ int run(Options o) {
         // Luồng điều khiển đang kẹt trong HardwareCall và bị chốt, không sửa Control nữa.
         if (hardwareKind == 1 && servoOpened) servo.emergencyCenter();
         control.recordStop(reason, trigger, done);
+        if (capture) capture->requestStop("error");
         if (!o.out.empty()) {
             Event stats;
             if (capture) stats = capture->stats();
@@ -849,8 +908,14 @@ int run(Options o) {
             journal->warn(line.str());
             monitorLogged = true;
         };
-        control.onStop = [&](const StopRecord& record) { journal->push(record); };
+        control.onStop = [&](const StopRecord& record) {
+            journal->push(record);
+            if (capture && record.reason == "key_x") capture->requestRecording(false, "stop");
+        };
         capture.reset(new Capture(o, control, preview));
+        int64_t recordingRejectedUntil = 0;
+        control.onRecording = [&] { capture->requestRecording(!capture->recording()); };
+        control.onRecordingRejected = [&] { recordingRejectedUntil = nowMs() + 2000; };
         control.onCommand = [&](int64_t ns, float speed, int angle, State state) noexcept {
             try { capture->command(ns, speed, angle, state); } catch (...) { capture->failure = 1; }
         };
@@ -944,12 +1009,13 @@ int run(Options o) {
             bool stoppedInBatch = pendingDiscard;
             for (size_t keyIndex = 0; keyIndex < keys.size(); ++keyIndex) {
                 const int key = keys[keyIndex];
+                control.noteW(key, readAt); // Tính cả W bị bỏ ở đuôi lô cho điều kiện nhận P.
                 if (!acceptBatchKey(key, stoppedInBatch)) continue;
                 trigger = nowMs();
                 // Kiểm lại cờ/fault trước mỗi phím, không cho W cùng lô vượt qua lỗi.
                 if (stopping.load() || capture->failure || hardwareFault) break;
                 if (key == 3) throw Failure(130, "sigint", "Ctrl+C từ cửa sổ preview");
-                if (discardMotion && motionKey(key)) continue;
+                if (discardMotion && (motionKey(key) || recordingKey(key))) continue;
                 const auto latestFrame = capture->lastFrameNs.load();
                 const bool ready = latestFrame && nowMs() - latestFrame / 1000000 <= 500;
                 control.key(key, ready, readAt);
@@ -966,6 +1032,8 @@ int run(Options o) {
             std::snprintf(snapshot.state, sizeof(snapshot.state), "%s", stateName(control.state));
             snapshot.cmd_speed = control.speed; snapshot.cmd_steer = control.angle;
             snapshot.images = capture->stats().saved;
+            snapshot.recording = capture->recording(); snapshot.pass = capture->displayedPass();
+            snapshot.recording_rejected = nowMs() < recordingRejectedUntil;
             preview.publishState(snapshot);
             poll(nullptr, 0, 20);
         }
@@ -1013,7 +1081,7 @@ int run(Options o) {
     if (terminal) terminal->discard();
     preview.discardKeys();
     terminal.reset();
-    if (capture) capture->requestStop();
+    if (capture) capture->requestStop(code == 130 || code == 143 || code == 129 || code == 148 ? "stop" : code ? "error" : "exit");
     if (journal) journal->requestStop();
     const auto deadline = Clock::now() + 2s;
     while ((capture && !capture->finished()) || (journal && !journal->finished())) {
@@ -1028,7 +1096,10 @@ int run(Options o) {
         std::this_thread::sleep_for(10ms);
     }
     Event latest;
-    if (capture) { capture->join(); latest = capture->stats(); }
+    if (capture) {
+        capture->join(); latest = capture->stats();
+        if (capture->failure && !code) { code = 4; reason = "write_error"; cleanupExitCode = code; }
+    }
     const auto finalMonitor = preview.monitor();
     preview.shutdown(); // Camera đã dừng; motor 0/servo 0 đã gửi, vẫn trong hạn cứng 3 s.
     if (journal) journal->join();
@@ -1074,6 +1145,8 @@ int selftest(const Options& o) {
         std::ofstream probe;
         probe.exceptions(std::ios::badbit | std::ios::failbit);
         probe.open((temporary / "write_probe").string()); probe << "ucr_selftest\n"; probe.close();
+        drive_collect::PassStore store(temporary / "pass_store_probe");
+        if (!store.status()) throw std::runtime_error(store.status().message);
         outputOK = true;
         report(true, "out_root", fs::absolute(o.outRoot).string());
     } catch (const std::exception& e) { report(false, "out_root", e.what()); }
@@ -1132,16 +1205,30 @@ int selftest(const Options& o) {
 #endif
                     if (outputOK && cv::imwrite((temporary / "probe.jpg").string(), frame,
                                                {cv::IMWRITE_JPEG_QUALITY, 90}) &&
-                        fs::file_size(temporary / "probe.jpg") > 0) result = 0;
+                        fs::file_size(temporary / "probe.jpg") > 0) {
+                        result = 3;
+                        std::ifstream image((temporary / "probe.jpg").string(), std::ios::binary);
+                        std::vector<unsigned char> jpeg{std::istreambuf_iterator<char>(image), {}};
+                        drive_collect::PassStore store(temporary / "pass_store_frame_probe");
+                        drive_collect::CaptureColumns columns;
+                        columns.frame = 1; columns.monotonic_ns = monotonicNs();
+                        columns.width = frame.cols; columns.height = frame.rows; columns.state = "DUNG";
+                        if (store.status() && store.beginPass(wallMs()) &&
+                            store.saveFrame(jpeg, wallMs(), columns) && store.endPass("exit")) result = 0;
+                    }
                 }
             }
         } catch (...) {}
         _exit(result);
     }
     const int cameraResult = waitChild(camera, cameraDeadline);
-    report(cameraResult == 0 || cameraResult == 2, "camera", cameraResult == 0 || cameraResult == 2 ?
+    report(cameraResult == 0 || cameraResult == 2 || cameraResult == 3, "camera",
+           cameraResult == 0 || cameraResult == 2 || cameraResult == 3 ?
            "đã lấy 5 khung trong hạn 10 s" : "không mở/lấy đủ 5 khung trong hạn 10 s");
-    report(cameraResult == 0, "jpeg", cameraResult == 0 ? "đã ghi một JPEG thử" : "không ghi được JPEG thử");
+    report(cameraResult == 0 || cameraResult == 3, "jpeg", cameraResult == 0 || cameraResult == 3 ?
+           "đã ghi một JPEG thử" : "không ghi được JPEG thử");
+    report(cameraResult == 0, "pass_store", cameraResult == 0 ?
+           "đã ghi/đóng lượt thử trong thư mục tạm, không tạo lượt thật" : "không ghi được kho lượt thử");
     try { if (!temporary.empty()) fs::remove_all(temporary); report(true, "cleanup", "đã xóa thư mục thử"); }
     catch (const std::exception& e) { report(false, "cleanup", e.what()); }
 
@@ -1183,7 +1270,7 @@ int main(int argc, char** argv) {
     for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) sigaction(s, &action, nullptr);
     signal(SIGPIPE, SIG_IGN);
     if (argc == 2 && std::string(argv[1]) == "--help") {
-        std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root runs_drive] [--label drive]\n"
+        std::cout << "ucr_drive_collect --accept-no-obstacle-brake [--out-root data_raw] [--rec-on-start] [--label drive]\n"
                   << "  --pipeline CHUỖI --speed-cms 5 --steer-step-deg 5 --max-steer-deg 10\n"
                   << "  --hold-timeout-ms 800 [700..2000] --interval-ms 1000 --min-free-mb 1024\n"
                   << "  Hạn giữ tối thiểu 700 ms để bao phủ độ trễ tự lặp phím đầu của terminal.\n"
@@ -1191,7 +1278,7 @@ int main(int argc, char** argv) {
                   << "  --preview-fps 10 [1..30]; lỗi preview bắt buộc: mã 7, preview_unavailable\n"
                   << "  --selftest [--out-root DIR] [--pipeline CHUỖI]: tự kiểm không động cơ, không cần tty\n"
                   << "Mở là DUNG (motor 0, góc 0); có ảnh tươi: giữ W để tiến ngay; A trái, D phải; C trả lái.\n"
-                  << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; ảnh luôn được ghi.\n"
+                  << "S/Space dừng; X dừng khẩn rồi DUNG; Esc thoát; P bật/tắt REC khi xe dừng, mặc định REC tắt.\n"
                   << "Sau dừng/sự cố: nhả phím đủ --hold-timeout-ms rồi nhấn mới để chạy lại.\n"
                   << "Chạy qua scripts/run_drive.sh để có đường dừng độc lập.\n";
         return 0;

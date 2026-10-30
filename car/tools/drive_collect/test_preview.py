@@ -57,7 +57,7 @@ def preview(cfg, root, mode='ok', args=(), env=None, stderr=None):
     environment = {} if mode is None else dict(UCR_DRIVE_FAKE_PREVIEW=mode)
     environment.update(env or {})
     with d.running(cfg, root, args=['--interval-ms', '100'] + list(args),
-                   env=environment, stderr=stderr) as run:
+                   env=environment, stderr=stderr, rec_on_start=True) as run:
         seen = {}
 
         def sample():
@@ -545,10 +545,10 @@ def images(cfg, root):
     with preview(cfg, root, args=['--preview-scale', '0.2', '--preview-fps', '30']) as run:
         live_child(run)
         run.boot()
-        run.wait(lambda: len(run.rows()) >= 4, 5)
+        run.wait(lambda: len(run.rows()) >= 4, 8)
         run.finish()
         rows = run.rows()
-        folder = run.session_dir()
+        folder = run.out
         for row in rows:
             d.need((int(row['width']), int(row['height'])) == (1280, 720), 'CSV bị thu nhỏ theo preview')
             size, tables = d.read_jpeg(folder / row['filename'])
@@ -576,11 +576,11 @@ def same_preview(run, pid, token, state):
 
 
 def recording(rows, folder):
-    """P19/P23: đối chiếu ảnh thật với CSV; interval chung của preview() là 100 ms."""
+    """P19/P23: ảnh phẳng khớp frames.csv; xe đứng cách ít nhất 2 s."""
     names = [row['filename'] for row in rows]
     d.need(rows and len(set(names)) == len(names) and
            set(names) == {path.name for path in folder.glob('*.jpg')},
-           'JPEG không khớp từng dòng metadata.csv', 'preview_recording')
+           'JPEG không khớp từng dòng frames.csv', 'preview_recording')
     previous = None
     for row in rows:
         d.need((int(row['width']), int(row['height'])) == (1280, 720) and
@@ -590,8 +590,8 @@ def recording(rows, folder):
         size, _ = d.jpeg_info((folder / row['filename']).read_bytes())
         d.need(size == (1280, 720), 'JPEG không còn 1280×720', 'preview_recording')
         stamp = int(row['monotonic_ns'])
-        d.need(previous is None or stamp - previous >= 100000000,
-               'Ghi ảnh nhanh hơn --interval-ms 100', 'preview_recording')
+        d.need(previous is None or stamp - previous >= 2000000000,
+               'Xe đứng ghi ảnh nhanh hơn 1 ảnh/2 s', 'preview_recording')
         previous = stamp
     return rows
 
@@ -602,7 +602,7 @@ def long_idle(cfg, root):
         pid = live_child(run)
         token = identity(pid)
         run.boot()
-        counts = (len(list(run.out.glob('*/*.jpg'))), len(run.rows()))
+        counts = (len(list(run.out.glob('*.jpg'))), len(run.rows()))
         started = time.monotonic()
 
         def unchanged():
@@ -613,15 +613,15 @@ def long_idle(cfg, root):
                    'P19 từng rời DUNG', 'preview_lifetime')
             d.limits(events, moving=False)
 
-        for _ in range(60):
-            run.observe(1, unchanged)
-            current = (len(list(run.out.glob('*/*.jpg'))), len(run.rows()))
+        for _ in range(20):
+            run.observe(3, unchanged)
+            current = (len(list(run.out.glob('*.jpg'))), len(run.rows()))
             d.need(all(new > old for old, new in zip(counts, current)),
-                   'JPEG/metadata không tăng trong một giây ở interval 100 ms', 'preview_recording')
+                   'JPEG/frames không tăng trong ba giây khi xe đứng', 'preview_recording')
             counts = current
         d.need(time.monotonic() - started >= 60, 'P19 chưa đủ 60 s', 'setup')
         run.finish()
-        recording(run.rows(), run.session_dir())
+        recording(run.rows(), run.out)
         no_preview_loss(journal(run))
         no_orphans(run)
 
@@ -711,7 +711,7 @@ def compare_images(cfg, root):
 
             run.wait(unchanged, 5, 'Không hoàn thành cửa sổ thu 4 s')
             run.finish()
-            rows = recording(run.rows(), run.session_dir())
+            rows = recording(run.rows(), run.out)
             counts.append(sum(start <= int(row['monotonic_ns']) < end for row in rows))
             print('P23 preview={} moc_anh_ms={}'.format(enabled, [
                 round((int(row['monotonic_ns']) - start) / 1000000, 3)
@@ -719,7 +719,7 @@ def compare_images(cfg, root):
             no_preview_loss(journal(run))
             no_orphans(run)
     compare_counts(counts)
-    print('P23 JPEG trong 4 s, interval 100 ms: không preview {}, có preview {}'.format(*counts))
+    print('P23 JPEG trong 4 s, xe đứng tối đa 1 ảnh/2 s: không preview {}, có preview {}'.format(*counts))
 
 
 def patch_mutant(case, text):
@@ -752,12 +752,12 @@ def build_mutant(case, cfg, root):
     source.mkdir(parents=True)
     build.mkdir()
     # Sao chép nguyên byte tệp phụ trợ; không phân tích header/preview của DEV.
-    for name in ('main.cpp', 'options.h', 'preview.h', 'preview.cpp'):
+    for name in ('main.cpp', 'options.h', 'preview.h', 'preview.cpp', 'pass_store.h', 'pass_store.cpp'):
         shutil.copyfile(str(Path(cfg.source) / name), str(source / name))
     main = source / 'main.cpp'
     main.write_text(patch_mutant(case, main.read_text(encoding='utf-8')), encoding='utf-8')
-    target = ('add_library(ucr_drive_collect OBJECT main.cpp preview.cpp)\n' if case == 'P17' else
-              'add_executable(ucr_drive_collect main.cpp preview.cpp)\n')
+    target = ('add_library(ucr_drive_collect OBJECT main.cpp preview.cpp pass_store.cpp)\n' if case == 'P17' else
+              'add_executable(ucr_drive_collect main.cpp preview.cpp pass_store.cpp)\n')
     # P17 chỉ cần biên dịch object có lời gọi HighGUI sai chỗ, không cần X/highgui
     # của container; ký hiệu undefined cv::waitKey đã đủ để nm phát hiện đúng lỗi.
     (source / 'CMakeLists.txt').write_text(
@@ -938,6 +938,7 @@ def self_check():
             assert error.tag == 'false_preview_loss'
         else:
             raise AssertionError('Không bắt preview đóng/chết oan')
+    compare_counts([2, 2])
     compare_counts([40, 40])
     compare_counts([40, 39])
     compare_counts([39, 40])
@@ -955,16 +956,16 @@ def self_check():
         header = b'\xff\xd8\xff\xc0\x00\x0b\x08'
         tail = b'\x01\x01\x11\x00\xff\xd9'
         jpeg = header + d.struct.pack('>HH', 720, 1280) + tail
-        rows = [dict(filename='{}.jpg'.format(n), width='1280', height='720',
+        rows = [dict(filename='p0001_{:04d}.jpg'.format(n + 1), width='1280', height='720',
                      state='DUNG', cmd_speed='0', cmd_steer='0',
-                     monotonic_ns=str(1000000000 + n * 100000000)) for n in range(2)]
+                     monotonic_ns=str(1000000000 + n * 2000000000)) for n in range(2)]
         for row in rows:
             (folder / row['filename']).write_bytes(jpeg)
         recording(rows, folder)
         bad_rows = []
         for key, value in (('width', '640'), ('state', 'CHAY'), ('cmd_speed', '5'),
-                           ('cmd_steer', '5'), ('monotonic_ns', '1099999999'),
-                           ('filename', '0.jpg')):
+                           ('cmd_steer', '5'), ('monotonic_ns', '2999999999'),
+                           ('monotonic_ns', '1100000000'), ('filename', rows[0]['filename'])):
             altered = [dict(row) for row in rows]
             altered[1][key] = value
             bad_rows.append(altered)

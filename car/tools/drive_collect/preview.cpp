@@ -16,6 +16,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <sstream>
+#include <iomanip>
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -33,7 +34,7 @@ char decodeKey(int key) {
     if (key == 27) return 'E';
     if (key == 3) return '3';
     if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
-    return key < 128 && std::strchr("wasdcx ", key) && key != 0 ? char(key) : 0;
+    return key < 128 && std::strchr("wasdcxp ", key) && key != 0 ? char(key) : 0;
 }
 [[maybe_unused]] void sendKey(int fd, int key) {
     const char decoded = decodeKey(key);
@@ -202,6 +203,14 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                      << " images=" << state.images << " rec=" << (state.recording ? "ON" : "OFF");
                 cv::putText(display, line.str(), cv::Point(8, 20), cv::FONT_HERSHEY_SIMPLEX, 0.45,
                             cv::Scalar(0, 255, 0), 1);
+                std::ostringstream rec;
+                rec << (state.recording ? "REC ON LUOT " : "REC OFF - LUOT SAP DUNG ")
+                    << std::setw(4) << std::setfill('0') << state.pass;
+                cv::putText(display, rec.str(), cv::Point(8, 44), cv::FONT_HERSHEY_SIMPLEX, 0.6,
+                            state.recording ? cv::Scalar(0, 0, 255) : cv::Scalar(0, 255, 255), 2);
+                if (state.recording_rejected)
+                    cv::putText(display, "DUNG XE TRUOC KHI BAM P", cv::Point(8, 68),
+                                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 255), 2);
                 cv::imshow(window, display);
                 shared.shown.store(1, std::memory_order_release);
                 next_redraw = Clock::now() + std::chrono::milliseconds(100);

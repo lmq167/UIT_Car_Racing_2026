@@ -46,8 +46,8 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 106)]
-CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09']
+CASES += ['D{:02d}'.format(n) for n in range(65, 113)]
+CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09', 'M10', 'M11', 'M12', 'M13']
 
 
 class SafetyFailure(AssertionError):
@@ -217,7 +217,7 @@ def read_jpeg(path):
 
 class Run:
     def __init__(self, cfg, root, args=(), env=None, pipe=False, lock=None,
-                 accepted=True, command=None, out_root=None, stderr=None):
+                 accepted=True, command=None, out_root=None, stderr=None, rec_on_start=True):
         self.cfg, self.root = cfg, root
         root.mkdir(parents=True, exist_ok=True)
         self.out = Path(out_root) if out_root is not None else root / 'out'
@@ -255,6 +255,8 @@ class Run:
         argv = [cfg.hooks, '--out-root', str(self.out), '--label', 'test']
         if accepted:
             argv.append('--accept-no-obstacle-brake')
+        if rec_on_start:
+            argv.append('--rec-on-start')
         argv += list(args)
         self.started = monotonic_ms()
 
@@ -387,17 +389,17 @@ class Run:
         return monotonic_ms()
 
     def rows(self):
-        paths = list(self.out.glob('*/metadata.csv'))
+        paths = list(self.out.glob('frames.csv'))
         if not paths:
             return []
         lines = paths[0].read_text(encoding='utf-8').splitlines(True)
         reader = csv.DictReader([line for line in lines if line.endswith('\n')])
         if reader.fieldnames is None:
             return []
-        need(reader.fieldnames == COLUMNS, 'Sai cột/thứ tự CSV: ' + repr(reader.fieldnames))
+        need(reader.fieldnames == COLUMNS + ['pass', 'file'], 'Sai cột/thứ tự CSV: ' + repr(reader.fieldnames))
         rows = list(reader)
         need(all(None not in row and None not in row.values() for row in rows), 'CSV thiếu/thừa cột')
-        return rows
+        return [row for row in rows if int(row['monotonic_ns']) >= self.started * 1000000]
 
     def session_dir(self):
         paths = list(self.out.glob('*/session.json'))
@@ -446,9 +448,10 @@ class Run:
             need(summary['max_speed_cmd'] == max_speed and summary['max_steer_abs_cmd'] == max_steer,
                  'Sai cực đại tốc độ/góc: ' + repr(summary))
         rows = self.rows()
-        images = list(folder.glob('*.jpg'))
+        images = [self.out / row['filename'] for row in rows]
+        need(set(images) == set(self.out.glob('*.jpg')), 'Ảnh ngoài frames.csv')
         need(summary['images'] == len(rows) == len(images), 'Lệch số ảnh/CSV/summary')
-        need(not list(folder.rglob('*.tmp')), 'Còn tệp ảnh tạm sau thoát')
+        need(not list(self.out.rglob('*.tmp')), 'Còn tệp ảnh tạm sau thoát')
         previous, filenames = -1, set()
         for index, row in enumerate(rows, 1):
             need(int(row['frame']) == index, 'Số khung không liên tục')
@@ -458,7 +461,7 @@ class Run:
             name = row['filename']
             need(Path(name).name == name and name not in filenames, 'Tên ảnh sai/lặp')
             filenames.add(name)
-            size, _ = read_jpeg(folder / name)
+            size, _ = read_jpeg(self.out / name)
             need(size == (int(row['width']), int(row['height'])), 'Cỡ ảnh khác CSV')
             need(0 <= float(row['cmd_speed']) <= 5 and abs(float(row['cmd_steer'])) <= 10,
                  'Lệnh CSV ngoài giới hạn')
@@ -834,11 +837,133 @@ def unread_safety_case(n, cfg, root):
         final_stop(run.events())
 
 
+
+def pass_rows(run):
+    path = run.out / 'passes.csv'
+    if not path.exists():
+        return []
+    with path.open(encoding='utf-8', newline='') as stream:
+        return list(csv.DictReader(stream))
+
+
+def recording_case(n, cfg, root):
+    if n == 109:
+        out = root / 'shared'
+        out.mkdir(parents=True)
+        (out / '.pass_counter').write_text('1\n', encoding='utf-8')
+        (out / 'passes.csv').write_text('pass,event,ts_ms,frames,end_reason\n77,start,1,0,\n77,end,2,0,exit\n', encoding='utf-8')
+        sentinel = out / 'p0122_0001.jpg'
+        sentinel.write_bytes(b'GIU ANH CU')
+        with running(cfg, root / 'killed', out_root=out) as run:
+            run.boot()
+            rows = run.rows()
+            need(rows and int(rows[0]['pass']) == 123 and rows[0]['filename'] == 'p0123_0001.jpg',
+                 'Không lấy max ba nguồn + 1', 'rec_counter')
+            run.process.kill()  # Chỉ binary hooks; giữ lượt dở dang để phục hồi.
+            run.process.wait(timeout=5)
+        (out / '.pass_counter').write_text('1\n', encoding='utf-8')
+        with running(cfg, root / 'again', out_root=out) as run:
+            run.boot()
+            need(int(run.rows()[0]['pass']) == 124, 'Kill làm trùng lượt', 'rec_counter')
+            need(sentinel.read_bytes() == b'GIU ANH CU', 'Ghi đè ảnh cũ', 'rec_counter')
+            need(all(re.match(r'^p[0-9]{4,}_[0-9]{4,}\.jpg$', row['filename']) for row in run.rows()),
+                 'Tên ảnh sai', 'rec_counter')
+            run.finish(summary=False)
+        return
+    if n == 112:
+        for source in ('tty', 'preview'):
+            for key, reason, ended in (('x', 'esc', 'stop'), ('E', 'esc', 'exit'), ('3', 'sigint', 'stop')):
+                folder = root / (source + key)
+                folder.mkdir(parents=True)
+                batch = folder / 'keys'
+                env = {'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)} if source == 'preview' else {}
+                with running(cfg, folder, env=env) as run:
+                    run.boot()
+                    run.drive()
+                    mark = len(run.events())
+                    if source == 'preview':
+                        batch.write_bytes(key.encode('ascii'))
+                    elif key == '3':
+                        run.process.send_signal(signal.SIGINT)
+                    else:
+                        run.key('\x1b' if key == 'E' else key)
+                    if key == 'x':
+                        run.event('motor_speed', 0, mark)
+                        run.wait(lambda: any(row['event'] == 'end' for row in pass_rows(run)))
+                    run.finish(reason)
+                    ends = [row for row in pass_rows(run) if row['event'] == 'end']
+                    need(len(ends) == 1 and ends[0]['end_reason'] == ended,
+                         'Phím dừng không đóng lượt đúng: ' + repr(ends), 'rec_stop')
+                    ordered_stop(run.events()[mark:])
+        for fault in ('jpeg_fail', 'csv_fail'):
+            with running(cfg, root / fault) as run:
+                run.boot()
+                run.keep_driving()
+                run.inject(fault)
+                run.finish('write_error')
+                ends = [row for row in pass_rows(run) if row['event'] == 'end']
+                need(len(ends) == 1 and ends[0]['end_reason'] == 'error',
+                     'Lỗi ghi không đóng lượt error: ' + repr(ends), 'rec_error')
+        return
+    sources = ('tty', 'preview') if n == 108 else ('tty',)
+    for source in sources:
+        folder = root / source
+        folder.mkdir(parents=True)
+        batch = folder / 'keys'
+        env = {'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)} if source == 'preview' else {}
+        with running(cfg, folder, rec_on_start=False, args=['--interval-ms', '100'], env=env) as run:
+            run.boot(images=False)
+            run.wait(lambda: (run.out / 'sessions.csv').exists())
+            if n == 106:
+                run.observe(2.3)
+                need(not run.rows() and not list(run.out.glob('*.jpg')) and not pass_rows(run),
+                     'REC mặc định tắt vẫn ghi ảnh/lượt', 'rec_default')
+            elif n == 107:
+                run.keep_driving()
+                mark = len(run.events())
+                run.key('P')
+                run.observe(0.3)
+                need(not pass_rows(run) and not run.rows(), 'P khi chạy mở lượt/ghi ảnh', 'rec_moving')
+                need(not any(e[1] in ('motor_speed', 'servo_angle') and (e[1] != 'motor_speed' or e[2] == 0)
+                             for e in run.events()[mark:]), 'P làm đổi lệnh dừng/lái', 'rec_moving')
+            elif n in (108, 110):
+                mark = len(run.events())
+                if source == 'preview':
+                    batch.write_bytes(b'P')
+                else:
+                    run.key('P')
+                run.wait(lambda: run.rows(), message='P không bật ghi ảnh')
+                need([row['event'] for row in pass_rows(run)] == ['start'], 'Thiếu start lượt', 'rec_toggle')
+                if n == 110:
+                    run.wait(lambda: len(run.rows()) >= 3, seconds=8)
+                    stamps = [int(row['monotonic_ns']) for row in run.rows()]
+                    need(all(b - a >= 2000000000 for a, b in zip(stamps, stamps[1:])),
+                         'Xe đứng ghi nhanh hơn 1 ảnh/2 s', 'rec_cadence')
+                run.key('p')
+                run.wait(lambda: any(row['event'] == 'end' for row in pass_rows(run)))
+                count = len(run.rows())
+                run.observe(2.2)
+                need(len(run.rows()) == count, 'Ghi ảnh sau REC tắt', 'rec_toggle')
+                rows = pass_rows(run)
+                need(len(rows) == 2 and rows[1]['end_reason'] == 'user' and int(rows[1]['frames']) == count,
+                     'Sai dòng end/user/số ảnh', 'rec_toggle')
+                need(not any(e[1] in ('motor_speed', 'servo_angle') for e in run.events()[mark:]),
+                     'P ghi lệnh phần cứng', 'rec_toggle')
+            elif n == 111:
+                run.send(b'wwwwP')
+                run.observe(0.3)
+                need(not pass_rows(run) and not run.rows(), 'Lô dồn vẫn nhận P', 'rec_burst')
+                limits(run.events(), moving=False)
+            run.finish()
+
+
 def test_case(case, cfg, root):
     """Mỗi nhánh đối chiếu hàng cùng mã trong T21_test_cases_report, §8 ưu tiên."""
     n = int(case[1:])
     if case.startswith('M'):
         return mutation(case, cfg, root)
+    if n >= 106:
+        return recording_case(n, cfg, root)
     if n in (104, 105):
         return unread_safety_case(n, cfg, root)
     if n in (98, 99, 100, 101):
@@ -1201,16 +1326,16 @@ def test_case(case, cfg, root):
             run.wait(lambda: len(run.rows()) >= count, seconds=10)
             rows = run.rows()
             for row in rows:
-                size, tables = read_jpeg(run.session_dir() / row['filename'])
+                size, tables = read_jpeg(run.out / row['filename'])
                 need(size == (1280, 720), 'Ảnh giả sai cỡ nguồn')
                 if n == 45:
                     quality90(tables)
             if n == 45:
                 def check_committed():
-                    for path in run.session_dir().glob('*.jpg'):
+                    for path in run.out.glob('*.jpg'):
                         read_jpeg(path)
                     for row in run.rows():
-                        read_jpeg(run.session_dir() / row['filename'])
+                        read_jpeg(run.out / row['filename'])
                 run.observe(0.4, check_committed)
             if n == 46:
                 times = [int(row['monotonic_ns']) for row in rows]
@@ -1293,8 +1418,9 @@ def test_case(case, cfg, root):
             pipeline = 'videotestsrc is-live=true ! video/x-raw,width=320,height=240 ! videoconvert ! appsink'
             with running(cfg, root / 'override', args=['--interval-ms', '250', '--pipeline', pipeline]) as other:
                 other.boot()
-                other.wait(lambda: len(other.rows()) >= 3, 5)
-                stamps = [int(row['monotonic_ns']) for row in other.rows()]
+                other.keep_driving()
+                other.wait(lambda: len([row for row in other.rows() if row['state'] == 'CHAY']) >= 3, 5)
+                stamps = [int(row['monotonic_ns']) for row in other.rows() if row['state'] == 'CHAY']
                 need(all(b - a >= 250000000 for a, b in zip(stamps, stamps[1:])), 'Không giữ interval 250 ms')
                 need(stamps[2] - stamps[0] < 1800000000, 'Bỏ qua interval ghi đè, vẫn dùng 1000 ms')
                 other.finish()
@@ -1517,7 +1643,7 @@ def cleanup_deadline(n, cfg, root):
                 executable(build / 'ucr_drive_collect', prefix + 'child "$@"\n')
                 env.update(UCR_BUILD_DIR=str(build), JOURNAL=str(journal), CHILD_MARK=str(child_mark), HOOKS=cfg.hooks)
                 command = [cfg.bash, isolated_wrapper(cfg, folder), '--accept-no-obstacle-brake',
-                           '--out-root', str(folder / 'run' / 'out'), '--interval-ms', '100']
+                           '--out-root', str(folder / 'run' / 'out'), '--interval-ms', '100', '--rec-on-start']
             with stderr_pipe() as (reader, writer):
                 with running(cfg, folder / 'run', env=env, command=command,
                              args=['--interval-ms', '100'], stderr=writer if mode == 'stderr' else None) as run:
@@ -2158,9 +2284,15 @@ def wrapper_guards(n, cfg, root):
                         pass
 
 
+def mutant_source(case):
+    if case == 'M12':
+        return 'pass_store.cpp'
+    return 'main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09', 'M13') else 'options.h'
+
+
 def patch_mutant(case, folder):
     """Chỉ đọc/vá BẢN SAO để đặt neo; kỳ vọng lấy từ yêu cầu của phiếu."""
-    path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09') else 'options.h')
+    path = folder / mutant_source(case)
     source = path.read_text(encoding='utf-8')
     if case == 'M01':
         pattern, replacement = r'\bstop\("deadman",\s*deadmanAt\(\)\);', '(void)deadmanAt();'
@@ -2193,6 +2325,18 @@ def patch_mutant(case, folder):
         replacement = ('if (options.selftest) {\n'
                        '        DriveMotor forbidden; forbidden.init();\n'
                        '        try { return selftest(options); }')
+    elif case == 'M10':
+        pattern, replacement = r'recOnStart = false', 'recOnStart = true'
+    elif case == 'M11':
+        pattern = r'return state == State::DUNG && speed == 0 && !latched_error && !exiting &&'
+        replacement = 'return true ||'
+    elif case == 'M12':
+        pattern, replacement = r'std::max\(\{counter, csvMax, imageMax\}\)', 'counter'
+    elif case == 'M13':
+        pattern = r'(?m)^            nextPass_ = store.nextPass\(\);$'
+        replacement = '            nextPass_ = store.nextPass(); requireStore(store.beginPass(wallMs()));'
+        need(source.count('!recording_ || ') == 2, 'Sai hai cổng REC', 'mutation_setup')
+        source = source.replace('!recording_ || ', '')
     else:
         raise SafetyFailure('mutation_setup', 'Mã mutation không biết: ' + case)
     patched, count = re.subn(pattern, replacement, source, flags=re.DOTALL if case == 'M03' else 0)
@@ -2202,9 +2346,10 @@ def patch_mutant(case, folder):
 
 def mutation(case, cfg, root):
     original = dict(M01='D18', M02='D07', M03='D13', M04='D96', M05='D80', M06='D94', M07='D95',
-                    M08='D98', M09='D102')[case]
+                    M08='D98', M09='D102', M10='D106', M11='D107', M12='D109', M13='D106')[case]
     expected = dict(M01='deadman', M02='speed_reject', M03='x_order', M04='fresh_press', M05='init_once',
-                    M06='startup_stdin', M07='startup_preview', M08='key_burst', M09='selftest_hardware')[case]
+                    M06='startup_stdin', M07='startup_preview', M08='key_burst', M09='selftest_hardware', M10='rec_default', M11='rec_moving',
+                     M12='rec_counter', M13='rec_default')[case]
     # Không đếm lỗi build/khởi động/bản gốc thành bằng chứng test phát hiện lỗi.
     test_case(original, cfg, root / 'baseline')
     folder = root / 'source'
@@ -2220,7 +2365,7 @@ def mutation(case, cfg, root):
         'set(CMAKE_CXX_STANDARD 17)\nset(CMAKE_CXX_STANDARD_REQUIRED ON)\n'
         'find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgcodecs videoio imgproc OPTIONAL_COMPONENTS highgui)\n'
         'find_package(Threads REQUIRED)\n'
-        'add_executable(mutant "${SOURCE}/main.cpp" "${SOURCE}/preview.cpp")\n'
+        'add_executable(mutant "${SOURCE}/main.cpp" "${SOURCE}/preview.cpp" "${SOURCE}/pass_store.cpp")\n'
         'target_compile_definitions(mutant PRIVATE UCR_DRIVE_TEST_HOOKS=1)\n'
         'if(OpenCV_highgui_FOUND)\n'
         ' target_compile_definitions(mutant PRIVATE UCR_DRIVE_HAVE_HIGHGUI=1)\nendif()\n'
@@ -2365,11 +2510,17 @@ def self_check():
         for case, source in fixtures.items():
             folder = root / case
             folder.mkdir()
-            path = folder / ('main.cpp' if case in ('M05', 'M06', 'M07', 'M08', 'M09') else 'options.h')
+            path = folder / mutant_source(case)
             path.write_text(source, encoding='utf-8')
             patch_mutant(case, folder)
             need(path.read_text(encoding='utf-8') != source, 'Mutation không đổi bản sao')
             # Kiểm neo duy nhất trên mã hiện tại, chỉ vá bản sao tạm.
+            path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
+            patch_mutant(case, folder)
+        for case in ('M10', 'M11', 'M12', 'M13'):
+            folder = root / case
+            folder.mkdir()
+            path = folder / mutant_source(case)
             path.write_bytes((Path(__file__).resolve().parent / path.name).read_bytes())
             patch_mutant(case, folder)
         no_selftest_hardware([])
@@ -2380,7 +2531,7 @@ def self_check():
                 need(error.tag == 'selftest_hardware', 'Sai mã phép kiểm tự kiểm không động cơ')
             else:
                 raise AssertionError('Bộ kiểm tự kiểm bỏ lọt ' + event)
-    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG, không động cơ và 9 neo hiện tại; chưa chạy binary sản phẩm')
+    print('ĐẠT self-check: nhật ký TSan, vết/Init, hàng W, đăng ký ca, JPEG, không động cơ và 13 neo hiện tại; chưa chạy binary sản phẩm')
 
 
 def main():

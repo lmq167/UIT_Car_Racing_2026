@@ -61,6 +61,8 @@ void parserTests() {
     auto o = parseArgs({"--accept-no-obstacle-brake"});
     check(o.speed == 5 && o.maxSteer == 10 && o.holdTimeout == 800 && o.interval == 1000 && o.minFree == 1024,
           "Sai giá trị mặc định");
+    check(!o.recOnStart && o.outRoot == fs::path("data_raw"), "REC mặc định phải tắt, data_raw");
+    check(parseArgs({"--accept-no-obstacle-brake", "--rec-on-start"}).recOnStart, "Thiếu cờ REC lúc mở");
     check(o.pipeline.find("width=1280,height=720") != std::string::npos, "Sai kích thước camera");
     reject({});
     for (const auto& pair : std::vector<std::pair<std::string, std::string>>{
@@ -438,8 +440,37 @@ void commandCompletionTests() {
     check(applied.size() == before, "Công bố lệnh ghi lỗi như thành công");
 }
 
+void recordingTests() {
+    Options o; FakeClock clock; std::vector<std::string> events;
+    MotorStub motor(events); ServoStub servo(events); Control c(o, motor, servo, clock);
+    int accepted = 0, rejected = 0;
+    c.onRecording = [&] { ++accepted; };
+    c.onRecordingRejected = [&] { ++rejected; };
+    c.key('P'); c.key('p');
+    check(accepted == 2 && events.empty(), "P lúc dừng không được ghi motor/servo");
+    c.key('w'); const auto before = events.size(); c.key('p');
+    check(rejected == 1 && accepted == 2 && events.size() == before, "P lúc chạy phải bị bỏ");
+    c.key('s'); const auto stopped = events.size(); c.key('P');
+    check(rejected == 2 && events.size() == stopped, "P khi W còn giữ phải bị bỏ");
+    clock.time = 799; c.key('P'); check(accepted == 2, "P trước hạn nhả W");
+    clock.time = 800; c.key('P'); check(accepted == 3, "P sau hạn nhả W");
+    clock.time = 810; c.key('w'); c.key('s'); clock.time = 900; c.key('w');
+    clock.time = 1610; c.key('p'); check(accepted == 3, "W bị chặn vẫn là W đang giữ");
+    clock.time = 1700; c.key('p'); check(accepted == 4, "Không nhận P sau nhả W bị chặn");
+    clock.time = 1800; c.noteW('W'); // W bị vòng nhập bỏ trước Control::key.
+    clock.time = 2599; c.key('p'); check(accepted == 4, "P nhận khi W đuôi lô chưa nhả");
+    clock.time = 2600; c.key('p'); check(accepted == 5, "P không nhận sau nhả W đuôi lô");
+    clock.time = 2700; c.rejectKeyBurst(clock.time); c.key('p');
+    check(accepted == 5, "P nhận ngay sau lô bị xả có W chưa đọc");
+    KeyDecoder decoder; const unsigned char bytes[] = {'P', 'p'};
+    check(decoder.decode(bytes, 2, 0) == std::vector<int>({'P', 'p'}), "TTY mất P/p");
+    check(!acceptBatchKey('P', true) && !acceptBatchKey('p', true), "Đuôi sau dừng còn P");
+    std::vector<int> retained; int reads = 0;
+    check(drainSafetyKeys(retained, [&] { return reads++ ? std::vector<int>{} : std::vector<int>{'p', 'P', 'x', 27, 3}; }, [] { return 0; }), "Xả lô P lỗi");
+    check(retained == std::vector<int>({'x', 27, 3}), "Xả lô phải bỏ P, giữ phím an toàn");
+}
 }
 int main() {
-    try { parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); drainTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
+    try { recordingTests(); parserTests(); decoderTests(); controlTests(); revisedSafetyTests(); burstTests(); batchKeyTests(); drainTests(); commandCompletionTests(); std::cout << "ĐẠT " << checks << " kiểm tra tham số, phím và trạng thái\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }
