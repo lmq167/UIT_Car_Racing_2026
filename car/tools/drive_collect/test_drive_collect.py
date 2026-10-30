@@ -46,7 +46,7 @@ REASONS = dict(esc=0, args=2, no_accept_flag=2, not_tty=2, open_fail=3,
                sigint=130, sigterm=143, sighup=129, sigtstp=148, motor_init_fail=3)
 CUT = {4, 5, 42, 52, 54, 59, 61, 63, 64}
 CASES = ['D{:02d}'.format(n) for n in range(1, 65) if n not in CUT]
-CASES += ['D{:02d}'.format(n) for n in range(65, 113)]
+CASES += ['D{:02d}'.format(n) for n in range(65, 114)]
 CASES += ['M01', 'M02', 'M03', 'M04', 'M05', 'M06', 'M07', 'M08', 'M09', 'M10', 'M11', 'M12', 'M13']
 
 
@@ -406,11 +406,14 @@ class Run:
         need(len(paths) == 1, 'Cần đúng một session.json: ' + repr(paths))
         return paths[0].parent
 
-    def finish(self, reason='esc', codes=None, cleanup=True, summary=True):
+    def finish(self, reason='esc', codes=None, cleanup=True, summary=True, esc_mark=None):
         if reason == 'esc':
             self.pump = False
-            mark = len(self.events())
-            key = self.key('\x1b')
+            mark = len(self.events()) if esc_mark is None else esc_mark
+            # Ca đã gửi Esc phải kiểm chính phím đó, không gửi thêm lúc con đang thoát.
+            key = (self.key('\x1b') if esc_mark is None else
+                   self.wait(lambda: matched(self.events()[mark:], 'key', 'ESC'),
+                             alive=False, message='Không thấy Esc đã gửi')[0][1])
             stop_by(self, mark, key[0])
         self.wait(lambda: self.process.poll() is not None, seconds=8,
                   message='Không thoát: ' + reason, alive=False)
@@ -890,7 +893,7 @@ def recording_case(n, cfg, root):
                     if key == 'x':
                         run.event('motor_speed', 0, mark)
                         run.wait(lambda: any(row['event'] == 'end' for row in pass_rows(run)))
-                    run.finish(reason)
+                    run.finish(reason, esc_mark=mark if key == 'E' else None)
                     ends = [row for row in pass_rows(run) if row['event'] == 'end']
                     need(len(ends) == 1 and ends[0]['end_reason'] == ended,
                          'Phím dừng không đóng lượt đúng: ' + repr(ends), 'rec_stop')
@@ -905,13 +908,20 @@ def recording_case(n, cfg, root):
                 need(len(ends) == 1 and ends[0]['end_reason'] == 'error',
                      'Lỗi ghi không đóng lượt error: ' + repr(ends), 'rec_error')
         return
-    sources = ('tty', 'preview') if n == 108 else ('tty',)
-    for source in sources:
+    sources = ('tty', 'preview') if n in (108, 113) else ('tty',)
+    scenarios = [(source, hold) for source in sources
+                 for hold in ((800, 1400) if n == 113 else (800,))]
+    for source, hold in scenarios:
         folder = root / source
+        if n == 113:
+            folder = folder / str(hold)
         folder.mkdir(parents=True)
         batch = folder / 'keys'
         env = {'UCR_DRIVE_FAKE_PREVIEW': 'batch:' + str(batch)} if source == 'preview' else {}
-        with running(cfg, folder, rec_on_start=False, args=['--interval-ms', '100'], env=env) as run:
+        args = ['--interval-ms', '100']
+        if n == 113:
+            args += ['--hold-timeout-ms', str(hold)]
+        with running(cfg, folder, rec_on_start=False, args=args, env=env) as run:
             run.boot(images=False)
             run.wait(lambda: (run.out / 'sessions.csv').exists())
             if n == 106:
@@ -926,20 +936,48 @@ def recording_case(n, cfg, root):
                 need(not pass_rows(run) and not run.rows(), 'P khi chạy mở lượt/ghi ảnh', 'rec_moving')
                 need(not any(e[1] in ('motor_speed', 'servo_angle') and (e[1] != 'motor_speed' or e[2] == 0)
                              for e in run.events()[mark:]), 'P làm đổi lệnh dừng/lái', 'rec_moving')
-            elif n in (108, 110):
+            elif n in (108, 110, 113):
                 mark = len(run.events())
                 if source == 'preview':
                     batch.write_bytes(b'P')
+                    first_p = run.event('key', 'P', mark)
                 else:
-                    run.key('P')
+                    first_p = run.key('P')
                 run.wait(lambda: run.rows(), message='P không bật ghi ảnh')
                 need([row['event'] for row in pass_rows(run)] == ['start'], 'Thiếu start lượt', 'rec_toggle')
+                rec_window = max(run.hold_timeout, 1000)
+                if n == 113:
+                    run.observe(max(0, (first_p[0] + rec_window - 100 - monotonic_ms()) / 1000))
+                    if source == 'preview':
+                        repeat_mark = len(run.events())
+                        batch.write_bytes(b'P')
+                        repeat_p = run.event('key', 'P', repeat_mark)
+                    else:
+                        repeat_p = run.key('p')
+                    need(0 < repeat_p[0] - first_p[0] < rec_window,
+                         'Chưa dựng được P lặp trong cửa sổ', 'setup')
+
+                    def still_recording():
+                        need([row['event'] for row in pass_rows(run)] == ['start'],
+                             'P lặp đóng/mở thêm lượt', 'rec_debounce')
+
+                    run.observe(max(0, (first_p[0] + rec_window + 150 - monotonic_ms()) / 1000),
+                                still_recording)
                 if n == 110:
                     run.wait(lambda: len(run.rows()) >= 3, seconds=8)
                     stamps = [int(row['monotonic_ns']) for row in run.rows()]
                     need(all(b - a >= 2000000000 for a, b in zip(stamps, stamps[1:])),
                          'Xe đứng ghi nhanh hơn 1 ảnh/2 s', 'rec_cadence')
-                run.key('p')
+                # Chờ theo mốc P được nhận và hạn giữ của ca; không đổi ngưỡng an toàn.
+                run.observe(max(0, (first_p[0] + rec_window + 150 - monotonic_ms()) / 1000))
+                if source == 'preview':
+                    off_mark = len(run.events())
+                    batch.write_bytes(b'P')
+                    off_p = run.event('key', 'P', off_mark)
+                else:
+                    off_p = run.key('p')
+                need(off_p[0] - first_p[0] >= rec_window + 150,
+                     'P tắt chưa qua cửa sổ chống lặp và biên', 'setup')
                 run.wait(lambda: any(row['event'] == 'end' for row in pass_rows(run)))
                 count = len(run.rows())
                 run.observe(2.2)
@@ -947,6 +985,8 @@ def recording_case(n, cfg, root):
                 rows = pass_rows(run)
                 need(len(rows) == 2 and rows[1]['end_reason'] == 'user' and int(rows[1]['frames']) == count,
                      'Sai dòng end/user/số ảnh', 'rec_toggle')
+                if n == 113:
+                    need(count > 0, 'P lặp tạo lượt rỗng', 'rec_debounce')
                 need(not any(e[1] in ('motor_speed', 'servo_angle') for e in run.events()[mark:]),
                      'P ghi lệnh phần cứng', 'rec_toggle')
             elif n == 111:
