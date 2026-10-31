@@ -766,7 +766,10 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
                     children_reaped(process)
                     inspect_output(out, 'error', 1, 0)
                     require(inspect_session(out)['pipeline_used'] == args[1], 'Sai pipeline thực tế')
-                    # Container có thể thiếu GStreamer; đường GStreamer thật được kiểm ở bản Ubuntu.
+                    # Chỉ container thiếu GStreamer mới được bỏ qua; có GStreamer mà pipeline lỗi thì HỎNG.
+                    linked = subprocess.run([ldd, hooks_binary], stdout=subprocess.PIPE,
+                                            stderr=subprocess.STDOUT, timeout=30).stdout.decode(errors='replace')
+                    require('gstreamer' not in linked.lower(), 'Có GStreamer nhưng pipeline lỗi: ' + error)
                     return
             _, rows = inspect_output(out, 'max_frames', 0, 3)
             require(all((int(r['width']), int(r['height'])) == (80, 60) for r in rows),
