@@ -161,13 +161,85 @@ class SegMasksTests(unittest.TestCase):
     def test_cli_threshold_changes_result(self):
         self.image[190:220, 190:220] = (160, 160, 220)
         self.save_original()
-        self.assertEqual(self.run_cli()[0], 0)
+        # Ca này chỉ kiểm ngưỡng tuyệt đối, tách ảnh hưởng của quy tắc sáng cục bộ.
+        self.assertEqual(self.run_cli('--loc-diff', '255')[0], 0)
         path = self.out / (self.name + '.png')
         self.assertEqual(int(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[200, 200]), 2)
-        self.assertEqual(self.run_cli('--sat-max', '0')[0], 0)
+        self.assertEqual(self.run_cli('--sat-max', '0', '--loc-diff', '255')[0], 0)
         self.assertEqual(int(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[200, 200]), 1)
-        self.assertEqual(self.run_cli('--val-min', '240')[0], 0)
+        self.assertEqual(self.run_cli('--val-min', '240', '--loc-diff', '255')[0], 0)
         self.assertEqual(int(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[200, 200]), 1)
+
+    def test_dim_gray_stripe_and_signed_brightness_difference(self):
+        self.image[190:211, 190:211] = 140
+        self.image[240:261, 190:211] = 60
+        mask = self.mask()
+        self.assertEqual(int(mask[200, 200]), 2)
+        self.assertEqual(int(mask[250, 200]), 1)
+        self.assertEqual(int(mask[280, 200]), 1)
+
+    def test_local_threshold_boundaries(self):
+        self.image[190:211, 190:211] = (110, 110, 140)
+        sat = int(cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)[200, 200, 1])
+        self.assertEqual(int(self.mask(loc_diff=40, loc_sat_max=sat)[200, 200]), 2)
+        self.assertEqual(int(self.mask(loc_diff=41, loc_sat_max=sat)[200, 200]), 1)
+        self.assertEqual(int(self.mask(loc_diff=40, loc_sat_max=sat - 1)[200, 200]), 1)
+
+    def test_closing_fills_holes_without_crossing_road_or_obstacle(self):
+        # Khe thảm và vật trắng nhỏ đều dễ bị phép đóng lấp nếu thiếu bước AND lại.
+        self.road['segmentation'] = [[100, 100, 700, 100, 700, 600, 100, 600,
+                                      100, 202, 102, 202, 102, 199, 100, 199]]
+        obstacle = dict(self.obstacle, segmentation=[[104, 195, 105, 195, 105, 196, 104, 196]])
+        self.image[190:211, 95:116] = 255
+        self.image[200:202, 107:109] = (20, 60, 100)
+        annotations = [self.road, self.obstacle, obstacle]
+        before = self.mask(annotations, close_kernel=1)
+        mask = self.mask(annotations)
+        self.assertTrue((before[200:202, 107:109] == 1).all())
+        self.assertTrue((mask[200:202, 107:109] == 2).all())
+        self.assertEqual(int(mask[200, 99]), 0)
+        self.assertEqual(int(mask[200, 101]), 0)
+        self.assertEqual(int(mask[195, 104]), 0)
+        np.testing.assert_array_equal(mask[before == 0], before[before == 0])
+
+    def test_invalid_local_parameters_rejected_by_function_and_cli(self):
+        for name, value in (('loc_blur', 1), ('loc_blur', 2), ('loc_blur', 60),
+                            ('loc_diff', -1), ('loc_diff', 256),
+                            ('loc_sat_max', -1), ('loc_sat_max', 256),
+                            ('close_kernel', 0), ('close_kernel', -1)):
+            with self.subTest(name=name, value=value):
+                with self.assertRaises(ValueError):
+                    self.mask(**{name: value})
+                code, output, error = self.run_cli('--' + name.replace('_', '-'), str(value))
+                self.assertEqual(code, 1)
+                self.assertIn('LỖI:', error)
+                self.assertFalse(self.out.exists())
+
+    def test_valid_local_parameter_limits(self):
+        for name, value in (('loc_blur', 3), ('loc_diff', 0), ('loc_diff', 255),
+                            ('loc_sat_max', 0), ('loc_sat_max', 255),
+                            ('close_kernel', 1), ('close_kernel', 2)):
+            with self.subTest(name=name, value=value):
+                mask = self.mask(**{name: value})
+                self.assertEqual(mask.dtype, np.dtype('uint8'))
+                self.assertTrue(set(np.unique(mask)) <= {0, 1, 2})
+
+    def test_each_new_parameter_changes_function_and_cli_result(self):
+        for name, value in (('loc_blur', 3), ('loc_diff', 60),
+                            ('loc_sat_max', 0), ('close_kernel', 1)):
+            with self.subTest(name=name):
+                self.image[:] = (20, 60, 100)
+                self.image[190:211, 190:211] = (110, 110, 140)
+                if name == 'close_kernel':
+                    self.image[200:202, 200:202] = 0
+                self.assertEqual(int(self.mask()[200, 200]), 2)
+                self.assertEqual(int(self.mask(**{name: value})[200, 200]), 1)
+                self.save_original()
+                path = self.out / (self.name + '.png')
+                self.assertEqual(self.run_cli()[0], 0)
+                self.assertEqual(int(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[200, 200]), 2)
+                self.assertEqual(self.run_cli('--' + name.replace('_', '-'), str(value))[0], 0)
+                self.assertEqual(int(cv2.imread(str(path), cv2.IMREAD_UNCHANGED)[200, 200]), 1)
 
     def test_missing_original_warns_and_skips(self):
         code, output, error = self.run_cli()

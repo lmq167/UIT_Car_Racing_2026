@@ -45,11 +45,18 @@ def polygons(annotation, width, height):
     return result
 
 
-def make_mask(image, annotations, categories, width, height, sat_max=75, val_min=205):
+def make_mask(image, annotations, categories, width, height, sat_max=75, val_min=205,
+              loc_blur=61, loc_diff=30, loc_sat_max=90, close_kernel=5):
     if image.shape != (SIZE[1], SIZE[0], 3):
         raise ValueError('Ảnh gốc phải có kích thước 1280×720, 3 kênh màu')
     if not 0 <= sat_max <= 255 or not 0 <= val_min <= 255:
         raise ValueError('Ngưỡng HSV phải nằm trong 0..255')
+    if not isinstance(loc_blur, int) or loc_blur < 3 or loc_blur % 2 != 1:
+        raise ValueError('loc_blur phải là số nguyên lẻ ≥ 3')
+    if not 0 <= loc_diff <= 255 or not 0 <= loc_sat_max <= 255:
+        raise ValueError('Ngưỡng vạch cục bộ phải nằm trong 0..255')
+    if not isinstance(close_kernel, int) or close_kernel < 1:
+        raise ValueError('close_kernel phải là số nguyên ≥ 1')
     if not np.isfinite([width, height]).all() or width <= 0 or height <= 0:
         raise ValueError('width/height COCO phải hữu hạn và lớn hơn 0')
     unknown = set(categories.values()) - {'mat_sa_ban', 'vat'}
@@ -66,7 +73,16 @@ def make_mask(image, annotations, categories, width, height, sat_max=75, val_min
         for ring in layers[name]:
             cv2.fillPoly(mask, [ring], value)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    mask[(mask == 1) & (hsv[:, :, 1] <= sat_max) & (hsv[:, :, 2] >= val_min)] = 2
+    sat, val = hsv[:, :, 1], hsv[:, :, 2]
+    white_abs = (sat <= sat_max) & (val >= val_min)
+    bg = cv2.medianBlur(val, loc_blur)
+    # Chuyển sang số có dấu để pixel tối hơn nền không bị tràn uint8 thành vạch.
+    white_loc = (val.astype(np.int16) - bg.astype(np.int16) >= loc_diff) & (sat <= loc_sat_max)
+    road = mask == 1
+    vach = ((white_abs | white_loc) & road).astype(np.uint8)
+    vach = cv2.morphologyEx(vach, cv2.MORPH_CLOSE,
+                            np.ones((close_kernel, close_kernel), dtype=np.uint8))
+    mask[(vach != 0) & road] = 2
     return mask
 
 
@@ -116,11 +132,21 @@ def main(argv=None):
                         help='Thư mục ảnh JPG gốc')
     parser.add_argument('--sat-max', type=int, default=75, help='Trần độ bão hòa của vạch (0..255)')
     parser.add_argument('--val-min', type=int, default=205, help='Sàn độ sáng của vạch (0..255)')
+    parser.add_argument('--loc-blur', type=int, default=61, help='Cỡ lọc trung vị nền sáng (số lẻ ≥ 3)')
+    parser.add_argument('--loc-diff', type=int, default=30, help='Chênh sáng tối thiểu so với nền (0..255)')
+    parser.add_argument('--loc-sat-max', type=int, default=90, help='Trần bão hòa vạch cục bộ (0..255)')
+    parser.add_argument('--close-kernel', type=int, default=5, help='Cỡ nhân lấp lỗ vạch (≥ 1)')
     parser.add_argument('--preview', type=Path, help='Thư mục ảnh phủ màu để soát nhãn')
     args = parser.parse_args(argv)
     try:
         if not 0 <= args.sat_max <= 255 or not 0 <= args.val_min <= 255:
             raise ValueError('Ngưỡng HSV phải nằm trong 0..255')
+        if args.loc_blur < 3 or args.loc_blur % 2 != 1:
+            raise ValueError('loc_blur phải là số nguyên lẻ ≥ 3')
+        if not 0 <= args.loc_diff <= 255 or not 0 <= args.loc_sat_max <= 255:
+            raise ValueError('Ngưỡng vạch cục bộ phải nằm trong 0..255')
+        if args.close_kernel < 1:
+            raise ValueError('close_kernel phải là số nguyên ≥ 1')
         destinations = [args.out] + ([args.preview] if args.preview else [])
         for destination in destinations:
             if args.images.resolve() in (destination.resolve(),) + tuple(destination.resolve().parents):
@@ -142,7 +168,8 @@ def main(argv=None):
             if image is None:
                 raise ValueError('Không đọc được ảnh gốc: {}'.format(source))
             mask = make_mask(image, annotations, categories, metadata['width'], metadata['height'],
-                             args.sat_max, args.val_min)
+                             args.sat_max, args.val_min, args.loc_blur, args.loc_diff,
+                             args.loc_sat_max, args.close_kernel)
             write_image(args.out / (name + '.png'), mask)
             if args.preview:
                 overlay = image.copy()
