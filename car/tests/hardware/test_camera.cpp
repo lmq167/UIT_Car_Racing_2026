@@ -1,4 +1,5 @@
 #include "hardware/Camera.h"
+#include "CameraGuides.h"
 
 #include <iostream>
 #include <opencv2/highgui.hpp>
@@ -22,6 +23,7 @@ int main()
             continue;
         }
 
+        DrawGuides(frame);
         cv::imshow("Camera Test", frame);
         const int key = cv::waitKey(1);
         if (key == static_cast<int>('q') || key == 27)
