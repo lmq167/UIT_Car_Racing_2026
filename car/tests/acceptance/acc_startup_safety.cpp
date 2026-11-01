@@ -128,7 +128,7 @@ void Startup(const std::string &scenario) {
                 if(seen->frames.empty()) throw std::runtime_error("Tiền đề: không có ảnh đầu thực tế");
                 first=seen->frames.front().ms;
             }
-            if(!position && (first<3000 || first>3500)) throw std::runtime_error("Tiền đề: ảnh đầu không ở sau ngắt 0–3 s");
+            if(!position && (first<3000 || first>3500)) throw std::runtime_error("Tiền đề: ảnh đầu không ở sau ngắt 0–3 s (first="+std::to_string(first)+" ms)");
             end=position ? 4500 : first+3000+delta+600;
             if(!WaitUntil(Clock::now()+std::chrono::seconds(8),[&] { return !car.IsRunning() || app::fake::Millis()>=end; }))
                 throw std::runtime_error("Không đủ cửa sổ quan sát tăng mềm");
