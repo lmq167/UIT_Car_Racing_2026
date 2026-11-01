@@ -19,6 +19,9 @@ TRACK_SURFACE = 'track_surface'
 LINE = 'line'
 OBJECT = 'object'
 GLARE = 'glare'
+QA_STRIP = 22
+QA_FONT = cv2.FONT_HERSHEY_SIMPLEX
+QA_SCALE = 0.45
 
 
 def original_name(filename):
@@ -219,13 +222,17 @@ def qa_tile(image, mask, object_mask, glare, name, flag, sharp_rejected=None):
         selected = sharp_rejected != 0
         overlay[selected] = (image[selected] * 0.6 + np.array((0, 165, 255)) * 0.4).astype(np.uint8)
     tile = cv2.resize(overlay, (320, 180), interpolation=cv2.INTER_AREA)
-    # Chia các cờ thành hai dòng để chữ không tràn khỏi ô 320 pixel.
-    lines = [name] + ([flag.replace(';', ';\n', 1)] if flag else [])
-    for index, line in enumerate('\n'.join(lines).splitlines()):
-        position = (5, 17 + index * 17)
-        cv2.putText(tile, line, position, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3,
-                    cv2.LINE_AA)
-        cv2.putText(tile, line, position, cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
+    # Dải nền đen đặc phía trên ô: một dòng chữ trắng cỡ cố định, cờ (nếu có) ở cuối dòng, màu vàng.
+    tile[:QA_STRIP] = 0
+    match = re.search(r'car6_p\d{4}_\d{4}', name)
+    label = match.group(0) if match else name[:15]
+    flag_width = cv2.getTextSize(flag, QA_FONT, QA_SCALE, 1)[0][0] if flag else 0
+    while flag and flag_width + cv2.getTextSize(label, QA_FONT, QA_SCALE, 1)[0][0] > 312 - 8:
+        flag = flag[:-1]
+        flag_width = cv2.getTextSize(flag, QA_FONT, QA_SCALE, 1)[0][0] if flag else 0
+    cv2.putText(tile, label, (4, 15), QA_FONT, QA_SCALE, (255, 255, 255), 1, cv2.LINE_AA)
+    if flag:
+        cv2.putText(tile, flag, (316 - flag_width, 15), QA_FONT, QA_SCALE, (0, 255, 255), 1,
                     cv2.LINE_AA)
     return tile
 

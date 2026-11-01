@@ -440,6 +440,26 @@ class SegMasksTests(unittest.TestCase):
         self.assertFalse(last[200:].any())
         self.assertFalse(last[20:160, 340:].any())
 
+    def test_qa_tile_has_solid_text_strip_with_yellow_flag(self):
+        image = np.full((720, 1280, 3), 255, dtype=np.uint8)
+        zeros = np.zeros((720, 1280), dtype=np.uint8)
+        plain = tools.qa_tile(image, zeros, zeros, zeros, 'car6_p0014_0001', '')
+        flagged = tools.qa_tile(image, zeros, zeros, zeros, 'car6_p0014_0001', 'ratio_thap;nhieu_manh')
+        strip = tools.QA_STRIP
+        self.assertEqual(strip, 22)
+        for tile in (plain, flagged):
+            self.assertEqual(tile.shape, (180, 320, 3))
+            self.assertLess(float(tile[:strip].mean()), 80)  # dải nền đen đặc, chỉ chữ là sáng
+            self.assertGreater(float(tile[strip:].mean()), 250)  # phần ảnh bên dưới không bị vẽ lên
+            self.assertTrue((tile[:strip, :130].min(axis=2) > 200).any())  # chữ trắng của tên
+        np.testing.assert_array_equal(plain[strip:], flagged[strip:])
+        yellow = lambda tile: (tile[:strip, :, 0] < 60) & (tile[:strip, :, 1] > 200) & (tile[:strip, :, 2] > 200)
+        self.assertFalse(yellow(plain).any())
+        self.assertTrue(yellow(flagged)[:, 160:].any())
+        self.assertFalse(yellow(flagged)[:, :100].any())
+        longer = tools.qa_tile(image, zeros, zeros, zeros, 'tien_to_car6_p0014_0001_hau_to_rat_dai', 'ratio_thap;nhieu_manh')
+        np.testing.assert_array_equal(longer, flagged)
+
     def test_qa_overlay_colors_and_does_not_change_preview(self):
         self.categories[7] = tools.GLARE
         self.image[190:280, 190:280] = 255
