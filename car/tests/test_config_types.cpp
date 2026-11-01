@@ -11,6 +11,19 @@ namespace {
 void Check(bool ok,const std::string &message) { if(!ok) throw std::runtime_error(message); }
 }
 int main() {
+    {
+        const common::Config defaults;
+        Check(defaults.camera_width==1280 && defaults.camera_height==720,"Cỡ ảnh mặc định phải là 1280x720");
+        const std::string source=__FILE__;
+        cv::FileStorage yaml(source.substr(0,source.find_last_of("/\\"))+"/../config.yaml",cv::FileStorage::READ);
+        Check(yaml.isOpened(),"Không đọc được config.yaml của cây nguồn");
+        Check(int(yaml["camera_width"])==1280 && int(yaml["camera_height"])==720,
+              "config.yaml phải ghi cỡ ảnh 1280x720");
+        for(const auto &pipeline:{defaults.camera_pipeline,std::string(yaml["camera_pipeline"])})
+            Check(pipeline.find("width=1280,height=720")!=std::string::npos &&
+                  pipeline.find("width=640")==std::string::npos,
+                  "Pipeline mặc định và config.yaml phải dùng 1280x720, không chứa width=640");
+    }
     char path[]="/tmp/ucr_config_types_XXXXXX";
     const int fd=mkstemp(path); Check(fd>=0,"Không tạo được tệp tạm"); close(fd);
     struct Cleanup { const char *path; ~Cleanup() { std::remove(path); } } cleanup{path};
