@@ -106,12 +106,14 @@ if [[ -n ${UCR_BUILD_LOCK:-} && ${UCR_IN_CONTAINER:-0} != 1 ]]; then
 fi
 build_jobs=$jobs
 if [[ $kind == asan || $kind == tsan ]]; then
-    # Số tiến trình biên dịch theo RAM còn trống lúc bắt đầu build (mặc định 3 GB mỗi tiến trình).
+    # Số tiến trình biên dịch theo RAM còn trống và trần cgroup, lấy số nhỏ hơn (mặc định 3 GB mỗi tiến trình).
     per=${UCR_MEM_PER_JOB_GB:-3}
     mem_gb=$(awk '/^MemAvailable:/ { print int($2 / 1048576) }' /proc/meminfo)
+    cg_max=$(cat "/sys/fs/cgroup$(sed -n 's/^0:://p' /proc/self/cgroup)/memory.max" 2>/dev/null || echo max)
+    if [[ $cg_max =~ ^[0-9]+$ ]] && (( cg_max / 1073741824 < mem_gb )); then mem_gb=$((cg_max / 1073741824)); fi
     cap=$((mem_gb / per)); (( cap >= 1 )) || cap=1
     (( cap >= build_jobs )) || build_jobs=$cap
-    echo "UCR_BUILD_JOBS $build_jobs (MemAvailable ${mem_gb} GB, ${per} GB/tiến trình, UCR_JOBS $jobs)"
+    echo "UCR_BUILD_JOBS $build_jobs (RAM dùng được ${mem_gb} GB, ${per} GB/tiến trình, UCR_JOBS $jobs)"
 fi
 echo "UCR_STEP build $kind"
 rc=0
