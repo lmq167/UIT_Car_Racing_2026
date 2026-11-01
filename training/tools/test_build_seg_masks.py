@@ -28,21 +28,21 @@ class SegMasksTests(unittest.TestCase):
         self.preview = self.root / 'preview'
         self.name = 'car6_p0014_0001'
         self.image = np.full((720, 1280, 3), (20, 60, 100), dtype=np.uint8)
-        self.categories = {9: 'mat_sa_ban', 3: 'vat'}
-        self.road = {'id': 1, 'image_id': 1, 'category_id': 9,
+        self.categories = {9: tools.TRACK_SURFACE, 3: tools.OBJECT}
+        self.track = {'id': 1, 'image_id': 1, 'category_id': 9,
                      'segmentation': [[100, 100, 700, 100, 700, 600, 100, 600]]}
         self.obstacle = {'id': 2, 'image_id': 1, 'category_id': 3,
                          'segmentation': [[300, 300, 400, 300, 400, 400, 300, 400]]}
 
     def mask(self, annotations=None, **kwargs):
-        return tools.make_mask(self.image, [self.road, self.obstacle] if annotations is None
+        return tools.make_mask(self.image, [self.track, self.obstacle] if annotations is None
                                else annotations, self.categories, 1280, 720, **kwargs)
 
     def save_coco(self, filename=None, annotations=None, width=1280, height=720):
         data = {'categories': [{'id': key, 'name': value} for key, value in self.categories.items()],
                 'images': [{'id': 1, 'file_name': filename or self.name + '_jpg.rf.ab12cd.jpg',
                             'width': width, 'height': height}],
-                'annotations': [self.road, self.obstacle] if annotations is None else annotations}
+                'annotations': [self.track, self.obstacle] if annotations is None else annotations}
         path = self.root / '_annotations.coco.json'
         path.write_text(json.dumps(data), encoding='utf-8')
         return path
@@ -72,7 +72,7 @@ class SegMasksTests(unittest.TestCase):
                     tools.original_name(filename)
 
     def test_layers_size_dtype_and_annotation_order(self):
-        mask = self.mask([self.obstacle, self.road])
+        mask = self.mask([self.obstacle, self.track])
         self.assertEqual(mask.shape, (720, 1280))
         self.assertEqual(mask.dtype, np.dtype('uint8'))
         self.assertEqual(int(mask[200, 200]), 1)
@@ -80,7 +80,7 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(int(mask[50, 50]), 0)
         np.testing.assert_array_equal(mask, self.mask())
 
-    def test_white_only_inside_road_and_obstacle_covers_line(self):
+    def test_white_only_inside_track_and_obstacle_covers_line(self):
         self.image[190:220, 190:220] = 255
         self.image[30:60, 30:60] = 255
         self.image[330:370, 330:370] = 255
@@ -100,7 +100,7 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(int(self.mask(sat_max=sat, val_min=val + 1)[200, 200]), 1)
 
     def test_scaled_json_and_multiple_rings(self):
-        annotation = dict(self.road, segmentation=[
+        annotation = dict(self.track, segmentation=[
             [50, 50, 150, 50, 150, 150, 50, 150],
             [200, 200, 250, 200, 250, 250, 200, 250]])
         mask = tools.make_mask(self.image, [annotation], self.categories, 640, 360)
@@ -118,8 +118,19 @@ class SegMasksTests(unittest.TestCase):
         self.assertIn('ten_la', error)
         self.assertFalse(self.out.exists())
 
+    def test_legacy_class_names_rejected(self):
+        for name in ('mat_sa_ban', 'vat', 'khong_vach'):
+            with self.subTest(name=name):
+                self.categories[9] = name
+                with self.assertRaisesRegex(ValueError, 'Tên lớp không hỗ trợ: ' + name):
+                    self.mask([])
+                code, output, error = self.run_cli()
+                self.assertEqual(code, 1)
+                self.assertIn('Tên lớp không hỗ trợ: ' + name, error)
+                self.assertFalse(self.out.exists())
+
     def test_rle_skipped_with_warning(self):
-        ann = dict(self.road, iscrowd=1, segmentation={'size': [720, 1280], 'counts': 'abc'})
+        ann = dict(self.track, iscrowd=1, segmentation={'size': [720, 1280], 'counts': 'abc'})
         error = io.StringIO()
         with contextlib.redirect_stderr(error):
             mask = self.mask([ann])
@@ -130,7 +141,7 @@ class SegMasksTests(unittest.TestCase):
         for polygon in ([0, 0, 10], [0, 0, 1, 1], [0, 0, 1, 0, float('nan'), 1],
                         [0, 0, 1, 0, 1e100, 1]):
             with self.subTest(polygon=polygon), self.assertRaises(ValueError):
-                self.mask([dict(self.road, segmentation=[polygon])])
+                self.mask([dict(self.track, segmentation=[polygon])])
         for width, height in ((0, 720), (1280, -1), (float('inf'), 720)):
             with self.subTest(width=width, height=height), self.assertRaises(ValueError):
                 tools.make_mask(self.image, [], self.categories, width, height)
@@ -186,14 +197,14 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(int(self.mask(loc_diff=41, loc_sat_max=sat)[200, 200]), 1)
         self.assertEqual(int(self.mask(loc_diff=40, loc_sat_max=sat - 1)[200, 200]), 1)
 
-    def test_closing_fills_holes_without_crossing_road_or_obstacle(self):
+    def test_closing_fills_holes_without_crossing_track_or_obstacle(self):
         # Khe thảm và vật trắng nhỏ đều dễ bị phép đóng lấp nếu thiếu bước AND lại.
-        self.road['segmentation'] = [[100, 100, 700, 100, 700, 600, 100, 600,
+        self.track['segmentation'] = [[100, 100, 700, 100, 700, 600, 100, 600,
                                       100, 202, 102, 202, 102, 199, 100, 199]]
         obstacle = dict(self.obstacle, segmentation=[[104, 195, 105, 195, 105, 196, 104, 196]])
         self.image[190:211, 95:116] = 255
         self.image[200:202, 107:109] = (20, 60, 100)
-        annotations = [self.road, self.obstacle, obstacle]
+        annotations = [self.track, self.obstacle, obstacle]
         before = self.mask(annotations, close_kernel=1)
         mask = self.mask(annotations)
         self.assertTrue((before[200:202, 107:109] == 1).all())
@@ -266,7 +277,7 @@ class SegMasksTests(unittest.TestCase):
         path = self.save_coco()
         with self.assertRaisesRegex(ValueError, 'Trùng tên gốc'):
             tools.load_jobs([path, path])
-        self.road['category_id'] = 999
+        self.track['category_id'] = 999
         code, output, error = self.run_cli()
         self.assertEqual(code, 1)
         self.assertIn('tham chiếu', error)
@@ -296,19 +307,19 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(help_result.returncode, 0, help_result.stderr.decode('utf-8'))
         self.assertIn('đa giác', help_result.stdout.decode('utf-8'))
 
-    def test_khong_vach_preserves_road_obstacle_and_background(self):
-        self.categories[7] = 'khong_vach'
-        exclusion = dict(self.road, category_id=7,
+    def test_glare_preserves_track_obstacle_and_background(self):
+        self.categories[7] = tools.GLARE
+        exclusion = dict(self.track, category_id=7,
                          segmentation=[[0, 0, 500, 0, 500, 500, 0, 500]])
         self.image[190:220, 190:220] = 255
         self.image[520:550, 520:550] = 255
-        mask = self.mask([exclusion, self.obstacle, self.road])
+        mask = self.mask([exclusion, self.obstacle, self.track])
         self.assertEqual([int(mask[y, x]) for y, x in ((200, 200), (350, 350),
                                                      (50, 50), (530, 530))],
                          [1, 0, 0, 2])
         self.save_original()
         self.assertEqual(self.run_cli(coco=self.save_coco(
-            annotations=[self.road, self.obstacle, exclusion]))[0], 0)
+            annotations=[self.track, self.obstacle, exclusion]))[0], 0)
         saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
         self.assertEqual(int(saved[200, 200]), 1)
 
@@ -335,11 +346,11 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(int(saved[201, 170]), 2)
 
     def test_exclusion_after_closing_and_before_area_filter(self):
-        self.categories[7] = 'khong_vach'
+        self.categories[7] = tools.GLARE
         self.image[190:195, 190:200] = 255
-        exclusion = dict(self.road, category_id=7,
+        exclusion = dict(self.track, category_id=7,
                          segmentation=[[194, 190, 195, 190, 195, 194, 194, 194]])
-        annotations = [self.road, exclusion]
+        annotations = [self.track, exclusion]
         unfiltered = self.mask(annotations, min_area=0)
         self.assertTrue((unfiltered[190:195, 194:196] == 1).all())
         self.assertEqual(int(unfiltered[192, 192]), 2)
@@ -349,7 +360,7 @@ class SegMasksTests(unittest.TestCase):
         self.image[190:220, 190:220] = 255
         expected = self.mask(min_area=0)
         np.testing.assert_array_equal(self.mask(), expected)
-        self.categories[7] = 'khong_vach'
+        self.categories[7] = tools.GLARE
         np.testing.assert_array_equal(self.mask(), expected)
         self.save_original()
         self.assertEqual(self.run_cli()[0], 0)
@@ -386,7 +397,7 @@ class SegMasksTests(unittest.TestCase):
             tools.write_image(self.images / (name + '.jpg'), image)
             data['images'].append({'id': index, 'file_name': name + '.jpg',
                                    'width': 1280, 'height': 720})
-            data['annotations'].append(dict(self.road, image_id=index))
+            data['annotations'].append(dict(self.track, image_id=index))
         data['images'].reverse()
         coco.write_text(json.dumps(data), encoding='utf-8')
         code, output, error = self.run_cli('--qa', str(qa), coco=coco)
@@ -394,7 +405,7 @@ class SegMasksTests(unittest.TestCase):
         self.assertIn('Số ảnh có cờ QA: 1', output)
         with (qa / 'qa.csv').open(encoding='utf-8', newline='') as stream:
             reader = csv.DictReader(stream)
-            self.assertEqual(reader.fieldnames, ['file', 'mat_px', 'vach_px', 'vach_ratio',
+            self.assertEqual(reader.fieldnames, ['file', 'track_px', 'line_px', 'line_ratio',
                                                  'n_comp', 'largest_comp_px', 'flag'])
             rows = list(reader)
         self.assertEqual(len(rows), 13)
@@ -402,20 +413,20 @@ class SegMasksTests(unittest.TestCase):
                          [img['file_name'][:-4] for img in data['images']])
         for row in rows:
             mask = cv2.imread(str(self.out / (row['file'] + '.png')), cv2.IMREAD_UNCHANGED)
-            mat_px, vach_px = int((mask == 1).sum()), int((mask == 2).sum())
-            self.assertEqual(int(row['mat_px']), mat_px)
-            self.assertEqual(int(row['vach_px']), vach_px)
-            self.assertAlmostEqual(float(row['vach_ratio']), vach_px / (mat_px + vach_px))
+            track_px, line_px = int((mask == 1).sum()), int((mask == 2).sum())
+            self.assertEqual(int(row['track_px']), track_px)
+            self.assertEqual(int(row['line_px']), line_px)
+            self.assertAlmostEqual(float(row['line_ratio']), line_px / (track_px + line_px))
             flagged = row['file'].endswith('0002')
             self.assertEqual(row['flag'], 'ratio_thap' if flagged else '')
             self.assertEqual(int(row['n_comp']), 0 if flagged else 1)
-            self.assertEqual(int(row['largest_comp_px']), 0 if flagged else vach_px)
+            self.assertEqual(int(row['largest_comp_px']), 0 if flagged else line_px)
         sheets = sorted(qa.glob('qa_sheet_*.jpg'))
         self.assertEqual([path.name for path in sheets], ['qa_sheet_01.jpg', 'qa_sheet_02.jpg'])
         first, last = [cv2.imread(str(path)) for path in sheets]
         self.assertEqual(first.shape, (540, 1280, 3))
         self.assertEqual(last.shape, (540, 1280, 3))
-        # Ô đầu không có vạch; ô thứ hai là tên nhỏ nhất trong nhóm bình thường.
+        # Ô đầu không có line; ô thứ hai là tên nhỏ nhất trong nhóm bình thường.
         self.assertGreater(int(first[60, 60, 1]), int(first[60, 60, 2]) + 40)
         self.assertGreater(int(first[60, 380, 2]), int(first[60, 60, 2]) + 40)
         np.testing.assert_allclose(first[130, 450], (12, 120, 60), atol=5)
@@ -424,14 +435,14 @@ class SegMasksTests(unittest.TestCase):
         self.assertFalse(last[20:160, 340:].any())
 
     def test_qa_overlay_colors_and_does_not_change_preview(self):
-        self.categories[7] = 'khong_vach'
+        self.categories[7] = tools.GLARE
         self.image[190:280, 190:280] = 255
-        exclusion = dict(self.road, category_id=7,
+        exclusion = dict(self.track, category_id=7,
                          segmentation=[[500, 300, 600, 300, 600, 400, 500, 400]])
-        annotations = [self.road, self.obstacle, exclusion]
-        mask, vat, khong_vach = tools._make_mask_layers(
+        annotations = [self.track, self.obstacle, exclusion]
+        mask, object_mask, glare = tools._make_mask_layers(
             self.image, annotations, self.categories, 1280, 720)
-        tile = tools.qa_tile(self.image, mask, vat, khong_vach, self.name, '')
+        tile = tools.qa_tile(self.image, mask, object_mask, glare, self.name, '')
         for y, x, color in ((500, 500, (0, 255, 0)), (240, 240, (0, 255, 255)),
                              (350, 350, (0, 0, 255)), (350, 550, (255, 0, 255))):
             expected = (self.image[y, x] * 0.6 + np.array(color) * 0.4).astype(np.uint8)

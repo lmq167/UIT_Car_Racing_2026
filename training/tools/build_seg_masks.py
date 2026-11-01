@@ -1,4 +1,4 @@
-"""Đổi đa giác COCO thành mask 0=nền, 1=mặt sa bàn, 2=vạch trắng."""
+"""Đổi đa giác COCO thành mask 0=background, 1=track_surface, 2=line (đường kẻ)."""
 
 import argparse
 import csv
@@ -14,6 +14,11 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
 SIZE = (1280, 720)
+BACKGROUND = 'background'
+TRACK_SURFACE = 'track_surface'
+LINE = 'line'
+OBJECT = 'object'
+GLARE = 'glare'
 
 
 def original_name(filename):
@@ -55,14 +60,14 @@ def _make_mask_layers(image, annotations, categories, width, height, sat_max=75,
     if not isinstance(loc_blur, int) or loc_blur < 3 or loc_blur % 2 != 1:
         raise ValueError('loc_blur phải là số nguyên lẻ ≥ 3')
     if not 0 <= loc_diff <= 255 or not 0 <= loc_sat_max <= 255:
-        raise ValueError('Ngưỡng vạch cục bộ phải nằm trong 0..255')
+        raise ValueError('Ngưỡng {} cục bộ phải nằm trong 0..255'.format(LINE))
     if not isinstance(close_kernel, int) or close_kernel < 1:
         raise ValueError('close_kernel phải là số nguyên ≥ 1')
     if not isinstance(min_area, int) or min_area < 0:
         raise ValueError('min_area phải là số nguyên ≥ 0')
     if not np.isfinite([width, height]).all() or width <= 0 or height <= 0:
         raise ValueError('width/height COCO phải hữu hạn và lớn hơn 0')
-    unknown = set(categories.values()) - {'mat_sa_ban', 'vat', 'khong_vach'}
+    unknown = set(categories.values()) - {TRACK_SURFACE, OBJECT, GLARE}
     if unknown:
         raise ValueError('Tên lớp không hỗ trợ: {}'.format(', '.join(sorted(unknown))))
     layers = defaultdict(list)
@@ -72,34 +77,34 @@ def _make_mask_layers(image, annotations, categories, width, height, sat_max=75,
             raise ValueError('category_id không có trong categories: {}'.format(category))
         layers[categories[category]].extend(polygons(annotation, width, height))
     mask = np.zeros((SIZE[1], SIZE[0]), dtype=np.uint8)
-    for ring in layers['mat_sa_ban']:
+    for ring in layers[TRACK_SURFACE]:
         cv2.fillPoly(mask, [ring], 1)
-    vat = np.zeros_like(mask)
-    for ring in layers['vat']:
-        cv2.fillPoly(vat, [ring], 1)
-    mask[vat != 0] = 0
+    object_mask = np.zeros_like(mask)
+    for ring in layers[OBJECT]:
+        cv2.fillPoly(object_mask, [ring], 1)
+    mask[object_mask != 0] = 0
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     sat, val = hsv[:, :, 1], hsv[:, :, 2]
     white_abs = (sat <= sat_max) & (val >= val_min)
     bg = cv2.medianBlur(val, loc_blur)
-    # Chuyển sang số có dấu để pixel tối hơn nền không bị tràn uint8 thành vạch.
+    # Chuyển sang số có dấu để pixel tối hơn nền không bị tràn uint8 thành line.
     white_loc = (val.astype(np.int16) - bg.astype(np.int16) >= loc_diff) & (sat <= loc_sat_max)
-    road = mask == 1
-    vach = ((white_abs | white_loc) & road).astype(np.uint8)
-    vach = cv2.morphologyEx(vach, cv2.MORPH_CLOSE,
+    track = mask == 1
+    line = ((white_abs | white_loc) & track).astype(np.uint8)
+    line = cv2.morphologyEx(line, cv2.MORPH_CLOSE,
                             np.ones((close_kernel, close_kernel), dtype=np.uint8))
-    vach &= road.astype(np.uint8)
-    khong_vach = np.zeros_like(mask)
-    for ring in layers['khong_vach']:
-        cv2.fillPoly(khong_vach, [ring], 1)
-    vach[khong_vach != 0] = 0
+    line &= track.astype(np.uint8)
+    glare = np.zeros_like(mask)
+    for ring in layers[GLARE]:
+        cv2.fillPoly(glare, [ring], 1)
+    line[glare != 0] = 0
     if min_area:
-        _, labels, stats, _ = cv2.connectedComponentsWithStats(vach, connectivity=8)
+        _, labels, stats, _ = cv2.connectedComponentsWithStats(line, connectivity=8)
         keep = stats[:, cv2.CC_STAT_AREA] >= min_area
         keep[0] = False
-        vach = keep[labels]
-    mask[vach != 0] = 2
-    return mask, vat, khong_vach
+        line = keep[labels]
+    mask[line != 0] = 2
+    return mask, object_mask, glare
 
 
 def make_mask(image, annotations, categories, width, height, sat_max=75, val_min=205,
@@ -117,7 +122,7 @@ def load_jobs(paths):
         categories = {c['id']: c['name'] for c in data['categories']}
         if len(categories) != len(data['categories']):
             raise ValueError('{}: id lớp trùng'.format(path))
-        unknown = set(categories.values()) - {'mat_sa_ban', 'vat', 'khong_vach'}
+        unknown = set(categories.values()) - {TRACK_SURFACE, OBJECT, GLARE}
         if unknown:
             raise ValueError('Tên lớp không hỗ trợ: {}'.format(', '.join(sorted(unknown))))
         images = {img['id']: img for img in data['images']}
@@ -145,25 +150,25 @@ def write_image(path, image):
 
 
 def qa_row(name, mask, min_ratio, max_ratio, max_comp):
-    mat_px, vach_px = int(np.count_nonzero(mask == 1)), int(np.count_nonzero(mask == 2))
-    ratio = vach_px / (mat_px + vach_px) if mat_px + vach_px else 0
+    track_px, line_px = int(np.count_nonzero(mask == 1)), int(np.count_nonzero(mask == 2))
+    line_ratio = line_px / (track_px + line_px) if track_px + line_px else 0
     count, _, stats, _ = cv2.connectedComponentsWithStats(
         (mask == 2).astype(np.uint8), connectivity=8)
     largest = int(stats[1:, cv2.CC_STAT_AREA].max()) if count > 1 else 0
     flags = []
-    if ratio < min_ratio:
+    if line_ratio < min_ratio:
         flags.append('ratio_thap')
-    if ratio > max_ratio:
+    if line_ratio > max_ratio:
         flags.append('ratio_cao')
     if count - 1 > max_comp:
         flags.append('nhieu_manh')
-    return (name, mat_px, vach_px, ratio, count - 1, largest, ';'.join(flags))
+    return (name, track_px, line_px, line_ratio, count - 1, largest, ';'.join(flags))
 
 
-def qa_tile(image, mask, vat, khong_vach, name, flag):
+def qa_tile(image, mask, object_mask, glare, name, flag):
     overlay = image.copy()
     for selected, color in ((mask == 1, (0, 255, 0)), (mask == 2, (0, 255, 255)),
-                            (vat != 0, (0, 0, 255)), (khong_vach != 0, (255, 0, 255))):
+                            (object_mask != 0, (0, 0, 255)), (glare != 0, (255, 0, 255))):
         overlay[selected] = (image[selected] * 0.6 + np.array(color) * 0.4).astype(np.uint8)
     tile = cv2.resize(overlay, (320, 180), interpolation=cv2.INTER_AREA)
     # Chia các cờ thành hai dòng để chữ không tràn khỏi ô 320 pixel.
@@ -183,7 +188,7 @@ def write_qa(directory, entries):
         raise ValueError('Không ghi qua liên kết: {}'.format(path))
     with path.open('w', encoding='utf-8', newline='') as stream:
         writer = csv.writer(stream)
-        writer.writerow(('file', 'mat_px', 'vach_px', 'vach_ratio', 'n_comp',
+        writer.writerow(('file', 'track_px', 'line_px', 'line_ratio', 'n_comp',
                          'largest_comp_px', 'flag'))
         writer.writerows(row for row, _ in entries)
     ordered = sorted(entries, key=lambda item: (not bool(item[0][-1]), item[0][0]))
@@ -203,18 +208,18 @@ def main(argv=None):
                         help='Thư mục mask PNG')
     parser.add_argument('--images', type=Path, default=ROOT / 'data/round3/data_clean_car6/images',
                         help='Thư mục ảnh JPG gốc')
-    parser.add_argument('--sat-max', type=int, default=75, help='Trần độ bão hòa của vạch (0..255)')
-    parser.add_argument('--val-min', type=int, default=205, help='Sàn độ sáng của vạch (0..255)')
+    parser.add_argument('--sat-max', type=int, default=75, help='Trần độ bão hòa của {} (0..255)'.format(LINE))
+    parser.add_argument('--val-min', type=int, default=205, help='Sàn độ sáng của {} (0..255)'.format(LINE))
     parser.add_argument('--loc-blur', type=int, default=61, help='Cỡ lọc trung vị nền sáng (số lẻ ≥ 3)')
     parser.add_argument('--loc-diff', type=int, default=30, help='Chênh sáng tối thiểu so với nền (0..255)')
-    parser.add_argument('--loc-sat-max', type=int, default=90, help='Trần bão hòa vạch cục bộ (0..255)')
-    parser.add_argument('--close-kernel', type=int, default=5, help='Cỡ nhân lấp lỗ vạch (≥ 1)')
+    parser.add_argument('--loc-sat-max', type=int, default=90, help='Trần bão hòa {} cục bộ (0..255)'.format(LINE))
+    parser.add_argument('--close-kernel', type=int, default=5, help='Cỡ nhân lấp lỗ {} (≥ 1)'.format(LINE))
     parser.add_argument('--preview', type=Path, help='Thư mục ảnh phủ màu để soát nhãn')
-    parser.add_argument('--min-area', type=int, default=25, help='Diện tích vạch tối thiểu (pixel; 0 = không lọc)')
+    parser.add_argument('--min-area', type=int, default=25, help='Diện tích {} tối thiểu (pixel; 0 = không lọc)'.format(LINE))
     parser.add_argument('--qa', type=Path, help='Thư mục CSV và bảng ảnh soát nhãn')
-    parser.add_argument('--qa-min-ratio', type=float, default=0.005, help='Tỉ lệ vạch tối thiểu (0..1)')
-    parser.add_argument('--qa-max-ratio', type=float, default=0.15, help='Tỉ lệ vạch tối đa (0..1)')
-    parser.add_argument('--qa-max-comp', type=int, default=60, help='Số mảnh vạch tối đa (≥ 0)')
+    parser.add_argument('--qa-min-ratio', type=float, default=0.005, help='Tỉ lệ {} tối thiểu (0..1)'.format(LINE))
+    parser.add_argument('--qa-max-ratio', type=float, default=0.15, help='Tỉ lệ {} tối đa (0..1)'.format(LINE))
+    parser.add_argument('--qa-max-comp', type=int, default=60, help='Số mảnh {} tối đa (≥ 0)'.format(LINE))
     args = parser.parse_args(argv)
     try:
         if not 0 <= args.sat_max <= 255 or not 0 <= args.val_min <= 255:
@@ -222,7 +227,7 @@ def main(argv=None):
         if args.loc_blur < 3 or args.loc_blur % 2 != 1:
             raise ValueError('loc_blur phải là số nguyên lẻ ≥ 3')
         if not 0 <= args.loc_diff <= 255 or not 0 <= args.loc_sat_max <= 255:
-            raise ValueError('Ngưỡng vạch cục bộ phải nằm trong 0..255')
+            raise ValueError('Ngưỡng {} cục bộ phải nằm trong 0..255'.format(LINE))
         if args.close_kernel < 1:
             raise ValueError('close_kernel phải là số nguyên ≥ 1')
         if args.min_area < 0:
@@ -260,7 +265,7 @@ def main(argv=None):
             image = cv2.imread(str(source), cv2.IMREAD_COLOR)
             if image is None:
                 raise ValueError('Không đọc được ảnh gốc: {}'.format(source))
-            mask, vat, khong_vach = _make_mask_layers(
+            mask, object_mask, glare = _make_mask_layers(
                 image, annotations, categories, metadata['width'], metadata['height'],
                 args.sat_max, args.val_min, args.loc_blur, args.loc_diff,
                 args.loc_sat_max, args.close_kernel, args.min_area)
@@ -273,14 +278,15 @@ def main(argv=None):
                 write_image(args.preview / (name + '.png'), overlay)
             if args.qa:
                 row = qa_row(name, mask, args.qa_min_ratio, args.qa_max_ratio, args.qa_max_comp)
-                qa_entries.append((row, qa_tile(image, mask, vat, khong_vach, name, row[-1])))
+                qa_entries.append((row, qa_tile(image, mask, object_mask, glare, name, row[-1])))
             ratios += np.bincount(mask.ravel(), minlength=3) / mask.size
             processed += 1
         print('Số ảnh COCO: {}; đã tạo mask: {}; thiếu file gốc: {}'.format(
             len(jobs), processed, missing))
         if processed:
-            print('Tỉ lệ pixel trung bình: nền={:.6f}, mặt sa bàn={:.6f}, vạch={:.6f}'.format(
-                *(ratios / processed)))
+            print('Tỉ lệ pixel trung bình: {background}={0:.6f}, '
+                  '{track}={1:.6f}, {line}={2:.6f}'.format(
+                      *(ratios / processed), background=BACKGROUND, track=TRACK_SURFACE, line=LINE))
         else:
             print('Tỉ lệ pixel trung bình: chưa có ảnh để tính')
         if args.qa:
