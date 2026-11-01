@@ -35,6 +35,7 @@ class SegMasksTests(unittest.TestCase):
                          'segmentation': [[300, 300, 400, 300, 400, 400, 300, 400]]}
 
     def mask(self, annotations=None, **kwargs):
+        kwargs.setdefault('line_method', 'median')
         return tools.make_mask(self.image, [self.track, self.obstacle] if annotations is None
                                else annotations, self.categories, 1280, 720, **kwargs)
 
@@ -56,7 +57,8 @@ class SegMasksTests(unittest.TestCase):
         output, error = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             code = tools.main(['--coco', str(coco or self.save_coco()),
-                               '--images', str(self.images), '--out', str(self.out)] + list(extra))
+                               '--images', str(self.images), '--out', str(self.out),
+                               '--line-method', 'median'] + list(extra))
         return code, output.getvalue(), error.getvalue()
 
     def test_original_names_and_invalid_patterns(self):
@@ -103,7 +105,8 @@ class SegMasksTests(unittest.TestCase):
         annotation = dict(self.track, segmentation=[
             [50, 50, 150, 50, 150, 150, 50, 150],
             [200, 200, 250, 200, 250, 250, 200, 250]])
-        mask = tools.make_mask(self.image, [annotation], self.categories, 640, 360)
+        mask = tools.make_mask(self.image, [annotation], self.categories, 640, 360,
+                               line_method='median')
         self.assertEqual(int(mask[200, 200]), 1)
         self.assertEqual(int(mask[450, 450]), 1)
         self.assertEqual(int(mask[350, 350]), 0)
@@ -295,7 +298,7 @@ class SegMasksTests(unittest.TestCase):
         path = self.save_coco()
         result = subprocess.run(
             [sys.executable, '-B', str(Path(tools.__file__).resolve()), '--coco', str(path),
-             '--images', str(self.images), '--out', str(self.out)],
+             '--images', str(self.images), '--out', str(self.out), '--line-method', 'median'],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20,
             env=dict(os.environ, PYTHONIOENCODING='utf-8'))
         self.assertEqual(result.returncode, 0, result.stderr.decode('utf-8'))
@@ -406,12 +409,15 @@ class SegMasksTests(unittest.TestCase):
         with (qa / 'qa.csv').open(encoding='utf-8', newline='') as stream:
             reader = csv.DictReader(stream)
             self.assertEqual(reader.fieldnames, ['file', 'track_px', 'line_px', 'line_ratio',
-                                                 'n_comp', 'largest_comp_px', 'flag'])
+                                                 'n_comp', 'largest_comp_px', 'flag', 'line_method',
+                                                 'n_sharp_rejected', 'sharp_rejected_px'])
             rows = list(reader)
         self.assertEqual(len(rows), 13)
         self.assertEqual([row['file'] for row in rows],
                          [img['file_name'][:-4] for img in data['images']])
         for row in rows:
+            self.assertEqual(row['line_method'], 'median')
+            self.assertEqual((row['n_sharp_rejected'], row['sharp_rejected_px']), ('0', '0'))
             mask = cv2.imread(str(self.out / (row['file'] + '.png')), cv2.IMREAD_UNCHANGED)
             track_px, line_px = int((mask == 1).sum()), int((mask == 2).sum())
             self.assertEqual(int(row['track_px']), track_px)
@@ -440,8 +446,9 @@ class SegMasksTests(unittest.TestCase):
         exclusion = dict(self.track, category_id=7,
                          segmentation=[[500, 300, 600, 300, 600, 400, 500, 400]])
         annotations = [self.track, self.obstacle, exclusion]
-        mask, object_mask, glare = tools._make_mask_layers(
-            self.image, annotations, self.categories, 1280, 720)
+        mask, object_mask, glare, sharp_rejected = tools._make_mask_layers(
+            self.image, annotations, self.categories, 1280, 720, line_method='median')
+        self.assertFalse(sharp_rejected.any())
         tile = tools.qa_tile(self.image, mask, object_mask, glare, self.name, '')
         for y, x, color in ((500, 500, (0, 255, 0)), (240, 240, (0, 255, 255)),
                              (350, 350, (0, 0, 255)), (350, 550, (255, 0, 255))):
@@ -520,6 +527,214 @@ class SegMasksTests(unittest.TestCase):
             self.assertIn('liên kết', error)
             self.assertEqual(protected.read_bytes(), b'giu nguyen')
             path.unlink()
+
+    def test_median_matches_original_pipeline(self):
+        self.categories[7] = tools.GLARE
+        exclusion = dict(self.track, category_id=7,
+                         segmentation=[[194, 190, 195, 190, 195, 230, 194, 230]])
+        annotations = [self.track, self.obstacle, exclusion]
+        self.image[190:231, 180:211] = 140
+        self.image[300:420, 290:420] = 255
+        self.image[200:202, 200:202] = 0
+        for close_kernel, min_area in ((1, 0), (5, 25), (2, 500)):
+            with self.subTest(close_kernel=close_kernel, min_area=min_area):
+                expected = np.zeros((720, 1280), dtype=np.uint8)
+                cv2.fillPoly(expected, [np.array(self.track['segmentation'][0],
+                                                dtype=np.int32).reshape(-1, 2)], 1)
+                cv2.fillPoly(expected, [np.array(self.obstacle['segmentation'][0],
+                                                dtype=np.int32).reshape(-1, 2)], 0)
+                hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
+                sat, val = hsv[:, :, 1], hsv[:, :, 2]
+                bg = cv2.medianBlur(val, 61)
+                white = ((sat <= 75) & (val >= 205)) | (
+                    (val.astype(np.int16) - bg.astype(np.int16) >= 30) & (sat <= 90))
+                line = (white & (expected == 1)).astype(np.uint8)
+                line = cv2.morphologyEx(line, cv2.MORPH_CLOSE,
+                                        np.ones((close_kernel, close_kernel), dtype=np.uint8))
+                line &= (expected == 1).astype(np.uint8)
+                cv2.fillPoly(line, [np.array(exclusion['segmentation'][0],
+                                            dtype=np.int32).reshape(-1, 2)], 0)
+                if min_area:
+                    _, labels, stats, _ = cv2.connectedComponentsWithStats(line, connectivity=8)
+                    keep = stats[:, cv2.CC_STAT_AREA] >= min_area
+                    keep[0] = False
+                    line = keep[labels]
+                expected[line != 0] = 2
+                np.testing.assert_array_equal(
+                    self.mask(annotations, line_method='median', close_kernel=close_kernel,
+                              min_area=min_area), expected)
+
+    def test_tophat_wide_dim_close_stripes_and_default(self):
+        self.image[:] = 100
+        for x in (180, 272, 364):
+            self.image[180:270, x:x + 80] = 140
+        mask = self.mask([self.track], line_method='tophat_sharp')
+        for x in (180, 272, 364):
+            self.assertTrue((mask[180:270, x:x + 80] == 2).all())
+        self.assertEqual(int(mask[220, 265]), 1)
+        np.testing.assert_array_equal(
+            mask, tools.make_mask(self.image, [self.track], self.categories, 1280, 720))
+        _, _, _, rejected = tools._make_mask_layers(
+            self.image, [self.track], self.categories, 1280, 720)
+        self.assertFalse(rejected.any())
+        self.save_original()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            code = tools.main(['--coco', str(self.save_coco(annotations=[self.track])),
+                               '--images', str(self.images), '--out', str(self.out)])
+        self.assertEqual(code, 0)
+        saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
+        self.assertEqual(int(saved[220, 220]), 2)
+
+    def test_tophat_gaussian_glow_rejected_and_qa_orange(self):
+        y, x = np.ogrid[:720, :1280]
+        val = (100 + 80 * np.exp(-((x - 220) ** 2 / (2 * 25.0 ** 2)
+                                   + (y - 260) ** 2 / (2 * 50.0 ** 2)))).astype(np.uint8)
+        self.image = np.repeat(val[:, :, None], 3, axis=2)
+        tophat = val - cv2.morphologyEx(val, cv2.MORPH_OPEN,
+                                       cv2.getStructuringElement(cv2.MORPH_RECT, (101, 101)))
+        self.assertGreaterEqual(int(tophat[260, 220]), 30)
+        mask, object_mask, glare, rejected = tools._make_mask_layers(
+            self.image, [self.track], self.categories, 1280, 720)
+        self.assertEqual(rejected.dtype, np.dtype('uint8'))
+        self.assertTrue(set(np.unique(rejected)) <= {0, 1})
+        self.assertEqual(int(rejected[260, 220]), 1)
+        self.assertTrue((mask[rejected != 0] == 1).all())
+        self.assertFalse((mask == 2).any())
+        tile = tools.qa_tile(self.image, mask, object_mask, glare, self.name, '', rejected)
+        expected = (self.image[260:264, 220:224] * 0.6
+                    + np.array((0, 165, 255)) * 0.4).astype(np.uint8)
+        np.testing.assert_allclose(tile[65, 55], expected.mean(axis=(0, 1)), atol=1)
+        self.save_original()
+        qa = self.root / 'qa'
+        code, output, error = self.run_cli('--line-method', 'tophat_sharp', '--qa', str(qa),
+                                           coco=self.save_coco(annotations=[self.track]))
+        self.assertEqual((code, error), (0, ''))
+        with (qa / 'qa.csv').open(encoding='utf-8', newline='') as stream:
+            reader = csv.DictReader(stream)
+            self.assertEqual(reader.fieldnames, ['file', 'track_px', 'line_px', 'line_ratio',
+                                                 'n_comp', 'largest_comp_px', 'flag', 'line_method',
+                                                 'n_sharp_rejected', 'sharp_rejected_px'])
+            row = next(reader)
+        self.assertEqual(row['line_method'], 'tophat_sharp')
+        self.assertEqual(int(row['n_sharp_rejected']), 1)
+        self.assertGreater(int(row['sharp_rejected_px']), 25)
+        sheet = cv2.imread(str(qa / 'qa_sheet_01.jpg'))
+        self.assertGreater(int(sheet[65, 55, 2]), int(sheet[65, 55, 1]) + 20)
+        self.assertGreater(int(sheet[65, 55, 1]), int(sheet[65, 55, 0]) + 40)
+
+    def test_tophat_sharp_boundary_formula_and_tinted_line(self):
+        hsv = np.zeros_like(self.image)
+        hsv[:] = (0, 0, 100)
+        hsv[180:240, 180:240] = (20, 120, 160)
+        self.image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        val = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)[:, :, 2]
+        component = np.zeros((720, 1280), dtype=np.uint8)
+        component[180:240, 180:240] = 1
+        border = (component != 0) & (cv2.erode(component, np.ones((3, 3), np.uint8)) == 0)
+        smooth = cv2.GaussianBlur(val.astype(np.float32), (3, 3), 0)
+        gradient = cv2.magnitude(cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3),
+                                 cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3))
+        tophat = val - cv2.morphologyEx(val, cv2.MORPH_OPEN,
+                                       cv2.getStructuringElement(cv2.MORPH_RECT, (101, 101)))
+        score = (gradient[border].astype(np.float64).mean()
+                 / max(tophat[component != 0].mean(), 1))
+        self.assertGreater(score, 0.85)
+        self.assertEqual(int(self.mask(line_method='tophat_sharp')[200, 200]), 2)
+        self.assertEqual(int(self.mask(line_method='tophat_sharp', sharp_min=score)[200, 200]), 2)
+        mask, _, _, rejected = tools._make_mask_layers(
+            self.image, [self.track], self.categories, 1280, 720, sharp_min=score + 0.0001)
+        self.assertEqual((int(mask[200, 200]), int(rejected[200, 200])), (1, 1))
+        self.assertEqual(int(self.mask(line_method='tophat_sharp',
+                                       tophat_sat_max=100)[200, 200]), 1)
+
+    def test_tophat_object_dilation_track_clipping_and_closing(self):
+        self.image[:] = 100
+        self.image[290:412, 290:412] = 150
+        self.image[190:220, 90:120] = 150
+        self.image[200:202, 110:112] = 100
+        mask = self.mask(line_method='tophat_sharp', tophat_kernel=151)
+        self.assertEqual(int(mask[350, 350]), 0)
+        self.assertTrue((mask[297:404, 297:404][mask[297:404, 297:404] != 0] == 1).all())
+        self.assertEqual(int(mask[295, 350]), 2)
+        self.assertEqual(int(mask[405, 350]), 2)
+        self.assertEqual(int(mask[200, 99]), 0)
+        self.assertEqual(int(mask[200, 110]), 2)
+        self.assertEqual(int(self.mask(line_method='tophat_sharp', object_dilate=0,
+                                       tophat_kernel=151)[298, 350]), 2)
+
+    def test_tophat_glare_after_area_filter_and_eight_neighbors(self):
+        self.categories[7] = tools.GLARE
+        self.image[:] = 100
+        self.image[190:195, 190:200] = 150
+        self.image[250:254, 150:154] = 150
+        self.image[254:258, 154:158] = 150
+        self.image[280:284, 150:156] = 150
+        exclusion = dict(self.track, category_id=7,
+                         segmentation=[[194, 190, 195, 190, 195, 194, 194, 194]])
+        mask = self.mask([self.track, exclusion], line_method='tophat_sharp', close_kernel=1)
+        self.assertTrue((mask[190:195, 194:196] == 1).all())
+        self.assertEqual(int(mask[192, 192]), 2)  # Lọc diện tích trước glare nên giữ mảnh 20 px.
+        self.assertEqual(int(mask[251, 151]), 2)
+        self.assertEqual(int(mask[255, 155]), 2)
+        self.assertEqual(int(mask[281, 151]), 1)
+
+    def test_invalid_tophat_parameters_function_and_cli(self):
+        for name, value in (('tophat_kernel', 1), ('tophat_kernel', 2), ('tophat_kernel', 100),
+                            ('tophat_min', -1), ('tophat_min', 256),
+                            ('tophat_sat_max', -1), ('tophat_sat_max', 256),
+                            ('object_dilate', -1), ('sharp_min', -0.1),
+                            ('sharp_min', float('nan')), ('sharp_min', float('inf'))):
+            with self.subTest(name=name, value=value):
+                with self.assertRaises(ValueError):
+                    self.mask(line_method='tophat_sharp', **{name: value})
+                code, output, error = self.run_cli('--line-method', 'tophat_sharp',
+                                                  '--' + name.replace('_', '-'), str(value))
+                self.assertEqual(code, 1)
+                self.assertIn('LỖI:', error)
+                self.assertFalse(self.out.exists())
+        for name in ('tophat_kernel', 'object_dilate'):
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.mask(**{name: 3.5})
+        with self.assertRaises(ValueError):
+            self.mask(line_method='sai')
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            self.run_cli('--line-method', 'sai')
+        self.assertEqual(error.exception.code, 2)
+
+    def test_tophat_valid_parameter_limits(self):
+        for name, value in (('tophat_kernel', 3), ('tophat_min', 0), ('tophat_min', 255),
+                            ('tophat_sat_max', 0), ('tophat_sat_max', 255),
+                            ('object_dilate', 0), ('sharp_min', 0)):
+            with self.subTest(name=name, value=value):
+                mask = self.mask(line_method='tophat_sharp', **{name: value})
+                self.assertEqual(mask.dtype, np.dtype('uint8'))
+                self.assertTrue(set(np.unique(mask)) <= {0, 1, 2})
+
+    def test_tophat_parameters_reach_function_and_cli(self):
+        for name, value in (('tophat_kernel', 3), ('tophat_min', 60),
+                            ('tophat_sat_max', 0), ('object_dilate', 0), ('sharp_min', 100)):
+            with self.subTest(name=name):
+                self.image[:] = 100
+                self.image[180:240, 180:240] = 140
+                y, x, before, after = 200, 200, 2, 1
+                if name == 'tophat_sat_max':
+                    hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
+                    hsv[180:240, 180:240] = (20, 120, 140)
+                    self.image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+                if name == 'object_dilate':
+                    self.image[290:412, 290:412] = 150
+                    y, x, before, after = 298, 350, 1, 2
+                params = {'line_method': 'tophat_sharp', 'tophat_kernel': 151}
+                self.assertEqual(int(self.mask(**params)[y, x]), before)
+                params[name] = value
+                self.assertEqual(int(self.mask(**params)[y, x]), after)
+                self.save_original()
+                code, output, error = self.run_cli(
+                    '--line-method', 'tophat_sharp', '--tophat-kernel', '151',
+                    '--' + name.replace('_', '-'), str(value))
+                self.assertEqual((code, error), (0, ''))
+                saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
+                self.assertEqual(int(saved[y, x]), after)
 
 
 if __name__ == '__main__':

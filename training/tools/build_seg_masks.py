@@ -52,7 +52,9 @@ def polygons(annotation, width, height):
 
 
 def _make_mask_layers(image, annotations, categories, width, height, sat_max=75, val_min=205,
-                      loc_blur=61, loc_diff=30, loc_sat_max=90, close_kernel=5, min_area=25):
+                      loc_blur=61, loc_diff=30, loc_sat_max=90, close_kernel=5, min_area=25,
+                      line_method='tophat_sharp', tophat_kernel=101, tophat_min=30,
+                      tophat_sat_max=130, object_dilate=3, sharp_min=0.85):
     if image.shape != (SIZE[1], SIZE[0], 3):
         raise ValueError('Ảnh gốc phải có kích thước 1280×720, 3 kênh màu')
     if not 0 <= sat_max <= 255 or not 0 <= val_min <= 255:
@@ -65,6 +67,16 @@ def _make_mask_layers(image, annotations, categories, width, height, sat_max=75,
         raise ValueError('close_kernel phải là số nguyên ≥ 1')
     if not isinstance(min_area, int) or min_area < 0:
         raise ValueError('min_area phải là số nguyên ≥ 0')
+    if line_method not in ('median', 'tophat_sharp'):
+        raise ValueError('line_method phải là median hoặc tophat_sharp')
+    if not isinstance(tophat_kernel, int) or tophat_kernel < 3 or tophat_kernel % 2 != 1:
+        raise ValueError('tophat_kernel phải là số nguyên lẻ ≥ 3')
+    if not 0 <= tophat_min <= 255 or not 0 <= tophat_sat_max <= 255:
+        raise ValueError('Ngưỡng tophat phải nằm trong 0..255')
+    if not isinstance(object_dilate, int) or object_dilate < 0:
+        raise ValueError('object_dilate phải là số nguyên ≥ 0')
+    if not np.isfinite(sharp_min) or sharp_min < 0:
+        raise ValueError('sharp_min phải hữu hạn và ≥ 0')
     if not np.isfinite([width, height]).all() or width <= 0 or height <= 0:
         raise ValueError('width/height COCO phải hữu hạn và lớn hơn 0')
     unknown = set(categories.values()) - {TRACK_SURFACE, OBJECT, GLARE}
@@ -86,31 +98,64 @@ def _make_mask_layers(image, annotations, categories, width, height, sat_max=75,
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     sat, val = hsv[:, :, 1], hsv[:, :, 2]
     white_abs = (sat <= sat_max) & (val >= val_min)
-    bg = cv2.medianBlur(val, loc_blur)
-    # Chuyển sang số có dấu để pixel tối hơn nền không bị tràn uint8 thành line.
-    white_loc = (val.astype(np.int16) - bg.astype(np.int16) >= loc_diff) & (sat <= loc_sat_max)
     track = mask == 1
-    line = ((white_abs | white_loc) & track).astype(np.uint8)
+    if line_method == 'median':
+        bg = cv2.medianBlur(val, loc_blur)
+        # Chuyển sang số có dấu để pixel tối hơn nền không bị tràn uint8 thành line.
+        white_loc = (val.astype(np.int16) - bg.astype(np.int16) >= loc_diff) & (sat <= loc_sat_max)
+        allowed = track
+    else:
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (tophat_kernel, tophat_kernel))
+        tophat = val - cv2.morphologyEx(val, cv2.MORPH_OPEN, kernel)
+        white_loc = (tophat >= tophat_min) & (sat <= tophat_sat_max)
+        # Giãn object bằng nhân chữ nhật, bán kính object_dilate pixel theo mỗi trục.
+        diameter = 2 * object_dilate + 1
+        expanded = cv2.dilate(object_mask, np.ones((diameter, diameter), dtype=np.uint8))
+        allowed = track & (expanded == 0)
+    line = ((white_abs | white_loc) & allowed).astype(np.uint8)
     line = cv2.morphologyEx(line, cv2.MORPH_CLOSE,
                             np.ones((close_kernel, close_kernel), dtype=np.uint8))
-    line &= track.astype(np.uint8)
+    line &= allowed.astype(np.uint8)
+    sharp_rejected = np.zeros_like(mask)
+    if line_method == 'tophat_sharp':
+        count, labels, stats, _ = cv2.connectedComponentsWithStats(line, connectivity=8)
+        area = stats[:, cv2.CC_STAT_AREA]
+        eligible = area >= min_area
+        eligible[0] = False
+        smooth = cv2.GaussianBlur(val.astype(np.float32), (3, 3), 0)
+        gradient = cv2.magnitude(cv2.Sobel(smooth, cv2.CV_32F, 1, 0, ksize=3),
+                                 cv2.Sobel(smooth, cv2.CV_32F, 0, 1, ksize=3))
+        # Viền trong 1 px; mọi thành phần dùng chung một phép co và các tổng theo nhãn.
+        border = (line != 0) & (cv2.erode(line, np.ones((3, 3), dtype=np.uint8)) == 0)
+        border_count = np.bincount(labels[border], minlength=count)
+        border_sum = np.bincount(labels[border], weights=gradient[border], minlength=count)
+        tophat_sum = np.bincount(labels.ravel(), weights=tophat.ravel(), minlength=count)
+        sharp = (border_sum / np.maximum(border_count, 1)
+                 / np.maximum(tophat_sum / np.maximum(area, 1), 1))
+        keep = eligible & (sharp >= sharp_min)
+        sharp_rejected = (eligible & ~keep)[labels].astype(np.uint8)
+        line = keep[labels].astype(np.uint8)
     glare = np.zeros_like(mask)
     for ring in layers[GLARE]:
         cv2.fillPoly(glare, [ring], 1)
     line[glare != 0] = 0
-    if min_area:
+    if line_method == 'median' and min_area:
         _, labels, stats, _ = cv2.connectedComponentsWithStats(line, connectivity=8)
         keep = stats[:, cv2.CC_STAT_AREA] >= min_area
         keep[0] = False
         line = keep[labels]
     mask[line != 0] = 2
-    return mask, object_mask, glare
+    return mask, object_mask, glare, sharp_rejected
 
 
 def make_mask(image, annotations, categories, width, height, sat_max=75, val_min=205,
-              loc_blur=61, loc_diff=30, loc_sat_max=90, close_kernel=5, min_area=25):
+              loc_blur=61, loc_diff=30, loc_sat_max=90, close_kernel=5, min_area=25,
+              line_method='tophat_sharp', tophat_kernel=101, tophat_min=30,
+              tophat_sat_max=130, object_dilate=3, sharp_min=0.85):
     return _make_mask_layers(image, annotations, categories, width, height, sat_max, val_min,
-                             loc_blur, loc_diff, loc_sat_max, close_kernel, min_area)[0]
+                             loc_blur, loc_diff, loc_sat_max, close_kernel, min_area,
+                             line_method, tophat_kernel, tophat_min, tophat_sat_max,
+                             object_dilate, sharp_min)[0]
 
 
 def load_jobs(paths):
@@ -165,11 +210,14 @@ def qa_row(name, mask, min_ratio, max_ratio, max_comp):
     return (name, track_px, line_px, line_ratio, count - 1, largest, ';'.join(flags))
 
 
-def qa_tile(image, mask, object_mask, glare, name, flag):
+def qa_tile(image, mask, object_mask, glare, name, flag, sharp_rejected=None):
     overlay = image.copy()
     for selected, color in ((mask == 1, (0, 255, 0)), (mask == 2, (0, 255, 255)),
                             (object_mask != 0, (0, 0, 255)), (glare != 0, (255, 0, 255))):
         overlay[selected] = (image[selected] * 0.6 + np.array(color) * 0.4).astype(np.uint8)
+    if sharp_rejected is not None:
+        selected = sharp_rejected != 0
+        overlay[selected] = (image[selected] * 0.6 + np.array((0, 165, 255)) * 0.4).astype(np.uint8)
     tile = cv2.resize(overlay, (320, 180), interpolation=cv2.INTER_AREA)
     # Chia các cờ thành hai dòng để chữ không tràn khỏi ô 320 pixel.
     lines = [name] + ([flag.replace(';', ';\n', 1)] if flag else [])
@@ -189,9 +237,10 @@ def write_qa(directory, entries):
     with path.open('w', encoding='utf-8', newline='') as stream:
         writer = csv.writer(stream)
         writer.writerow(('file', 'track_px', 'line_px', 'line_ratio', 'n_comp',
-                         'largest_comp_px', 'flag'))
+                         'largest_comp_px', 'flag', 'line_method', 'n_sharp_rejected',
+                         'sharp_rejected_px'))
         writer.writerows(row for row, _ in entries)
-    ordered = sorted(entries, key=lambda item: (not bool(item[0][-1]), item[0][0]))
+    ordered = sorted(entries, key=lambda item: (not bool(item[0][6]), item[0][0]))
     for start in range(0, len(ordered), 12):
         sheet = np.zeros((540, 1280, 3), dtype=np.uint8)
         for index, (_, tile) in enumerate(ordered[start:start + 12]):
@@ -216,6 +265,13 @@ def main(argv=None):
     parser.add_argument('--close-kernel', type=int, default=5, help='Cỡ nhân lấp lỗ {} (≥ 1)'.format(LINE))
     parser.add_argument('--preview', type=Path, help='Thư mục ảnh phủ màu để soát nhãn')
     parser.add_argument('--min-area', type=int, default=25, help='Diện tích {} tối thiểu (pixel; 0 = không lọc)'.format(LINE))
+    parser.add_argument('--line-method', choices=('median', 'tophat_sharp'), default='tophat_sharp',
+                        help='Cách tìm đường kẻ (mặc định: tophat_sharp)')
+    parser.add_argument('--tophat-kernel', type=int, default=101, help='Cỡ nhân chữ nhật tách nền (số lẻ ≥ 3)')
+    parser.add_argument('--tophat-min', type=int, default=30, help='Chênh sáng tối thiểu sau tách nền (0..255)')
+    parser.add_argument('--tophat-sat-max', type=int, default=130, help='Trần bão hòa sau tách nền (0..255)')
+    parser.add_argument('--object-dilate', type=int, default=3, help='Bán kính giãn vùng vật (pixel, ≥ 0)')
+    parser.add_argument('--sharp-min', type=float, default=0.85, help='Độ sắc tối thiểu của thành phần (≥ 0)')
     parser.add_argument('--qa', type=Path, help='Thư mục CSV và bảng ảnh soát nhãn')
     parser.add_argument('--qa-min-ratio', type=float, default=0.005, help='Tỉ lệ {} tối thiểu (0..1)'.format(LINE))
     parser.add_argument('--qa-max-ratio', type=float, default=0.15, help='Tỉ lệ {} tối đa (0..1)'.format(LINE))
@@ -232,6 +288,14 @@ def main(argv=None):
             raise ValueError('close_kernel phải là số nguyên ≥ 1')
         if args.min_area < 0:
             raise ValueError('min_area phải là số nguyên ≥ 0')
+        if args.tophat_kernel < 3 or args.tophat_kernel % 2 != 1:
+            raise ValueError('tophat_kernel phải là số nguyên lẻ ≥ 3')
+        if not 0 <= args.tophat_min <= 255 or not 0 <= args.tophat_sat_max <= 255:
+            raise ValueError('Ngưỡng tophat phải nằm trong 0..255')
+        if args.object_dilate < 0:
+            raise ValueError('object_dilate phải là số nguyên ≥ 0')
+        if not np.isfinite(args.sharp_min) or args.sharp_min < 0:
+            raise ValueError('sharp_min phải hữu hạn và ≥ 0')
         if not 0 <= args.qa_min_ratio <= args.qa_max_ratio <= 1:
             raise ValueError('Cần 0 ≤ qa_min_ratio ≤ qa_max_ratio ≤ 1')
         if args.qa_max_comp < 0:
@@ -265,10 +329,12 @@ def main(argv=None):
             image = cv2.imread(str(source), cv2.IMREAD_COLOR)
             if image is None:
                 raise ValueError('Không đọc được ảnh gốc: {}'.format(source))
-            mask, object_mask, glare = _make_mask_layers(
+            mask, object_mask, glare, sharp_rejected = _make_mask_layers(
                 image, annotations, categories, metadata['width'], metadata['height'],
                 args.sat_max, args.val_min, args.loc_blur, args.loc_diff,
-                args.loc_sat_max, args.close_kernel, args.min_area)
+                args.loc_sat_max, args.close_kernel, args.min_area, args.line_method,
+                args.tophat_kernel, args.tophat_min, args.tophat_sat_max,
+                args.object_dilate, args.sharp_min)
             write_image(args.out / (name + '.png'), mask)
             if args.preview:
                 overlay = image.copy()
@@ -278,7 +344,10 @@ def main(argv=None):
                 write_image(args.preview / (name + '.png'), overlay)
             if args.qa:
                 row = qa_row(name, mask, args.qa_min_ratio, args.qa_max_ratio, args.qa_max_comp)
-                qa_entries.append((row, qa_tile(image, mask, object_mask, glare, name, row[-1])))
+                tile = qa_tile(image, mask, object_mask, glare, name, row[6], sharp_rejected)
+                rejected_count = cv2.connectedComponentsWithStats(sharp_rejected, connectivity=8)[0] - 1
+                row += (args.line_method, rejected_count, int(np.count_nonzero(sharp_rejected)))
+                qa_entries.append((row, tile))
             ratios += np.bincount(mask.ravel(), minlength=3) / mask.size
             processed += 1
         print('Số ảnh COCO: {}; đã tạo mask: {}; thiếu file gốc: {}'.format(
@@ -291,7 +360,7 @@ def main(argv=None):
             print('Tỉ lệ pixel trung bình: chưa có ảnh để tính')
         if args.qa:
             write_qa(args.qa, qa_entries)
-            print('Số ảnh có cờ QA: {}'.format(sum(bool(row[-1]) for row, _ in qa_entries)))
+            print('Số ảnh có cờ QA: {}'.format(sum(bool(row[6]) for row, _ in qa_entries)))
         return 0
     except (OSError, ValueError, KeyError, TypeError, cv2.error) as exc:
         print('LỖI: {}'.format(exc), file=sys.stderr)
