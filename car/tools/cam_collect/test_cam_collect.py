@@ -856,6 +856,8 @@ def run_test(binary, scenario, nm, ldd, strings, hooks_binary,
                 require(interval - 20 <= gap <= interval + 2000, 'Nhịp lưu ngoài cận dung sai: ' + str(gap))
         if scenario == 'warmup':
             require(summary['warmup_dropped'] == 3, 'Sai số khung warmup')
+            require(all((int(r['width']), int(r['height'])) == (1280, 720) for r in rows),
+                    'Cỡ ảnh warmup không đúng 1280×720')
         if scenario == 'start_delay':
             require(int(rows[0]['monotonic_ns']) / 1e9 >= started + 1.8, 'Lưu trước start-delay')
         if scenario in ('session', 'format'):
