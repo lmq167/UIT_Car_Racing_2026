@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
         const std::string imgdir = root + "/anh thu";
         mkdir(imgdir.c_str(), 0755);
         for (int i = 0; i < 20; ++i) {
-            cv::Mat img(384, 640, CV_8UC3, cv::Scalar(40 + 30 * i, 100, 160));
+            cv::Mat img(720, 1280, CV_8UC3, cv::Scalar(40 + 30 * i, 100, 160));
             cv::circle(img, cv::Point(80 + 70 * i, 190), 40, cv::Scalar(255, 255, 255), -1);
             char name[64];
             std::snprintf(name, sizeof name, "/frame_%06d.jpg", i);

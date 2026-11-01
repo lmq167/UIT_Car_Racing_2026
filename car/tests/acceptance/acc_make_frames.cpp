@@ -11,7 +11,7 @@ int main(int argc, char **argv) {
     const std::string dir = argv[1];
     const int n = std::atoi(argv[2]);
     for (int i = 0; i < n; ++i) {
-        cv::Mat img(384, 640, CV_8UC3, cv::Scalar(30 + 20 * (i % 10), 90, 160));
+        cv::Mat img(720, 1280, CV_8UC3, cv::Scalar(30 + 20 * (i % 10), 90, 160));
         cv::circle(img, cv::Point(60 + 50 * i, 190), 40, cv::Scalar(255, 255, 255), -1);
         cv::putText(img, std::to_string(i), cv::Point(20, 60), cv::FONT_HERSHEY_SIMPLEX, 1.5, cv::Scalar(0, 0, 0), 3);
         char name[64];

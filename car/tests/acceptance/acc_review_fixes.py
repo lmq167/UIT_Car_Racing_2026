@@ -205,7 +205,7 @@ class ReviewSuite(LimitsSuite):
     def smoke_stall(self, kind):
         # E5/H1/H5: stage motor đầu sau bốn xác nhận servo và xác nhận bánh kê.
         # Smoke đối chiếu kích thước ảnh; giữ kích thước mặc định của nguồn tổng hợp, không giảm ngưỡng kiểm.
-        folder, config, env = self.setup({"camera_width": "640", "camera_height": "384",
+        folder, config, env = self.setup({"camera_width": "1280", "camera_height": "720",
                                           "calib_max_duration_s": "3", "calib_distance_cm": "15" if kind == "distance" else "300"})
         env["UCR_FAKE_KEYS"] = "3500:y,4500:y,5500:y,6500:y,11000:y,{}:x".format(SMOKE_CANCEL)
         env["UCR_FAKE_UI_STALL"] = "{}:{}".format(*SMOKE_STALL)
@@ -218,7 +218,7 @@ class ReviewSuite(LimitsSuite):
             except AssertionError:
                 for path in (folder / "runs").glob("*_smoke/smoke.json"):
                     result = json.loads(read(path))
-                    print("Tiền đề smoke: config 640x384, ánh xạ=1, mã={} kết quả={}".format(
+                    print("Tiền đề smoke: config 1280x720, ánh xạ=1, mã={} kết quả={}".format(
                         process.poll(), {key: result.get(key) for key in ("camera", "sensors", "servo", "passed")}))
                 raise
             require(log_ready(folder, "smoke"), "Tiền đề: smoke cần ảnh/cảm biến mới")
