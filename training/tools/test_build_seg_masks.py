@@ -1,6 +1,7 @@
 """Kiểm thử mask bằng ảnh và đa giác tổng hợp, không dùng dữ liệu xe."""
 
 import contextlib
+import csv
 import io
 import json
 import os
@@ -294,6 +295,220 @@ class SegMasksTests(unittest.TestCase):
             env=dict(os.environ, PYTHONIOENCODING='cp1252', PYTHONUTF8='0'))
         self.assertEqual(help_result.returncode, 0, help_result.stderr.decode('utf-8'))
         self.assertIn('đa giác', help_result.stdout.decode('utf-8'))
+
+    def test_khong_vach_preserves_road_obstacle_and_background(self):
+        self.categories[7] = 'khong_vach'
+        exclusion = dict(self.road, category_id=7,
+                         segmentation=[[0, 0, 500, 0, 500, 500, 0, 500]])
+        self.image[190:220, 190:220] = 255
+        self.image[520:550, 520:550] = 255
+        mask = self.mask([exclusion, self.obstacle, self.road])
+        self.assertEqual([int(mask[y, x]) for y, x in ((200, 200), (350, 350),
+                                                     (50, 50), (530, 530))],
+                         [1, 0, 0, 2])
+        self.save_original()
+        self.assertEqual(self.run_cli(coco=self.save_coco(
+            annotations=[self.road, self.obstacle, exclusion]))[0], 0)
+        saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
+        self.assertEqual(int(saved[200, 200]), 1)
+
+    def test_area_filter_boundaries_and_diagonal_connectivity(self):
+        self.image[150:154, 150:156] = 255  # 24 pixel, dưới ngưỡng 25.
+        self.image[180:185, 150:155] = 255  # Đúng 25 pixel, phải giữ.
+        self.image[200:203, 150:210] = 255
+        self.image[250:254, 150:154] = 255
+        self.image[254:258, 154:158] = 255  # Hai mảnh 16 pixel nối chéo thành 32.
+        mask = self.mask(close_kernel=1)
+        self.assertEqual(int(mask[151, 151]), 1)
+        self.assertEqual(int(mask[181, 151]), 2)
+        self.assertTrue((mask[200:203, 150:210] == 2).all())
+        self.assertEqual(int(mask[251, 151]), 2)
+        self.assertEqual(int(mask[255, 155]), 2)
+        self.assertEqual(int(self.mask(close_kernel=1, min_area=0)[151, 151]), 2)
+        self.save_original()
+        self.assertEqual(self.run_cli('--min-area', '0', '--close-kernel', '1')[0], 0)
+        saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
+        self.assertEqual(int(saved[151, 151]), 2)
+        self.assertEqual(self.run_cli('--min-area', '100', '--close-kernel', '1')[0], 0)
+        saved = cv2.imread(str(self.out / (self.name + '.png')), cv2.IMREAD_UNCHANGED)
+        self.assertEqual(int(saved[151, 151]), 1)
+        self.assertEqual(int(saved[201, 170]), 2)
+
+    def test_exclusion_after_closing_and_before_area_filter(self):
+        self.categories[7] = 'khong_vach'
+        self.image[190:195, 190:200] = 255
+        exclusion = dict(self.road, category_id=7,
+                         segmentation=[[194, 190, 195, 190, 195, 194, 194, 194]])
+        annotations = [self.road, exclusion]
+        unfiltered = self.mask(annotations, min_area=0)
+        self.assertTrue((unfiltered[190:195, 194:196] == 1).all())
+        self.assertEqual(int(unfiltered[192, 192]), 2)
+        self.assertTrue((self.mask(annotations)[190:195, 190:200] == 1).all())
+
+    def test_optional_exclusion_class_keeps_existing_result(self):
+        self.image[190:220, 190:220] = 255
+        expected = self.mask(min_area=0)
+        np.testing.assert_array_equal(self.mask(), expected)
+        self.categories[7] = 'khong_vach'
+        np.testing.assert_array_equal(self.mask(), expected)
+        self.save_original()
+        self.assertEqual(self.run_cli()[0], 0)
+        self.assertEqual(sorted(path.name for path in self.out.iterdir()), [self.name + '.png'])
+        self.assertFalse(self.preview.exists())
+        self.assertFalse((self.root / 'qa').exists())
+
+    def test_qa_statistics_flags_and_exact_boundaries(self):
+        mask = np.zeros((720, 1280), dtype=np.uint8)
+        mask[:10, :10] = 1
+        mask[:2, :5] = 2
+        mask[5:7, :5] = 2
+        row = tools.qa_row(self.name, mask, 0.005, 0.15, 1)
+        self.assertEqual(row, (self.name, 80, 20, 0.2, 2, 10, 'ratio_cao;nhieu_manh'))
+        self.assertEqual(tools.qa_row(self.name, mask, 0.2, 0.2, 2)[-1], '')
+        mask[mask == 2] = 1
+        self.assertEqual(tools.qa_row(self.name, mask, 0.005, 0.15, 60),
+                         (self.name, 100, 0, 0, 0, 0, 'ratio_thap'))
+        mask[:] = 0
+        self.assertEqual(tools.qa_row(self.name, mask, 0, 1, 0),
+                         (self.name, 0, 0, 0, 0, 0, ''))
+
+    def test_qa_csv_and_sheets_sort_flagged_first_and_paginate(self):
+        qa = self.root / 'qa'
+        coco = self.save_coco()
+        data = json.loads(coco.read_text(encoding='utf-8'))
+        data['images'], data['annotations'] = [], []
+        for index in range(1, 14):
+            name = 'car6_p0014_{:04d}'.format(index)
+            image = self.image.copy()
+            image[480:560, 480:560] = (20, 20 + index * 10, 100)
+            if index != 2:
+                image[190:280, 190:280] = 255
+            tools.write_image(self.images / (name + '.jpg'), image)
+            data['images'].append({'id': index, 'file_name': name + '.jpg',
+                                   'width': 1280, 'height': 720})
+            data['annotations'].append(dict(self.road, image_id=index))
+        data['images'].reverse()
+        coco.write_text(json.dumps(data), encoding='utf-8')
+        code, output, error = self.run_cli('--qa', str(qa), coco=coco)
+        self.assertEqual((code, error), (0, ''))
+        self.assertIn('Số ảnh có cờ QA: 1', output)
+        with (qa / 'qa.csv').open(encoding='utf-8', newline='') as stream:
+            reader = csv.DictReader(stream)
+            self.assertEqual(reader.fieldnames, ['file', 'mat_px', 'vach_px', 'vach_ratio',
+                                                 'n_comp', 'largest_comp_px', 'flag'])
+            rows = list(reader)
+        self.assertEqual(len(rows), 13)
+        self.assertEqual([row['file'] for row in rows],
+                         [img['file_name'][:-4] for img in data['images']])
+        for row in rows:
+            mask = cv2.imread(str(self.out / (row['file'] + '.png')), cv2.IMREAD_UNCHANGED)
+            mat_px, vach_px = int((mask == 1).sum()), int((mask == 2).sum())
+            self.assertEqual(int(row['mat_px']), mat_px)
+            self.assertEqual(int(row['vach_px']), vach_px)
+            self.assertAlmostEqual(float(row['vach_ratio']), vach_px / (mat_px + vach_px))
+            flagged = row['file'].endswith('0002')
+            self.assertEqual(row['flag'], 'ratio_thap' if flagged else '')
+            self.assertEqual(int(row['n_comp']), 0 if flagged else 1)
+            self.assertEqual(int(row['largest_comp_px']), 0 if flagged else vach_px)
+        sheets = sorted(qa.glob('qa_sheet_*.jpg'))
+        self.assertEqual([path.name for path in sheets], ['qa_sheet_01.jpg', 'qa_sheet_02.jpg'])
+        first, last = [cv2.imread(str(path)) for path in sheets]
+        self.assertEqual(first.shape, (540, 1280, 3))
+        self.assertEqual(last.shape, (540, 1280, 3))
+        # Ô đầu không có vạch; ô thứ hai là tên nhỏ nhất trong nhóm bình thường.
+        self.assertGreater(int(first[60, 60, 1]), int(first[60, 60, 2]) + 40)
+        self.assertGreater(int(first[60, 380, 2]), int(first[60, 60, 2]) + 40)
+        np.testing.assert_allclose(first[130, 450], (12, 120, 60), atol=5)
+        np.testing.assert_allclose(first[130, 770], (12, 132, 60), atol=5)
+        self.assertFalse(last[200:].any())
+        self.assertFalse(last[20:160, 340:].any())
+
+    def test_qa_overlay_colors_and_does_not_change_preview(self):
+        self.categories[7] = 'khong_vach'
+        self.image[190:280, 190:280] = 255
+        exclusion = dict(self.road, category_id=7,
+                         segmentation=[[500, 300, 600, 300, 600, 400, 500, 400]])
+        annotations = [self.road, self.obstacle, exclusion]
+        mask, vat, khong_vach = tools._make_mask_layers(
+            self.image, annotations, self.categories, 1280, 720)
+        tile = tools.qa_tile(self.image, mask, vat, khong_vach, self.name, '')
+        for y, x, color in ((500, 500, (0, 255, 0)), (240, 240, (0, 255, 255)),
+                             (350, 350, (0, 0, 255)), (350, 550, (255, 0, 255))):
+            expected = (self.image[y, x] * 0.6 + np.array(color) * 0.4).astype(np.uint8)
+            np.testing.assert_array_equal(tile[y // 4, x // 4], expected)
+        self.save_original()
+        coco = self.save_coco(annotations=annotations)
+        self.assertEqual(self.run_cli('--preview', str(self.preview), coco=coco)[0], 0)
+        before = (self.preview / (self.name + '.png')).read_bytes()
+        self.assertEqual(self.run_cli('--preview', str(self.preview), '--qa', str(self.root / 'qa'),
+                                      coco=coco)[0], 0)
+        self.assertEqual((self.preview / (self.name + '.png')).read_bytes(), before)
+
+    def test_cli_qa_custom_thresholds_set_multiple_flags(self):
+        self.image[192:216, 192:216] = 255
+        self.image[240:264, 192:216] = 255
+        self.save_original()
+        qa = self.root / 'qa'
+        code, output, error = self.run_cli('--qa', str(qa), '--qa-min-ratio', '0',
+                                           '--qa-max-ratio', '0', '--qa-max-comp', '1')
+        self.assertEqual((code, error), (0, ''))
+        with (qa / 'qa.csv').open(encoding='utf-8', newline='') as stream:
+            row = next(csv.DictReader(stream))
+        self.assertEqual(row['flag'], 'ratio_cao;nhieu_manh')
+        self.assertEqual(int(row['n_comp']), 2)
+        self.assertGreater(int(row['largest_comp_px']), 25)
+        self.assertIn('Số ảnh có cờ QA: 1', output)
+
+    def test_invalid_area_and_qa_parameters_fail_before_writing(self):
+        for value in (-1, 1.5, float('nan')):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.mask(min_area=value)
+        for extra in (('--min-area', '-1'), ('--qa-max-comp', '-1'),
+                      ('--qa-min-ratio', '-0.1'), ('--qa-max-ratio', '1.1'),
+                      ('--qa-min-ratio', '0.2'), ('--qa-max-ratio', 'nan'),
+                      ('--qa-min-ratio', 'nan'), ('--qa-max-ratio', 'inf')):
+            with self.subTest(extra=extra):
+                code, output, error = self.run_cli(*extra)
+                self.assertEqual(code, 1)
+                self.assertIn('LỖI:', error)
+                self.assertFalse(self.out.exists())
+
+    def test_unsafe_qa_directories_rejected(self):
+        for qa in (self.images, self.images / 'sub', self.out, self.out / 'sub',
+                   self.preview, self.preview / 'sub'):
+            with self.subTest(qa=qa):
+                code, output, error = self.run_cli('--qa', str(qa), '--preview', str(self.preview))
+                self.assertEqual(code, 1)
+                self.assertIn('--qa', error)
+                self.assertFalse(self.out.exists())
+                self.assertFalse(self.preview.exists())
+
+    def test_qa_rejects_symlink_directory_parent_and_files(self):
+        target = self.root / 'target'
+        target.mkdir()
+        link = self.root / 'link'
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            self.skipTest('Máy không cho tạo liên kết tượng trưng để kiểm thử')
+        self.save_original()
+        for qa in (link, link / 'sub'):
+            with self.subTest(qa=qa):
+                code, output, error = self.run_cli('--qa', str(qa))
+                self.assertEqual(code, 1)
+                self.assertIn('liên kết', error)
+        qa = self.root / 'qa'
+        qa.mkdir()
+        protected = target / 'protected'
+        protected.write_bytes(b'giu nguyen')
+        for filename in ('qa.csv', 'qa_sheet_01.jpg'):
+            path = qa / filename
+            path.symlink_to(protected)
+            code, output, error = self.run_cli('--qa', str(qa))
+            self.assertEqual(code, 1)
+            self.assertIn('liên kết', error)
+            self.assertEqual(protected.read_bytes(), b'giu nguyen')
+            path.unlink()
 
 
 if __name__ == '__main__':
