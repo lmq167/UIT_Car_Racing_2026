@@ -21,9 +21,9 @@ namespace {
 // Chuỗi camera_pipeline trong config.yaml, giữ đúng ảnh dùng khi tự lái.
 const char* defaultPipeline =
     "nvarguscamerasrc sensor-mode=5 wbmode=0 ! "
-    "video/x-raw(memory:NVMM),width=1080,height=720,framerate=60/1 ! "
+    "video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1 ! "
     "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
-    "video/x-raw,width=640,height=384,format=BGR ! appsink drop=true max-buffers=1";
+    "video/x-raw,format=BGR ! appsink drop=true max-buffers=1";
 
 struct Options {
     fs::path out, source, outRoot = "runs_cam";

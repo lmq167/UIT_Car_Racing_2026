@@ -111,7 +111,7 @@ void captureWorker(int fd, const Options& o) {
                     while (!stopping) std::this_thread::sleep_for(10ms);
                     break;
                 }
-                frame = cv::Mat(384, 640, CV_8UC3, cv::Scalar(80, 120, 160));
+                frame = cv::Mat(720, 1280, CV_8UC3, cv::Scalar(80, 120, 160));
                 ++produced;
                 std::this_thread::sleep_for(10ms);
                 ok = true;

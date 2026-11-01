@@ -19,7 +19,8 @@ int main() {
         require(defaults.interval == 1000 && defaults.maxFrames == 0 && defaults.quality == 90 && defaults.minFree == 1024 &&
                 defaults.warmup == 15 && defaults.startDelay == 0 && defaults.maxSeconds == 0,
                 "Sai giá trị mặc định");
-        require(defaults.pipeline.find("width=640,height=384,format=BGR") != std::string::npos, "Sai cỡ mặc định");
+        require(defaults.pipeline.find("width=1280,height=720") != std::string::npos &&
+                defaults.pipeline.find("width=640") == std::string::npos, "Sai cỡ mặc định");
         require(defaults.out.parent_path() == fs::path("runs_cam") &&
                 std::regex_match(defaults.out.filename().string(), std::regex("[0-9]{8}_[0-9]{6}_cam(_[0-9]+)?")),
                 "Thiếu tên theo giờ");
