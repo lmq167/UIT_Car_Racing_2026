@@ -4,7 +4,7 @@
 namespace common {
 struct Config {
     std::string loaded_text;
-    std::string camera_pipeline = "nvarguscamerasrc sensor-mode=5 wbmode=0 ! video/x-raw(memory:NVMM),width=1080,height=720,framerate=60/1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,width=640,height=384,format=BGR ! appsink drop=true max-buffers=1";
+    std::string camera_pipeline = "nvarguscamerasrc sensor-mode=5 wbmode=0 ! video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1";
     std::string fake_source = "";
     int camera_hz = 50;
     int sensor_hz = 50;
@@ -23,7 +23,7 @@ struct Config {
     float resume_stable_s = 2.0f;
     float soft_start_s = 1.0f;
     int tof_mapping_confirmed = 0;
-    int camera_width = 640, camera_height = 384;
+    int camera_width = 1280, camera_height = 720;
     float smoke_min_fps = 10.0f;
     float smoke_stop_speed_cms = 1.0f;
     int smoke_servo_deg = 10;

@@ -1,6 +1,6 @@
 %YAML:1.0
 ---
-camera_pipeline: "nvarguscamerasrc sensor-mode=5 wbmode=0 ! video/x-raw(memory:NVMM),width=1080,height=720,framerate=60/1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,width=640,height=384,format=BGR ! appsink drop=true max-buffers=1"
+camera_pipeline: "nvarguscamerasrc sensor-mode=5 wbmode=0 ! video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1 ! nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! video/x-raw,format=BGR ! appsink drop=true max-buffers=1"
 fake_source: ""
 camera_hz: 50
 sensor_hz: 50
@@ -19,8 +19,8 @@ camera_resume_max_s: 2.0     # Trong (image_timeout_ms/1000, 5] s.
 resume_stable_s: 2.0
 soft_start_s: 1.0            # Trong [0.2, 10] s; áp dụng cả ảnh đầu tiên của auto.
 tof_mapping_confirmed: 0
-camera_width: 640
-camera_height: 384
+camera_width: 1280
+camera_height: 720
 smoke_min_fps: 10.0
 smoke_stop_speed_cms: 1.0
 smoke_servo_deg: 10

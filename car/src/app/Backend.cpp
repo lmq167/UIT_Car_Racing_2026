@@ -87,7 +87,7 @@ bool Backend::EmergencyOpenAndStop() {
 bool Backend::Frame(cv::Mat &frame) {
 #ifdef UCR_FAKE_HW
     if(fake::CameraGap()) return false;
-    if(c_.fake_source.empty()) { frame=cv::Mat(384,640,CV_8UC3,cv::Scalar(40,60,40)); return true; }
+    if(c_.fake_source.empty()) { frame=cv::Mat(c_.camera_height,c_.camera_width,CV_8UC3,cv::Scalar(40,60,40)); return true; }
 #endif
     return camera_.read(frame) && !frame.empty();
 }
