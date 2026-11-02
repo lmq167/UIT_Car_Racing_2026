@@ -1,6 +1,7 @@
 // Luồng model: không chặn bên gửi, không lệch khung, lỗi chỉ thành thông báo, dừng có hạn.
 #include "MaskRender.h"
 #include "ModelWorker.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <iostream>
@@ -50,6 +51,54 @@ struct Collector {
     size_t size() { std::lock_guard<std::mutex> lock(mutex); return panels.size(); }
 };
 cv::Mat frameOf(int v) { return cv::Mat(720, 1280, CV_8UC3, cv::Scalar(v, v, v)); }
+
+struct LatestSamples {
+    std::mutex mutex;
+    int64_t offered[200] = {};
+    std::vector<int64_t> ages;
+};
+class LatestModel : public model_view::IMaskModel {
+public:
+    explicit LatestModel(LatestSamples& samples) : samples_(samples) {}
+    const model_view::ModelInfo& info() const override { return info_; }
+    cv::Mat infer(const cv::Mat& bgr) override {
+        const auto started = nowMs();
+        const int id = bgr.at<cv::Vec3b>(0, 0)[0];
+        {
+            std::lock_guard<std::mutex> lock(samples_.mutex);
+            samples_.ages.push_back(started - samples_.offered[id]);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        return cv::Mat(info_.inputH, info_.inputW, CV_8UC1, cv::Scalar(id % 3));
+    }
+private:
+    LatestSamples& samples_;
+    model_view::ModelInfo info_ = fakeInfo();
+};
+
+void latestFrameCase() {
+    LatestSamples samples;
+    Collector out;
+    {
+        model_view::ModelWorker worker([&] {
+            return std::unique_ptr<model_view::IMaskModel>(new LatestModel(samples));
+        }, std::ref(out), 15, "latest");
+        auto next = Clock::now();
+        for (int id = 1; id <= 100; ++id) {
+            const cv::Mat frame = frameOf(id);
+            const auto stamp = nowMs();
+            { std::lock_guard<std::mutex> lock(samples.mutex); samples.offered[id] = stamp; }
+            worker.offer(frame, stamp);
+            next += std::chrono::milliseconds(20);
+            std::this_thread::sleep_until(next);
+        }
+        worker.requestStop();
+    }
+    check(samples.ages.size() >= 4 && out.size() == samples.ages.size(), "latest_frame: moi luot deu co ket qua");
+    // 20 ms chu kỳ offer + 130 ms dung sai lập lịch (TSan); FIFO giữ ảnh ít nhất một lượt suy luận 300 ms.
+    for (const auto age : samples.ages)
+        check(age >= 0 && age <= 150, "latest_frame: tuoi khung luc bat dau suy luan " + std::to_string(age) + " ms");
+}
 
 void frameMatchAndNonBlocking() {
     Collector out;
@@ -132,8 +181,13 @@ void rateAndStop() {
 }
 } // namespace
 
-int main() {
-    try { frameMatchAndNonBlocking(); errorsBecomeNotices(); rateAndStop(); }
+int main(int argc, char** argv) {
+    try {
+        const std::string part = argc == 2 ? argv[1] : "all";
+        if (part == "all") { frameMatchAndNonBlocking(); errorsBecomeNotices(); rateAndStop(); }
+        if (part == "all" || part == "latest") latestFrameCase();
+        if (argc > 2 || (part != "all" && part != "latest")) return 2;
+    }
     catch (const std::exception& e) { std::cerr << "HONG: ngoai le " << e.what() << '\n'; return 1; }
     if (failures) return 1;
     std::cout << "OK model_view worker\n";

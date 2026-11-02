@@ -2,6 +2,7 @@
 #include "DnnMaskModel.h"
 #include "MaskRender.h"
 #include "ModelInfo.h"
+#include <opencv2/imgproc.hpp>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -110,6 +111,88 @@ void preprocessCases() {
            "dau ra 1 lop");
 }
 
+void areaCase() {
+    auto info = fakeInfo();
+    info.inputW = 256; // Mỗi điểm gom 5 cột: trung bình lần lượt 102 và 153, khác nearest/linear.
+    cv::Mat frame(720, 1280, CV_8UC3);
+    for (int x = 0; x < frame.cols; ++x) frame.col(x).setTo(cv::Scalar::all(x % 2 ? 255 : 0));
+    const cv::Mat blob = model_view::makeInputBlob(frame, info);
+    bool correct = true;
+    for (int c = 0; c < 3; ++c)
+        for (int y = 0; y < info.inputH; ++y)
+            for (int x = 0; x < info.inputW; ++x)
+                correct = correct && std::abs(blob.ptr<float>(0, c)[y * info.inputW + x] -
+                                               (x % 2 ? 153.f : 102.f) / 255.f) < 1e-5;
+    check(correct, "inter_area: trung binh 5 cot 0/255 tinh tay cho moi kenh/diem");
+    for (int method : {cv::INTER_NEAREST, cv::INTER_LINEAR}) {
+        cv::Mat other;
+        cv::resize(frame(cv::Rect(0, 320, 1280, 400)), other, cv::Size(256, 96), 0, 0, method);
+        check(std::abs(blob.ptr<float>(0, 0)[0] - other.at<cv::Vec3b>(0, 0)[0] / 255.f) > 0.1,
+              "inter_area: khac nearest va linear tren mau xen ke");
+    }
+}
+
+void infoSizeCases() {
+    for (bool alternate : {false, true}) {
+        auto info = fakeInfo();
+        if (alternate) {
+            info.cropY0 = 400; info.inputH = 48; info.inputW = 80;
+            info.classNames = {"line", "background", "track_surface"};
+        }
+        cv::Mat frame(720, 1280, CV_8UC3, cv::Scalar::all(255));
+        frame(cv::Rect(0, info.cropY0, 1280, 720 - info.cropY0)).setTo(cv::Scalar(10, 20, 30));
+        const cv::Mat blob = model_view::makeInputBlob(frame, info);
+        check(blob.dims == 4 && blob.size[0] == 1 && blob.size[1] == 3 &&
+              blob.size[2] == info.inputH && blob.size[3] == info.inputW, "info_sizes: blob theo input_hw");
+        check(std::abs(blob.ptr<float>(0, 0)[0] - 30.f / 255) < 1e-5 &&
+              std::abs(blob.ptr<float>(0, 2)[info.inputH * info.inputW - 1] - 10.f / 255) < 1e-5,
+              "info_sizes: blob cat dung crop_y moi");
+        const int track = alternate ? 2 : 1;
+        cv::Mat mask(info.inputH, info.inputW, CV_8UC1, cv::Scalar(track));
+        for (int i = 0; i < 3; ++i) mask.at<unsigned char>(0, i) = static_cast<unsigned char>(i);
+        const cv::Vec3b colors[3] = {alternate ? cv::Vec3b(0, 255, 255) : cv::Vec3b(0, 0, 0),
+                                   alternate ? cv::Vec3b(0, 0, 0) : cv::Vec3b(0, 160, 0),
+                                   alternate ? cv::Vec3b(0, 160, 0) : cv::Vec3b(0, 255, 255)};
+        const cv::Mat panel = model_view::renderMaskPanel(mask, info);
+        check(panel.rows == info.inputH * 4 && panel.cols == info.inputW * 4, "info_sizes: phong x4 theo info");
+        for (int i = 0; i < 3; ++i)
+            for (int y = 0; y < 4; ++y)
+                for (int x = 0; x < 4; ++x)
+                    check(panel.at<cv::Vec3b>(y, i * 4 + x) == colors[i], "info_sizes: mau theo ten lop, nearest x4");
+        const cv::Mat thumb(360, 640, CV_8UC3, cv::Scalar::all(100));
+        const cv::Mat overlay = model_view::renderOverlayPanel(thumb, mask, info);
+        const int boundary = info.cropY0 / 2;
+        check(overlay.size() == thumb.size(), "info_sizes: co overlay");
+        check(overlay.at<cv::Vec3b>(boundary - 1, 300) == cv::Vec3b(100, 100, 100),
+              "info_sizes: hang tren crop giu nguyen");
+        check(overlay.at<cv::Vec3b>(boundary, 300) == cv::Vec3b(0, 0, 255), "info_sizes: vach do theo crop_y");
+        check(overlay.at<cv::Vec3b>(boundary + 1, 300) == cv::Vec3b(50, 130, 50) &&
+              overlay.at<cv::Vec3b>(359, 639) == cv::Vec3b(50, 130, 50), "info_sizes: hang phu va mau theo info");
+        for (int i = 0; i < 3; ++i) {
+            const int x = (i * 640 / info.inputW) + 2;
+            const cv::Vec3b expected(50 + colors[i][0] / 2, 50 + colors[i][1] / 2, 50 + colors[i][2] / 2);
+            const cv::Vec3b actual = overlay.at<cv::Vec3b>(boundary + 2, x);
+            bool same = true;
+            for (int c = 0; c < 3; ++c) same = same && std::abs(int(actual[c]) - int(expected[c])) <= 1;
+            check(same, "info_sizes: mau overlay theo thu tu class_names");
+        }
+    }
+}
+
+void flagCases() {
+    for (const std::string key : {"imagenet_normalization_in_model", "fake_data"}) {
+        const std::string old = "\"" + key + "\":" + (key == "fake_data" ? "true" : "false");
+        for (const std::string value : {"true", "false"}) {
+            const auto info = model_view::loadModelInfo(writeInfo(key + value, kInfo, old, "\"" + key + "\":" + value));
+            check((key == "fake_data" ? info.fakeData : info.imagenetInModel) == (value == "true"),
+                  "info_flags: chap nhan true/false cho " + key);
+        }
+        for (const std::string value : {"2", "-1"})
+            throws([&] { model_view::loadModelInfo(writeInfo(key + value, kInfo, old, "\"" + key + "\":" + value)); },
+                   key, "info_flags: tu choi " + key + "=" + value);
+    }
+}
+
 void renderCases() {
     const auto info = fakeInfo();
     cv::Mat mask(96, 160, CV_8UC1, cv::Scalar(1));
@@ -141,8 +224,15 @@ void renderCases() {
 }
 } // namespace
 
-int main() {
-    try { infoCases(); preprocessCases(); renderCases(); }
+int main(int argc, char** argv) {
+    try {
+        const std::string part = argc == 2 ? argv[1] : "all";
+        if (part == "all") { infoCases(); preprocessCases(); renderCases(); }
+        if (part == "all" || part == "area") areaCase();
+        if (part == "all" || part == "sizes") infoSizeCases();
+        if (part == "all" || part == "flags") flagCases();
+        if (argc > 2 || (part != "all" && part != "area" && part != "sizes" && part != "flags")) return 2;
+    }
     catch (const std::exception& e) { std::cerr << "HONG: ngoai le " << e.what() << '\n'; return 1; }
     if (failures) return 1;
     std::cout << "OK model_view core\n";

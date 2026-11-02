@@ -5,6 +5,7 @@ mutation (thêm model_view, dnn) và thêm ca mới. ONNX giả KHÔNG chứng m
 """
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -21,7 +22,8 @@ _spec.loader.exec_module(td)
 need, Failure = td.need, td.Failure
 
 T33_CASES = [c for c in td.CASES if c != 'SC']
-NEW_CASES = 'A01 A02 A03 A04 A05 A06 A08 A09 A10 A11 D01 M6 M7 M8 M9'.split()
+NEW_CASES = ('A01 A02 A02b A03 A04 A04b A05 A05b A06 A08 A09 A10 A10b A11 D01 '
+             'M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18').split()
 VIEW = ('ModelInfo', 'DnnMaskModel', 'MaskRender', 'ModelWorker')
 FAKE = HERE / 'make_fake_road_onnx.py'
 
@@ -118,6 +120,31 @@ def test_case(case, cfg, root):
             need(td.last_commands(run.events()) == (5, 0), 'Lỗi model làm xe dừng', 'model_error_exit')
             run.finish()
         return
+    if case == 'A02b':
+        root.mkdir(parents=True)
+        # Chỉ cần info hợp lệ; không tạo ONNX để tránh nhầm lỗi thiếu info với thiếu model.
+        info = root / 'valid_info.json'
+        fixture = (Path(cfg.tests) / 'test_model_view_core.cpp').read_text(encoding='utf-8')
+        info.write_text(re.search(r'R"J\((.*?)\)J"', fixture, re.S).group(1), encoding='utf-8')
+        json.loads(info.read_text(encoding='utf-8'))
+        missing = root / 'missing.onnx'
+        need(not missing.exists(), 'ONNX phải thực sự không tồn tại', 'setup')
+        with td.running(cfg, root / 'run', args=['--model', str(missing), '--info', str(info)]) as run:
+            run.boot()
+            def missing_onnx_notice():
+                for event in events(run, 'model_notice'):
+                    text = str(event[2]).lower()
+                    if ('onnx' in text and 'info.json' not in text and
+                            any(word in text for word in ('read', 'open', 'find', 'exist', 'khong', 'thieu'))):
+                        return True
+                return False
+            run.wait(missing_onnx_notice, 5, 'Thông báo không chỉ rõ ONNX thiếu/không mở được', tag='missing_onnx')
+            run.act('W', 5, 0)
+            alive_for(run, 1.0, 'model_error_exit')
+            need(td.last_commands(run.events()) == (5, 0), 'Thiếu ONNX làm đổi lệnh W', 'missing_onnx')
+            run.act(' ', 0, 0)
+            run.finish()
+        return
     if case == 'A04':
         with td.running(cfg, root, env={'UCR_DRIVE_FAKE_MODEL': 'ok'}, args=['--infer-hz', '5']) as run:
             run.boot()
@@ -135,6 +162,28 @@ def test_case(case, cfg, root):
             extra = [p.name for p in run.out.rglob('*') if p.is_file() and p.name != '.pass_counter' and
                      (p.suffix not in ('.jpg', '.csv', '.json') or 'mask' in p.name.lower())]
             need(not extra, 'Ghi thêm tệp ngoài định dạng lượt (mặt nạ?): ' + repr(extra), 'record_format')
+            jpgs = list(run.out.rglob('*.jpg'))
+            need(len(jpgs) == len(run.rows()), '{} JPEG nhưng {} dòng frames.csv'.format(len(jpgs), len(run.rows())),
+                 'record_jpg_count')
+        return
+    if case == 'A04b':
+        with td.running(cfg, root, env={'UCR_DRIVE_FAKE_MODEL': 'ok'}, args=['--infer-hz', '5']) as run:
+            run.boot()
+            run.act('W', 5, 0)
+            mark = run.act('A', 5, 5, tag='model_changes_drive')
+            start = len(events(run, 'model_result'))
+            def held_commands(end=None):
+                wrong = [e for e in run.events()[mark:end] if
+                         (e[1] in ('motor_speed', 'servo_angle') and (e[2] != 5 or e[3])) or
+                         e[1] == 'motor_emergency']
+                need(not wrong, 'Model đổi lệnh 5/5 (kể cả về 0): ' + repr(wrong[:3]), 'model_changes_drive')
+            run.observe(2.0, held_commands)
+            run.wait(lambda: len(events(run, 'model_result')) - start >= 6, 2,
+                     'Chưa có 6 kết quả lúc giữ W/A', tag='model_run')
+            held_commands()
+            stop_mark = run.act(' ', 0, 0)
+            held_commands(stop_mark)
+            run.finish()
         return
     if case == 'A05':
         with td.running(cfg, root, env={'UCR_DRIVE_FAKE_MODEL': 'slow'}) as run:
@@ -174,6 +223,34 @@ def test_case(case, cfg, root):
                 alive_for(run, 1.0, 'side_window')
                 need(td.last_commands(run.events()) == (5, 0), 'Đóng cửa sổ phụ làm xe dừng', 'side_window')
                 run.finish()
+        return
+    if case == 'A05b':
+        for trigger in ('SIGTERM', 'Esc'):
+            with td.running(cfg, root / trigger, env={'UCR_DRIVE_FAKE_MODEL': 'slow'}) as run:
+                run.boot()
+                run.act('W', 5, 0)
+                run.act('A', 5, 5)
+                start = len(events(run, 'model_result'))
+                run.wait(lambda: len(events(run, 'model_result')) > start, 5,
+                         'Model chậm chưa trả kết quả mới', tag='model_run')
+                # Sau kết quả mới, chừa 100 ms cho lượt kế bắt đầu trước tác nhân dừng.
+                run.observe(0.1)
+                need(td.last_commands(run.events()) == (5, 5), 'Xe không còn chạy trước tác nhân dừng',
+                     'model_exit_stop')
+                mark = len(run.events())
+                sent_ms = td.now_ms()
+                if trigger == 'SIGTERM':
+                    run.process.send_signal(signal.SIGTERM)
+                else:
+                    run.send('E')  # Quy ước Esc của cửa sổ giả T33.
+                run.wait(lambda: run.process.poll() is not None, 3 + cfg.slack / 1000.0,
+                         'Thoát quá 3 s + dung sai sanitizer', alive=False, tag='model_exit_stop')
+                elapsed = td.now_ms() - sent_ms
+                trace = run.finish(mark=mark, tag='model_exit_stop')
+                stopped_ms = td.stop_pair(trace[mark:], 'model_exit_stop')
+                need(stopped_ms - sent_ms <= 150 + cfg.slack,
+                     'Model trì hoãn motor 0: {:.0f} ms'.format(stopped_ms - sent_ms), 'model_exit_stop')
+                need(elapsed <= 3000 + cfg.slack, 'Thoát quá hạn: {:.0f} ms'.format(elapsed), 'model_exit_stop')
         return
     if case == 'A08':
         with td.running(cfg, root, env={'UCR_DRIVE_FAKE_MODEL': 'ok'}) as run:
@@ -220,6 +297,19 @@ def test_case(case, cfg, root):
             need('hardware/' not in text and 'Control' not in text and 'SetSpeedCms' not in text,
                  path.name + ' chạm mã điều khiển', 'isolation')
         return
+    if case == 'A10b':
+        for hz in ('1', '15', 'default'):
+            args = [] if hz == 'default' else ['--infer-hz', hz]
+            with td.running(cfg, root / hz, args=args, env={'UCR_DRIVE_FAKE_MODEL': 'ok'}) as run:
+                run.boot()
+                run.wait(lambda: events(run, 'model_result'), 5, 'Không chạy ở infer-hz ' + hz, tag='infer_bounds')
+                if hz == 'default':
+                    start = len(events(run, 'model_result'))
+                    run.observe(2.0)
+                    produced = len(events(run, 'model_result')) - start
+                    need(6 <= produced <= 12, 'Mặc định cho {} kết quả/2 s'.format(produced), 'infer_default')
+                run.finish()
+        return
     if case == 'D01':
         folder = root / 'models'
         cvdnn = make_onnx(folder, 'cvdnn')
@@ -232,7 +322,7 @@ def test_case(case, cfg, root):
 
 
 def build_targets(cfg, root, targets, budget):
-    """Như T33 nhưng bản sao có model_view + dnn; kiểu 'worker' dựng test luồng model từ nguồn sao."""
+    """Như T33 nhưng bản sao có model_view + dnn; core/worker dựng unit test từ nguồn sao."""
     project = root / 'mutation-project'
     project.mkdir()
     lines = ['cmake_minimum_required(VERSION 3.10)', 'project(T42Mutation LANGUAGES CXX)',
@@ -245,9 +335,9 @@ def build_targets(cfg, root, targets, budget):
         if kind == 'limits':
             lines.append('add_executable({} "{}/test_limits.cpp")'.format(name, src))
             continue
-        if kind == 'worker':
-            lines.append('add_executable({} "{}/test_model_view_worker.cpp" {})'.format(
-                name, Path(cfg.tests).as_posix(), view))
+        if kind in ('core', 'worker'):
+            lines.append('add_executable({} "{}/test_model_view_{}.cpp" {})'.format(
+                name, Path(cfg.tests).as_posix(), kind, view))
         else:
             lines += ['add_executable({0} "{1}/main.cpp" "{1}/../collect_common/preview.cpp" '
                       '"{1}/../collect_common/pass_store.cpp" {2})'.format(name, src, view),
@@ -312,6 +402,48 @@ def patch_mutant(case, folder):
                      '    cv::Mat latest, thumb;\n    { std::lock_guard<std::mutex> l(mutex_); latest = mailbox_.empty() ? bgr : mailbox_; }\n'
                      '    cv::resize(latest, thumb, cv::Size(kThumbWidth, kThumbHeight), 0, 0, cv::INTER_AREA);\n'
                      '    ModelPanels panels;\n    panels.mask = renderMaskPanel(mask, info);')
+    elif case == 'M10':
+        replace_once(main, 'namespace {\nstatic_assert', 'namespace {\nstd::atomic<bool> t42Result{false};\nstatic_assert')
+        replace_once(main, '                trace(panels.notice.empty() ? "model_result"',
+                     '                if (panels.notice.empty()) t42Result = true;\n'
+                     '                trace(panels.notice.empty() ? "model_result"')
+        replace_once(main, '            // Cửa sổ phụ: bỏ qua phím',
+                     '            if (t42Result.exchange(false) && control.speed != 0) control.key(\'c\');\n'
+                     '            // Cửa sổ phụ: bỏ qua phím')
+    elif case == 'M11':
+        replace_once(main, '    // Dừng trước mọi I/O',
+                     '    if (model) { model->requestStop(); model.reset(); }\n    // Dừng trước mọi I/O')
+    elif case == 'M12':
+        header = folder / 'model_view' / 'ModelWorker.h'
+        replace_once(header, '#include <mutex>', '#include <mutex>\n#include <deque>\n#include <utility>')
+        replace_once(header, '    cv::Mat mailbox_;',
+                     '    std::deque<std::pair<cv::Mat, int64_t>> t42Queue_;\n    cv::Mat mailbox_;')
+        replace_once(worker, '    mailboxMs_ = capturedMs;',
+                     '    mailboxMs_ = capturedMs;\n    t42Queue_.emplace_back(bgr, capturedMs);')
+        replace_once(worker, '    bgr = std::move(mailbox_);\n    mailbox_ = cv::Mat();\n    capturedMs = mailboxMs_;',
+                     '    if (!t42Queue_.empty()) {\n'
+                     '        bgr = t42Queue_.front().first; capturedMs = t42Queue_.front().second;\n'
+                     '        t42Queue_.pop_front();\n    }\n'
+                     '    mailbox_ = t42Queue_.empty() ? cv::Mat() : t42Queue_.back().first;')
+    elif case == 'M13':
+        replace_once(folder / 'model_view' / 'DnnMaskModel.cpp', 'cv::INTER_AREA', 'cv::INTER_NEAREST')
+    elif case == 'M14':
+        replace_once(folder / 'model_view' / 'MaskRender.cpp', 'info.cropY0 * sy', '320 * sy')
+    elif case == 'M15':
+        replace_once(main, '    if (o.model.empty()) return nullptr;',
+                     '    if (o.model.empty() || !fs::exists(o.model)) return nullptr;')
+    elif case == 'M16':
+        replace_once(folder / 'limits.h', 'constexpr int kDefaultInferHz = 5;', 'constexpr int kDefaultInferHz = 10;')
+    elif case == 'M17':
+        replace_once(folder / 'model_view' / 'ModelInfo.cpp',
+                     'if (!node.isInt() || (static_cast<int>(node) != 0 && static_cast<int>(node) != 1))',
+                     'if (!node.isInt())')
+    elif case == 'M18':
+        replace_once(main, '[&side, &sideGone](const model_view::ModelPanels& panels)',
+                     '[&side, &sideGone, &o](const model_view::ModelPanels& panels)')
+        replace_once(main, '                trace(panels.notice.empty() ? "model_result"',
+                     '                if (panels.notice.empty()) cv::imwrite((o.out / "000000.jpg").string(), panels.mask);\n'
+                     '                trace(panels.notice.empty() ? "model_result"')
     else:
         T33_PATCH(case, folder)
 
@@ -320,21 +452,27 @@ def mutation(case, cfg, root):
     if case in T33_CASES:
         return T33_MUTATION(case, cfg, root)
     root.mkdir(parents=True)
-    if case == 'M9':
-        build = build_targets(cfg, root, [('baseline', cfg.source, 'worker')], 200)
-        code, output = td.tool([str(build / 'baseline')], root, 60)
-        need(code == 0, 'Baseline test luồng model hỏng: ' + output, 'mutation_setup')
+    units = {'M9': ('worker', [], 'frame_mismatch'), 'M12': ('worker', ['latest'], 'latest_frame'),
+             'M13': ('core', ['area'], 'inter_area'), 'M14': ('core', ['sizes'], 'info_sizes'),
+             'M17': ('core', ['flags'], 'info_flags')}
+    if case in units:
+        kind, args, expected = units[case]
+        build = build_targets(cfg, root, [('baseline', cfg.source, kind)], 200)
+        code, output = td.tool([str(build / 'baseline')] + args, root, 60)
+        need(code == 0, 'Baseline unit model ' + kind + ' hỏng: ' + output, 'mutation_setup')
         folder = td.copy_source(cfg, root / 'source')
         patch_mutant(case, folder)
         (root / 'm').mkdir()
-        build = build_targets(cfg, root / 'm', [('mutant', folder, 'worker')], 200)
-        code, output = td.tool([str(build / 'mutant')], root, 60)
-        need(code != 0 and 'frame_mismatch' in output, 'M9 (lệch khung) không bị phát hiện: ' + output,
+        build = build_targets(cfg, root / 'm', [('mutant', folder, kind)], 200)
+        code, output = td.tool([str(build / 'mutant')] + args, root, 60)
+        need(code == 1 and expected in output, case + ' không hỏng đúng phép kiểm ' + expected + ': ' + output,
              'mutation_survived')
-        print('M9: baseline đạt, bản lỗi HỎNG đúng frame_mismatch')
+        print(case + ': baseline đạt, bản lỗi HỎNG đúng ' + expected)
         return
     probe, expected = {'M6': ('A04', 'model_no_command'), 'M7': ('A05', 'model_blocks_control'),
-                       'M8': ('A03', 'model_error_exit')}[case]
+                       'M8': ('A03', 'model_error_exit'), 'M10': ('A04b', 'model_changes_drive'),
+                       'M11': ('A05b', 'model_exit_stop'), 'M15': ('A02b', 'missing_onnx'),
+                       'M16': ('A10b', 'infer_default'), 'M18': ('A04', 'record_jpg_count')}[case]
     test_case(probe, cfg, root / 'baseline')
     folder = td.copy_source(cfg, root / 'source')
     patch_mutant(case, folder)

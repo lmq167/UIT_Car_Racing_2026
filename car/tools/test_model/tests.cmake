@@ -26,10 +26,11 @@ set(_tm_flags "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG} ${CMAKE_CXX_FLAGS_REL
 if(_tm_flags MATCHES "sanitize" OR UCR_ENABLE_ASAN OR UCR_ENABLE_TSAN)
     set(_tm_slack 300)
 endif()
-# Ca T33 (cùng mã) chạy trên binary mới; ca A/D/M6-M9 là phần model.
+# Ca T33 (cùng mã) chạy trên binary mới; ca A/D/M6-M18 là phần model.
 set(_tm_cases K01 K02 K03 K04 K05 S01 E01 E02 E02b E03 E03b E04 E05 E05b E06 E06b E07 E09 E10
     P01 P02 P03 F01 F02 F03 F03b F04 M1 M1b M2 M2s M3 M4 M5
-    A01 A02 A03 A04 A05 A06 A08 A09 A10 A11 D01 M6 M7 M8 M9)
+    A01 A02 A02b A03 A04 A04b A05 A05b A06 A08 A09 A10 A10b A11 D01
+    M6 M7 M8 M9 M10 M11 M12 M13 M14 M15 M16 M17 M18)
 foreach(_tm_case IN LISTS _tm_cases)
     add_test(NAME test_model_${_tm_case}
         COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_test_model.py"
