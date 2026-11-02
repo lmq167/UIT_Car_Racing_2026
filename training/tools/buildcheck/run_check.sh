@@ -89,7 +89,7 @@ case "$kind" in
     asan) build_type=Debug; flags+=' -fsanitize=address,undefined -fno-omit-frame-pointer'
           export ASAN_OPTIONS=halt_on_error=1:detect_leaks=1 UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ;;
     tsan) build_type=Debug; flags+=' -fsanitize=thread -fno-omit-frame-pointer'
-          export TSAN_OPTIONS=halt_on_error=1
+          export TSAN_OPTIONS=halt_on_error=1:atexit_sleep_ms=0
           labels=(-L threads) ;;
     container) ;;
     # Cờ như xe: không -O, không UCR_FAKE_HW, -funsigned-char (char của ARM không dấu), chỉ biên dịch; rss_wrap.py đo từng file.
