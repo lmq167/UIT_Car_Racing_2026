@@ -24,8 +24,9 @@ void expect(const cv::FileNode& root, const char* key, const std::string& wanted
 // JSON true/false của FileStorage là số nguyên 1/0.
 bool flag(const cv::FileNode& root, const char* key) {
     const auto node = root[key];
-    if (!node.isInt()) bad(std::string("thieu truong dung/sai ") + key);
-    return static_cast<int>(node) != 0;
+    if (!node.isInt() || (static_cast<int>(node) != 0 && static_cast<int>(node) != 1))
+        bad(std::string("thieu truong dung/sai ") + key);
+    return static_cast<int>(node) == 1;
 }
 void pair(const cv::FileNode& root, const char* key, int& first, int& second) {
     const auto node = root[key];
