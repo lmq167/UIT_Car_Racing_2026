@@ -540,8 +540,15 @@ public:
             started_ = true;
         }
         // Mỗi thời điểm chỉ một yêu cầu, không tích lũy khung cũ trong socket.
-        if (::send(fd_, &request, 1, MSG_DONTWAIT | MSG_NOSIGNAL) != 1)
+        if (::send(fd_, &request, 1, MSG_DONTWAIT | MSG_NOSIGNAL) != 1) {
+            try {
+                if (receive(&h, sizeof(h), tick) && h.status == -2)
+                    throw Failure(3, "Không mở/đọc được camera");
+            } catch (const Failure& e) {
+                if (e.code != 1) throw;
+            }
             throw Failure(1, "Không yêu cầu được khung camera");
+        }
         if (!receive(&h, sizeof(h), tick)) return false;
         if (h.status == -2) throw Failure(3, "Không mở/đọc được camera");
         if (h.status != 1) return true;
