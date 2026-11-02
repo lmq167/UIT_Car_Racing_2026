@@ -442,7 +442,9 @@ def patch_mutant(case, folder):
         replace_once(main, '[&side, &sideGone](const model_view::ModelPanels& panels)',
                      '[&side, &sideGone, &o](const model_view::ModelPanels& panels)')
         replace_once(main, '                trace(panels.notice.empty() ? "model_result"',
-                     '                if (panels.notice.empty()) cv::imwrite((o.out / "000000.jpg").string(), panels.mask);\n'
+                     # Ghi một lần: tệp không đổi khi P tắt nên phép bắt là đếm JPEG của A04 (tất định).
+                     '                if (panels.notice.empty()) { static bool once = false;\n'
+                     '                    if (!once) { once = true; cv::imwrite((o.out / "000000.jpg").string(), panels.mask); } }\n'
                      '                trace(panels.notice.empty() ? "model_result"')
     else:
         T33_PATCH(case, folder)

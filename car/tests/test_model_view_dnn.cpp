@@ -5,6 +5,11 @@
 #include <iostream>
 #include <string>
 
+#ifdef UCR_TSAN_SUPP
+// Như harness T33: race giả trong OpenCV/TBB chưa instrument, xem tools/drive_collect/tsan.supp.
+extern "C" const char* __tsan_default_options() { return "suppressions=" UCR_TSAN_SUPP; }
+#endif
+
 int main(int argc, char** argv) {
     if (argc != 4) { std::cerr << "Dung: test_model_view_dnn <_cvdnn.onnx> <_info.json> <resize12.onnx>\n"; return 2; }
     int failures = 0;

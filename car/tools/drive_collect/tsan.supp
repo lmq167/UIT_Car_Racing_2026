@@ -1,4 +1,6 @@
 # Thư viện OpenCV/TBB hệ thống chưa được instrument: đếm tham chiếu cv::Mat và hàng đợi TBB dùng nguyên tử bên trong thư viện,
-# nên TSan báo race giả giữa free và memcpy. Chỉ áp dụng cho test drive_collect; không áp dụng cho mã của đội.
+# nên TSan báo race giả giữa free và memcpy. Chỉ áp dụng cho test drive_collect/collect_drive/test_model; không áp dụng cho mã của đội.
+# libopencv_dnn: suy luận chia việc cho luồng TBB trên bộ đệm nội bộ của dnn (cấp phát và ghi đều trong thư viện).
 race:libopencv_core
 race:libtbb
+race:libopencv_dnn
