@@ -737,6 +737,9 @@ def test_case(case, cfg, root):
     if case in ('P01', 'P02', 'P03'):
         with running(cfg, root, args=['--interval-ms', '100'] if case == 'P02' else []) as run:
             moving(run)
+            # shortcut: chưa có vết khung trước P, dùng mốc khung khi hook cung cấp.
+            # A đã chốt trong vết; chờ 5 chu kỳ camera giả (2*kPollMs = 20 ms) và dự phòng sanitizer.
+            run.observe(0.1 + cfg.slack / 1000)
             if case == 'P01':
                 initial = off_snapshot(run)
                 need(not initial[0] and not initial[1] and not initial[2], 'P mặc định bật', 'record_default')
