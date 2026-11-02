@@ -26,6 +26,9 @@ QA_SCALE = 0.45
 
 def original_name(filename):
     name = re.split(r'[/\\]', filename)[-1]
+    roboflow = re.fullmatch(r'(p[0-9]{4}_[0-9]{4})_jpg\.rf\.[A-Za-z0-9]+\.jpg', name)
+    if roboflow:
+        return 'car6_' + roboflow[1]
     match = re.fullmatch(
         r'(car6_p[0-9]{4}_[0-9]{4})(?:_jpg)?(?:\.rf\.[A-Za-z0-9]+)?\.(?:jpg|jpeg|png)', name)
     if not match:
@@ -170,6 +173,13 @@ def load_jobs(paths):
         categories = {c['id']: c['name'] for c in data['categories']}
         if len(categories) != len(data['categories']):
             raise ValueError('{}: id lớp trùng'.format(path))
+        used_categories = {ann['category_id'] for ann in data['annotations']}
+        for category_id, category_name in list(categories.items()):
+            if category_id not in used_categories and category_name not in (
+                    TRACK_SURFACE, OBJECT, GLARE):
+                print('CẢNH BÁO: bỏ qua lớp không có annotation: {}'.format(
+                    category_name), file=sys.stderr)
+                del categories[category_id]
         unknown = set(categories.values()) - {TRACK_SURFACE, OBJECT, GLARE}
         if unknown:
             raise ValueError('Tên lớp không hỗ trợ: {}'.format(', '.join(sorted(unknown))))
@@ -186,6 +196,9 @@ def load_jobs(paths):
             if name in names:
                 raise ValueError('Trùng tên gốc giữa các ảnh COCO: {}'.format(name))
             names.add(name)
+            if not annotations[img['id']]:
+                print('CẢNH BÁO: ảnh không có annotation, mặt nạ sẽ toàn background: {}'.format(
+                    name), file=sys.stderr)
             jobs.append((name, img, annotations[img['id']], categories))
     return jobs
 

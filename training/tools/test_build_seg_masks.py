@@ -112,11 +112,90 @@ class SegMasksTests(unittest.TestCase):
         self.assertEqual(int(mask[350, 350]), 0)
         self.assertEqual(int(mask[200, 400]), 0)
 
+    def test_roboflow_names_without_car_prefix(self):
+        filename = 'p0055_0025_jpg.rf.903e7be6da009a035fabea539e29ce8c.jpg'
+        for name in (filename, 'train/' + filename, 'valid\\' + filename,
+                     'p0055_0025_jpg.rf.Ab12.jpg'):
+            with self.subTest(filename=name):
+                self.assertEqual(tools.original_name(name), 'car6_p0055_0025')
+        for name in ('p0014_0001.jpg', 'p0055_0025_jpg.jpg',
+                     'p0055_0025.rf.ab.jpg', 'p0055_0025_jpg.rf..jpg',
+                     'p0055_0025_jpg.rf.ab-cd.jpg', 'p0055_0025_jpg.rf.ab.png',
+                     'p0055_0025_jpg.rf.ab.jpeg'):
+            with self.subTest(filename=name):
+                with self.assertRaisesRegex(ValueError, 'tên gốc'):
+                    tools.original_name(name)
+
+    def test_load_jobs_skips_unused_roboflow_parent(self):
+        self.categories = {0: 'car6-seg', 9: tools.TRACK_SURFACE}
+        path = self.save_coco(filename='p0055_0025_jpg.rf.ab12.jpg',
+                              annotations=[self.track])
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            jobs = tools.load_jobs([path])
+        self.assertEqual(len(jobs), 1)
+        name, img, annotations, categories = jobs[0]
+        self.assertEqual(name, 'car6_p0055_0025')
+        self.assertEqual(img['id'], 1)
+        self.assertEqual(annotations, [self.track])
+        self.assertEqual(categories, {9: tools.TRACK_SURFACE})
+        self.assertEqual(error.getvalue(),
+                         'CẢNH BÁO: bỏ qua lớp không có annotation: car6-seg\n')
+
+    def test_load_jobs_rejects_annotated_unknown_class(self):
+        self.categories[9] = 'ten_la'
+        path = self.save_coco()
+        with self.assertRaisesRegex(ValueError, 'Tên lớp không hỗ trợ: ten_la'):
+            tools.load_jobs([path])
+
+    def test_load_jobs_warns_and_keeps_unannotated_image(self):
+        self.name = 'car6_p0117_0020'
+        path = self.save_coco(annotations=[])
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            jobs = tools.load_jobs([path])
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0][0], self.name)
+        self.assertEqual(jobs[0][2], [])
+        self.assertEqual(jobs[0][3], self.categories)
+        self.assertIn('CẢNH BÁO: ảnh không có annotation, mặt nạ sẽ toàn background: '
+                      + self.name + '\n', error.getvalue())
+
+    def test_load_jobs_checks_unused_categories_per_coco_file(self):
+        self.categories = {0: 'car6-seg', 9: tools.TRACK_SURFACE}
+        first = self.save_coco(annotations=[self.track]).rename(self.root / 'first.json')
+        self.name = 'car6_p0055_0025'
+        self.categories = {0: tools.TRACK_SURFACE}
+        self.track['category_id'] = 0
+        second = self.save_coco(annotations=[self.track])
+        error = io.StringIO()
+        with contextlib.redirect_stderr(error):
+            jobs = tools.load_jobs([first, second])
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(jobs[0][3], {9: tools.TRACK_SURFACE})
+        self.assertEqual(jobs[1][3], {0: tools.TRACK_SURFACE})
+        self.assertEqual(error.getvalue(),
+                         'CẢNH BÁO: bỏ qua lớp không có annotation: car6-seg\n')
+
+    def test_cli_reads_roboflow_export_with_unused_parent(self):
+        self.name = 'car6_p0055_0025'
+        self.categories = {0: 'car6-seg', 9: tools.TRACK_SURFACE}
+        self.save_original()
+        path = self.save_coco(filename='p0055_0025_jpg.rf.ab12.jpg',
+                              annotations=[self.track])
+        code, output, error = self.run_cli(coco=path)
+        self.assertEqual(code, 0, error)
+        self.assertIn('CẢNH BÁO: bỏ qua lớp không có annotation: car6-seg', error)
+        masks = list(self.out.glob('*.png'))
+        self.assertEqual([path.stem for path in masks], [self.name])
+        self.assertIsNotNone(cv2.imread(str(masks[0]), cv2.IMREAD_UNCHANGED))
+
     def test_unknown_class_fails_even_without_annotations(self):
         self.categories[20] = 'ten_la'
         with self.assertRaisesRegex(ValueError, 'ten_la'):
             self.mask([])
-        code, output, error = self.run_cli()
+        annotation = dict(self.track, category_id=20)
+        code, output, error = self.run_cli(coco=self.save_coco(annotations=[annotation]))
         self.assertEqual(code, 1)
         self.assertIn('ten_la', error)
         self.assertFalse(self.out.exists())
