@@ -21,13 +21,13 @@ namespace app {
 namespace {
 void Sleep(int hz) { std::this_thread::sleep_for(std::chrono::microseconds(1000000/hz)); }
 }
-App::App(common::Config c,std::string mode,std::string path,std::string step,std::string kill_file,bool smoke_drop,double calib_drop_after):c_(std::move(c)),mode_(std::move(mode)),
-    config_path_(std::move(path)),backend_(c_),step_(std::move(step)),kill_file_(std::move(kill_file)),smoke_drop_(smoke_drop),calib_drop_after_(calib_drop_after),controller_(new StopController) {}
+App::App(common::Config c,std::string mode,std::string path,std::string step,double calib_drop_after):c_(std::move(c)),mode_(std::move(mode)),
+    config_path_(std::move(path)),backend_(c_),step_(std::move(step)),calib_drop_after_(calib_drop_after),controller_(new StopController) {}
 App::~App() { RequestStop(); Wait(); }
 void App::CheckAutoSmoke() const {
     if(mode_!="auto") return;
     if(!c_.tof_mapping_confirmed || !common::SmokePassed(c_,config_path_))
-        throw std::runtime_error("Chưa có smoke ĐẠT khớp mã nguồn/cấu hình; chạy scripts/smoke_test.sh --smoke-drop-camera trước auto");
+        throw std::runtime_error("Chưa có smoke_gate.json ĐẠT khớp mã nguồn/cấu hình");
 }
 void App::Init() {
 #ifdef UCR_FAKE_HW
@@ -37,8 +37,7 @@ void App::Init() {
 #endif
     CheckAutoSmoke();
     logger_.reset(new common::RunLogger(c_,config_path_,mode_));
-    if(mode_=="calib" || mode_=="smoke") calibration_.reset(new Calibration(c_,mode_=="smoke" ? "smoke" : step_,
-        logger_->Directory(),config_path_,kill_file_,smoke_drop_));
+    if(mode_=="calib") calibration_.reset(new Calibration(c_,step_,logger_->Directory(),config_path_));
     backend_.Init();
 }
 void App::Launch(std::function<void()> work) {
@@ -160,7 +159,7 @@ void App::ActuatorThread() {
             if(had_command) latch_reason=reason;
         };
         const bool image_gap=held_mode && image_gap_seen_.exchange(false);
-        const bool calib_limit=(mode_=="calib" || mode_=="smoke") && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
+        const bool calib_limit=(mode_=="calib") && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
         if((held_mode && (!FreshImage(c_,s.observation,now) || image_gap)) || calib_limit) {
             // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
             if(held_mode) cancel_held(calib_limit ? "gioi_han_calib" : "mat_anh");
@@ -258,7 +257,7 @@ void App::UIThread() {
             key=raw_key<0 ? -1 : raw_key&255;
         }
 #ifdef UCR_FAKE_HW
-        if(mode_=="calib" || mode_=="manual" || mode_=="smoke") {
+        if(mode_=="calib" || mode_=="manual") {
             const int injected=fake::NextKey();
             if(injected>=0) key=injected;
         }
@@ -293,7 +292,6 @@ void App::UIThread() {
         if(calibration_) {
             if(cancel_held_command_.exchange(false)) calibration_->CancelMotion();
             const auto cmd=calibration_->Tick(s,key);
-            if(mode_=="smoke") drop_camera_=calibration_->DropCamera();
             if(calibration_->Done()) { if(calibration_->Failed()) failed_=true; RequestStop(); break; }
             std::lock_guard<std::mutex> lock(shared_.mutex);
             shared_.value.requested=cancel_held_command_ || (mode_=="calib" &&

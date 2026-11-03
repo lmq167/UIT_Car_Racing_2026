@@ -12,7 +12,7 @@ namespace app {
 class App {
 public:
     App(common::Config c, std::string mode, std::string config_path,std::string step="",
-        std::string kill_file="",bool smoke_drop=false,double calib_drop_after=0);
+        double calib_drop_after=0);
     ~App();
     void Init();
     void Start();
@@ -39,8 +39,7 @@ private:
     common::Snapshot actuator_snapshot_;
     std::unique_ptr<common::RunLogger> logger_;
     std::unique_ptr<Calibration> calibration_;
-    std::string step_,kill_file_;
-    bool smoke_drop_=false;
+    std::string step_;
     double calib_drop_after_=0;
     std::atomic<bool> drop_camera_{false};
     std::atomic<bool> image_gap_seen_{false};
