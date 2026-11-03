@@ -249,7 +249,7 @@ int main(int argc,char **argv) {
             Check(state!="DUNG_CHO_ANH_ON_DINH" && state!="TANG_TOC_MEM","calib không dùng phục hồi auto");
         };
         apply(0,true,'y'); apply(501,false,'y'); apply(gap_ms,true,-1); apply(gap_ms+50,true,'y');
-        // Collect dùng lệnh người lái qua cùng SafeCommand, không qua CameraRecovery.
+        // Manual dùng lệnh người lái qua cùng SafeCommand, không qua CameraRecovery.
         for(float direction:{-1.0f,1.0f}) {
             auto o=snapshot.observation; auto now=o.captured_at;
             std::string state;
@@ -257,12 +257,12 @@ int main(int argc,char **argv) {
             auto cmd=app::SafeCommand(config,o,{direction*requested,0},now,state);
             backend.Apply(cmd);
             Check(motor_speed()==0,
-                  "collect mất ảnh dừng ở cả hai chiều");
+                  "manual mất ảnh dừng ở cả hai chiều");
             o.captured_at=now;
             cmd=app::SafeCommand(config,o,{direction*requested,0},now,state);
             backend.Apply(cmd);
             Check(std::abs(motor_speed()-direction*std::min(requested,config.max_speed_cms))<=1e-3,
-                  "collect ảnh mới trả ngay lệnh trong trần, không tăng mềm/chốt");
+                  "manual ảnh mới trả ngay lệnh trong trần, không tăng mềm/chốt");
         }
         backend.Stop();
     }
