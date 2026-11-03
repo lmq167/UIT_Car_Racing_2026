@@ -23,6 +23,24 @@ struct CommandStamped {
     double loop_ms=0;
     YoloResult yolo;
 };
+std::string checkModel(const std::string& dir,const std::string& name) {
+    const auto base=dir+"/"+name;
+    const auto hint="; chạy lại build_engine.sh "+name;
+    try {
+        for (const char* suffix:{".onnx","_info.json",".engine",".engine.src"})
+            if (!regularFile(base+suffix)) throw std::runtime_error("Thiếu file model: "+base+suffix);
+        struct stat engineStat{};
+        if (stat((base+".engine").c_str(),&engineStat)!=0 || !S_ISREG(engineStat.st_mode) || engineStat.st_size<=0)
+            throw std::runtime_error("Engine không phải file thường có dữ liệu: "+base+".engine");
+        auto source=readBytes(base+".engine.src");
+        if (source.size()==65 && source.back()=='\n') source.pop_back();
+        if (source.size()!=64 || source.find_first_not_of("0123456789abcdef")!=std::string::npos)
+            throw std::runtime_error("Sai định dạng: "+base+".engine.src");
+        const auto hash=sha256(base+".onnx");
+        if (hash=="loi" || hash!=source) throw std::runtime_error("ONNX không khớp nguồn engine: "+base);
+        return hash;
+    } catch (const std::exception& e) { throw Failure(2,std::string(e.what())+hint); }
+}
 double percentile95(std::vector<double> samples) {
     if (samples.empty()) return 0;
     std::sort(samples.begin(),samples.end());
@@ -436,7 +454,7 @@ int main(int argc,char** argv) {
     try { options=parse(argc,argv); }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
     if (options.help) {
-        std::cout<<"ucr_auto --control control.yaml --engine road.engine --info road_info.json [--no-yolo | --yolo-engine yolo.engine --yolo-info yolo_info.json] [--out-root runs_auto]\n"
+        std::cout<<"ucr_auto [--control control.yaml] [--model-dir $HOME/ucr_models] [--no-yolo] [--out-root runs_auto]\n"
                  <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
         return 0;
     }
@@ -451,8 +469,15 @@ int main(int argc,char** argv) {
         auto params=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,std::cout));
         std::cout<<"Trần cứng: "<<kMaxAutoSpeedCms<<" cm/s, "<<kMaxAutoSteerDeg<<" độ; + là trái\n"<<std::flush;
         const auto yaml=readBytes(options.control);
-        if (options.info.empty()) throw Failure(2,"Thiếu --info");
-        options.info=absolutePath(options.info);
+        if (options.modelDir.empty()) {
+            const char* home=std::getenv("HOME");
+            if (!home || !*home) throw Failure(2,"Thiếu HOME; cần --model-dir");
+            options.modelDir=std::string(home)+"/ucr_models";
+        }
+        options.modelDir=absolutePath(options.modelDir);
+        options.info=options.modelDir+"/unet_info.json";
+        options.engine=options.modelDir+"/unet.engine";
+        options.unetOnnxSha256=checkModel(options.modelDir,"unet");
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
         const perception::InfoJson info(options.info,true);
 #else
@@ -461,16 +486,12 @@ int main(int argc,char** argv) {
         std::unique_ptr<perception::IInferEngine> engine,yoloEngine;
         std::unique_ptr<perception::YoloInfo> yoloInfo;
         if (!options.noYolo) {
-            if (options.yoloInfo.empty()) throw Failure(2,"Thiếu --yolo-info");
-            options.yoloInfo=absolutePath(options.yoloInfo);
+            options.yoloInfo=options.modelDir+"/yolo_info.json";
+            options.yoloEngine=options.modelDir+"/yolo.engine";
+            options.yoloOnnxSha256=checkModel(options.modelDir,"yolo");
             yoloInfo.reset(new perception::YoloInfo(options.yoloInfo));
             if (yoloInfo->conf_threshold>float(std::min({params->red_conf_min,params->green_conf_min,params->off_conf_min})))
                 throw Failure(2,"conf_threshold YOLO cao hơn conf_min đèn");
-            if (options.yoloEngine.empty()) throw Failure(2,"Thiếu --yolo-engine");
-            options.yoloEngine=absolutePath(options.yoloEngine);
-            struct stat yoloStat{};
-            if (stat(options.yoloEngine.c_str(),&yoloStat)!=0 || !S_ISREG(yoloStat.st_mode) || yoloStat.st_size<=0)
-                throw Failure(1,"Không tìm thấy engine YOLO");
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
             for (const char* key:{"UCR_AUTO_MODEL_LOAD_FAIL","UCR_AUTO_FAKE_MODEL_LOAD_FAIL"}) {
                 const char* fail=std::getenv(key);
@@ -478,7 +499,6 @@ int main(int argc,char** argv) {
             }
             const char* tensors=std::getenv("UCR_AUTO_FAKE_YOLO_TENSORS");
             if (!tensors) throw Failure(1,"Thiếu UCR_AUTO_FAKE_YOLO_TENSORS");
-            options.yoloEngine.clear();
             yoloEngine.reset(new FakeYoloEngine(absolutePath(tensors),*yoloInfo));
 #endif
         }
@@ -488,12 +508,7 @@ int main(int argc,char** argv) {
         }
         const char* list=std::getenv("UCR_AUTO_FAKE_ROAD_MASKS");
         if (!list) throw Failure(1,"Thiếu UCR_AUTO_FAKE_ROAD_MASKS");
-        options.engine.clear();
         engine.reset(new FakeRoadEngine(absolutePath(list),info));
-#else
-        if (options.engine.empty()) throw Failure(2,"Thiếu --engine");
-        options.engine=absolutePath(options.engine);
-        if (!regularFile(options.engine)) throw Failure(1,"Không tìm thấy engine đường");
 #endif
         VehicleLock lock;
         std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=10 cm/s, người giám sát đứng sát xe\n"<<std::flush;

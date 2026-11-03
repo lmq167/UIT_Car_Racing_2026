@@ -7,11 +7,13 @@
 
 namespace auto_drive {
 void warningNonBlocking(const char* text) noexcept;
+std::string sha256(const std::string& path);
 struct Statistics {
     double camera_fps=0, road_ms=0, yolo_ms=0, loop_p95_ms=0, rss_mb=0, free_mb=0;
 };
 class LogWriter {
     std::string root_, yaml_, info_, engine_, yoloInfo_, yoloEngine_;
+    std::string unetOnnxSha256_, yoloOnnxSha256_;
     bool yoloEnabled_;
     std::function<void(const char*,const std::string&)> trace_;
     std::mutex mutex_;

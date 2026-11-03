@@ -26,6 +26,7 @@ int64_t timeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
+}
 // Coreutils có sẵn trên Ubuntu/Jetson; không shell, không nạp toàn engine vào RAM.
 std::string sha256(const std::string& path) try {
     int pipefd[2];
@@ -60,6 +61,21 @@ std::string sha256(const std::string& path) try {
 } catch (...) {
     return "loi";
 }
+namespace {
+std::string modelSession(const std::string& name,const std::string& info,const std::string& hash) {
+    cv::FileStorage file;
+    if (!info.empty()) file.open(info,cv::FileStorage::READ | cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_JSON);
+    std::string fields;
+    for (const char* key:{"variant","seed","data_tag"}) {
+        const auto node=file.isOpened() ? file[key] : cv::FileNode();
+        std::ostringstream value; value<<std::setprecision(17);
+        if (node.isInt()) value<<int(node);
+        else if (node.isReal()) value<<double(node);
+        else value<<jsonString(node.isString() ? std::string(node) : "");
+        fields+=",\n"+jsonString(name+"_"+key)+":"+value.str();
+    }
+    return fields+",\n"+jsonString(name+"_onnx_sha256")+":"+jsonString(hash);
+}
 void writeFile(const std::string& path,const std::string& bytes) {
     std::ofstream f; f.exceptions(std::ios::badbit|std::ios::failbit);
     f.open(path,std::ios::binary); f<<bytes; f.close();
@@ -89,7 +105,8 @@ double processRssMb() {
 }
 LogWriter::LogWriter(const Options& o,const std::string& yaml,
                      std::function<void(const char*,const std::string&)> trace)
-    : root_(o.outRoot),yaml_(yaml),info_(o.info),engine_(o.engine),yoloInfo_(o.yoloInfo),yoloEngine_(o.yoloEngine),yoloEnabled_(!o.noYolo),trace_(std::move(trace)) {
+    : root_(o.outRoot),yaml_(yaml),info_(o.info),engine_(o.engine),yoloInfo_(o.yoloInfo),yoloEngine_(o.yoloEngine),
+      unetOnnxSha256_(o.unetOnnxSha256),yoloOnnxSha256_(o.yoloOnnxSha256),yoloEnabled_(!o.noYolo),trace_(std::move(trace)) {
     worker_=std::thread(&LogWriter::run,this);
 }
 bool LogWriter::tryImage(const ModelResult& image) noexcept {
@@ -145,7 +162,9 @@ void LogWriter::run() noexcept {
             ",\n\"engine_name\":"+jsonString(engine_)+",\n\"engine_sha256\":"+jsonString(engineHash)+
             ",\n\"yolo_enabled\":"+std::to_string(int(yoloEnabled_))+",\n\"yolo_info_json\":"+yoloInfo+
             ",\n\"yolo_info_sha256\":"+jsonString(yoloEnabled_ ? sha256(folder+"/yolo_info.json") : "")+
-            ",\n\"yolo_engine_name\":"+jsonString(yoloEngine_)+",\n\"yolo_engine_sha256\":"+jsonString(yoloHash)+"\n}\n");
+            ",\n\"yolo_engine_name\":"+jsonString(yoloEngine_)+",\n\"yolo_engine_sha256\":"+jsonString(yoloHash)+
+            modelSession("unet",info,unetOnnxSha256_)+
+            modelSession("yolo",yoloEnabled_ ? yoloInfo : "",yoloEnabled_ ? yoloOnnxSha256_ : "")+"\n}\n");
         const auto csvPath=folder+"/control_log.csv";
         writeFile(csvPath,"t_ms,frame_id,mask_file,cmd_cms,cmd_deg,mask_ms,image_ms,go,stop,lane_ref,planner_state,"
             "image_age_ms,mask_age_ms,det_age_ms,scan_rows,e,p,d,requested_steer_deg,requested_speed_cms,"
