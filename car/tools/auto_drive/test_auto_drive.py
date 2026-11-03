@@ -32,7 +32,9 @@ _spec_info.loader.exec_module(road_fixture)
 
 CASES = ['A{:02d}'.format(i) for i in list(range(1, 36)) + list(range(40, 49))]
 CASES += ['A07b', 'A08b', 'A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h',
-          'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51']
+          'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51',
+          'A70u', 'A70y', 'A71u', 'A71y', 'A72u', 'A72y', 'A73',
+          'A74ua', 'A74ub', 'A74ya', 'A74yb', 'A75', 'A77', 'A78', 'A79', 'A80']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -80,7 +82,7 @@ def yaml_text(values):
 def png_bytes(rows):
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data) & 0xffffffff)
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', 160, 96, 8, 0, 0, 0, 0)) +
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', len(rows[0]), len(rows), 8, 0, 0, 0, 0)) +
             chunk(b'IDAT', zlib.compress(b''.join(b'\0' + bytes(row) for row in rows))) + chunk(b'IEND', b''))
 
 
@@ -99,6 +101,16 @@ def mask_rows(mode):
     return rows
 
 
+def model_files(models, name, info):
+    """T47l: file thật để kiểm nguồn; engine hooks vẫn lấy mask/tensor từ env."""
+    models.mkdir(exist_ok=True)
+    onnx = b'fake-' + name.encode('ascii') + b'-onnx\n'
+    (models / (name + '.onnx')).write_bytes(onnx)
+    (models / (name + '_info.json')).write_text(json.dumps(info), encoding='utf-8')
+    (models / (name + '.engine')).write_bytes(b'fake-' + name.encode('ascii') + b'-engine\n')
+    (models / (name + '.engine.src')).write_bytes((hashlib.sha256(onnx).hexdigest() + '\n').encode('ascii'))
+
+
 def fixtures(root, schedule):
     for mode in ('straight', 'left', 'right', 'empty'):
         rows = mask_rows(mode)
@@ -107,7 +119,7 @@ def fixtures(root, schedule):
         (root / (mode + '.png')).write_bytes(png_bytes(rows))
     (root / 'list.csv').write_text('frame_id,mask\n' + ''.join(
         '{},{}.png\n'.format(frame, mode) for frame, mode in schedule), encoding='utf-8')
-    (root / 'road_info.json').write_text(json.dumps(road_fixture.info(96, 160)), encoding='utf-8')
+    model_files(root / 'models', 'unet', road_fixture.info(96, 160))
 
 
 def yolo_fixtures(root, schedule):
@@ -125,8 +137,7 @@ def yolo_fixtures(root, schedule):
                 box_units='input_pixels', scores_are_probabilities=True, objectness=False,
                 nms_in_model=False, nms_class_aware=True, conf_threshold=0.25, nms_iou=0.7,
                 opset=12, dynamic=False, seed=0, fake_data=True, recognition_validated=False)
-    (root / 'yolo_info.json').write_text(json.dumps(info), encoding='utf-8')
-    (root / 'yolo.engine').write_bytes(b'fake-yolo-engine\n')
+    model_files(root / 'models', 'yolo', info)
     header = repr(dict(descr='<f4', fortran_order=False, shape=(1, 13, 100))).encode('ascii')
     header += b' ' * ((-(10 + len(header) + 1)) % 16) + b'\n'
     prefix = b'\x93NUMPY\x01\x00' + struct.pack('<H', len(header)) + header
@@ -154,11 +165,13 @@ def cap(events):
 class Run(td.Run):
     """Dùng lại wait/observe/text/send/ack/children/close của T33; chỉ đổi khởi chạy auto."""
     def __init__(self, cfg, root, values=None, env=None, schedule=((1, 'straight'),),
-                 args=None, lock=None, setup=None, no_yolo=True, info=True,
-                 yolo_schedule=None, model_load_fail=None):
+                 args=None, lock=None, setup=None, no_yolo=True,
+                 yolo_schedule=None, model_load_fail=None, use_home_models=False):
         need(b'UCR_AUTO_FAKE_TRACE' in Path(cfg.hooks).read_bytes(),
              'Từ chối binary không có hooks auto', 'environment')
         self.root, self.slack, self.seq = root, cfg.slack, 0
+        self.models = root / 'models'
+        self.no_yolo = no_yolo
         root.mkdir(parents=True)
         self.project = root / 'project'
         bindir = self.project / 'bin'
@@ -174,6 +187,11 @@ class Run(td.Run):
         fixtures(root, schedule)
         if yolo_schedule is not None:
             yolo_fixtures(root, yolo_schedule)
+        if use_home_models:
+            home = root / 'home'
+            home.mkdir()
+            shutil.move(str(self.models), str(home / 'ucr_models'))
+            self.models = home / 'ucr_models'
         if setup:
             setup(self)
         helper = bindir / 'ucr_stop'
@@ -185,6 +203,8 @@ class Run(td.Run):
                      if not k.startswith(('UCR_AUTO_FAKE_', 'UCR_DRIVE_FAKE_', 'UCR_CAM_TEST_'))
                      and k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'UCR_AUTO_MODEL_LOAD_FAIL')}
         child_env.update(LC_ALL='C.UTF-8', LANG='C.UTF-8', DISPLAY=':ucr_fake_only')
+        if use_home_models:
+            child_env['HOME'] = str(home)
         fake = dict(TRACE=str(self.path), LOCK=str(lock or root / 'vehicle.lock'), CTRL=str(self.ctrl),
                     PREVIEW='stream:' + str(self.keys), CAMERA='ok', FREE_MB='4096',
                     ROAD_MASKS=str(root / 'list.csv'))
@@ -197,12 +217,10 @@ class Run(td.Run):
         child_env['TSAN_OPTIONS'] = ':'.join(filter(None, (child_env.get('TSAN_OPTIONS', ''),
                                                         'suppressions=' + str(td.TSAN_SUPP))))
         argv = [str(self.binary), '--control', str(self.control), '--out-root', str(self.out)]
-        if info:
-            argv.extend(['--info', str(root / 'road_info.json')])
+        if not use_home_models:
+            argv.extend(['--model-dir', str(self.models)])
         if no_yolo:
             argv.append('--no-yolo')
-        if yolo_schedule is not None:
-            argv.extend(['--yolo-engine', str(root / 'yolo.engine'), '--yolo-info', str(root / 'yolo_info.json')])
         argv.extend(args or [])
         self.log = tempfile.TemporaryFile()
         try:
@@ -393,6 +411,43 @@ def reject(run, code=None, before_init=True):
     need(run.text().strip(), 'Từ chối không nêu lỗi')
 
 
+def reject_model(run):
+    """T47l mục 1–3: lỗi model phải trước cả helper và lệnh dừng phần cứng."""
+    reject(run)
+    need(not any(e[1] in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'test_ucr_stop')
+                 for e in run.events()), 'Lỗi model vẫn tác động phần cứng', 'model_preflight')
+
+
+def stale_onnx(run, name):
+    path = run.models / (name + '.onnx')
+    original = path.read_bytes()
+    changed = bytes([original[0] ^ 1]) + original[1:]
+    path.write_bytes(changed)
+    need(sum(a != b for a, b in zip(original, changed)) == 1, 'Phải sửa đúng 1 byte', 'setup')
+    need((run.models / (name + '.engine.src')).read_bytes() ==
+         (hashlib.sha256(original).hexdigest() + '\n').encode('ascii'), 'src phải giữ băm cũ', 'setup')
+
+
+def inspect_model_session(run):
+    data = json.loads((run.session() / 'session.json').read_text(encoding='utf-8'))
+    for name in ('unet', 'yolo'):
+        enabled = name == 'unet' or not run.no_yolo
+        info = json.loads((run.models / (name + '_info.json')).read_text(encoding='utf-8')) if enabled else {}
+        for field in ('variant', 'seed', 'data_tag', 'onnx_sha256'):
+            key = name + '_' + field
+            need(key in data, 'session thiếu ' + key, 'model_session')
+            expected = ''
+            if enabled:
+                expected = (hashlib.sha256((run.models / (name + '.onnx')).read_bytes()).hexdigest()
+                            if field == 'onnx_sha256' else info[field])
+            need(data[key] == expected, 'session sai ' + key, 'model_session')
+        key = 'engine_sha256' if name == 'unet' else 'yolo_engine_sha256'
+        need(key in data, 'session mất khóa cũ ' + key, 'model_session')
+        if enabled:
+            need(data[key] == hashlib.sha256((run.models / (name + '.engine')).read_bytes()).hexdigest(),
+                 'session sai băm engine ' + key, 'model_session')
+
+
 def yolo_running(cfg, root, values=None, **kwargs):
     control = dict(YOLO_VALUES)
     control.update(values or {})
@@ -570,7 +625,7 @@ def inspect_session(run):
     raw = run.control.read_bytes()
     need(data['control_yaml'].encode('utf-8') == raw and data['control_sha256'] == hashlib.sha256(raw).hexdigest(),
          'Bản chép/băm yaml sai', 'record_format')
-    need(data['info_json'] == json.loads((run.root / 'road_info.json').read_text(encoding='utf-8')),
+    need(data['info_json'] == json.loads((run.models / 'unet_info.json').read_text(encoding='utf-8')),
          'Metadata session sai', 'record_format')
     rows = run.rows()
     need(rows, 'CSV không có dữ liệu', 'record_format')
@@ -650,6 +705,154 @@ def read_png(data):
 
 
 def test_case(case, cfg, root):
+    # A70 — T47l mục 1–2: thiếu riêng từng file, trước mọi tác động motor/servo.
+    if case in ('A70u', 'A70y'):
+        name = 'unet' if case.endswith('u') else 'yolo'
+        start = running if name == 'unet' else yolo_running
+        with start(cfg, root / 'valid') as r:
+            if name == 'unet':
+                need(not any(r.models.glob('yolo*')), 'Tiền đề phải thiếu toàn bộ YOLO', 'setup')
+            r.boot(); r.frames(3, lambda: no_motion(r, 0)); r.finish()
+        for suffix in ('.onnx', '_info.json', '.engine', '.engine.src'):
+            filename = name + suffix
+            with start(cfg, root / ('missing_' + filename),
+                       setup=lambda r, filename=filename: (r.models / filename).unlink()) as r:
+                reject_model(r)
+                if suffix == '.engine.src':
+                    need('build_engine.sh ' + name in r.text(), 'Thiếu lệnh build lại ' + name, 'model_rebuild')
+        return
+    # A71 — T47l mục 2: chỉ lật một byte ONNX; thông báo chỉ đúng lệnh build lại.
+    if case in ('A71u', 'A71y'):
+        name = 'unet' if case.endswith('u') else 'yolo'
+        start = running if name == 'unet' else yolo_running
+        with start(cfg, root / 'valid') as r:
+            r.boot(); r.finish()
+        with start(cfg, root / 'stale', setup=lambda r: stale_onnx(r, name)) as r:
+            reject_model(r)
+            need('build_engine.sh ' + name in r.text(), 'Thiếu lệnh build lại ' + name, 'model_rebuild')
+            if name == 'unet':
+                need('build_engine.sh yolo' not in r.text(), 'no-yolo vẫn yêu cầu build yolo', 'model_rebuild')
+        return
+    # A72 — T47l mục 3: file fixture vẫn hợp lệ, chỉ kích thước khác info.
+    if case in ('A72u', 'A72y'):
+        name = 'unet' if case.endswith('u') else 'yolo'
+        start = running if name == 'unet' else yolo_running
+        with start(cfg, root / 'valid') as r:
+            r.boot(); r.finish()
+        def wrong_size(r):
+            if name == 'unet':
+                (r.root / 'straight.png').write_bytes(png_bytes([row[:-1] for row in mask_rows('straight')]))
+            else:
+                path = r.root / 'empty.npy'
+                data = path.read_bytes()
+                need(b'(1, 13, 100)' in data, 'Thiếu shape NPY gốc', 'setup')
+                path.write_bytes(data.replace(b'(1, 13, 100)', b'(1, 13, 99) ', 1)[:-13 * 4])
+        with start(cfg, root / 'mismatch', setup=wrong_size) as r:
+            reject_model(r)
+        return
+    # A74 — leader lượt 2: chỉ nhận 64 hex thường, không LF hoặc đúng một LF.
+    if case in ('A74ua', 'A74ub', 'A74ya', 'A74yb'):
+        name = 'unet' if case[3] == 'u' else 'yolo'
+        start = running if name == 'unet' else yolo_running
+        for ending, label in ((b'', 'no_lf'), (b'\n', 'one_lf')):
+            def valid_src(r):
+                digest = hashlib.sha256((r.models / (name + '.onnx')).read_bytes()).hexdigest().encode('ascii')
+                (r.models / (name + '.engine.src')).write_bytes(digest + ending)
+            with start(cfg, root / label, setup=valid_src) as r:
+                r.boot(); r.finish()
+        labels = ('upper', 'short', 'long') if case.endswith('a') else ('nonhex', 'empty', 'two_lines', 'crlf')
+        for label in labels:
+            def bad_src(r):
+                digest = hashlib.sha256((r.models / (name + '.onnx')).read_bytes()).hexdigest().encode('ascii')
+                need(digest.upper() != digest, 'Băm phải có chữ để kiểm hex HOA', 'setup')
+                data = dict(upper=digest.upper(), short=digest[:-1], long=digest + b'0',
+                            nonhex=b'g' + digest[1:], empty=b'', two_lines=digest + b'\n' + digest + b'\n',
+                            crlf=digest + b'\r\n')[label]
+                (r.models / (name + '.engine.src')).write_bytes(data)
+            with start(cfg, root / label, setup=bad_src) as r:
+                reject_model(r)
+        return
+    # A75 — không tính được SHA: ONNX là thư mục, không phụ thuộc quyền chmod.
+    if case == 'A75':
+        with running(cfg, root / 'valid') as r:
+            r.boot(); r.finish()
+        def directory_onnx(r):
+            path = r.models / 'unet.onnx'
+            path.unlink(); path.mkdir()
+            need(path.is_dir(), 'ONNX phải là thư mục', 'setup')
+        with running(cfg, root / 'directory', setup=directory_onnx) as r:
+            reject_model(r)
+        return
+    # A77 — no-yolo phải bỏ qua cả bộ YOLO có thật nhưng hỏng.
+    if case == 'A77':
+        for label in ('valid', 'stale_onnx', 'bad_src', 'bad_info'):
+            def corrupt_yolo(r):
+                if label == 'stale_onnx':
+                    stale_onnx(r, 'yolo')
+                elif label == 'bad_src':
+                    (r.models / 'yolo.engine.src').write_bytes(b'rac\n')
+                elif label == 'bad_info':
+                    (r.models / 'yolo_info.json').write_bytes(b'not JSON')
+            with running(cfg, root / label, yolo_schedule=((1, 'empty'),), setup=corrupt_yolo) as r:
+                r.boot(); r.finish()
+                data = json.loads((r.session() / 'session.json').read_text(encoding='utf-8'))
+                for field in ('variant', 'seed', 'data_tag', 'onnx_sha256'):
+                    need('yolo_' + field in data, 'session thiếu yolo_' + field, 'model_session')
+                need(all(data['yolo_' + field] == '' for field in ('variant', 'seed', 'data_tag', 'onnx_sha256')),
+                     'no-yolo phải để rỗng 4 khóa yolo_* mới', 'model_session')
+                need('yolo_engine_sha256' in data, 'session thiếu yolo_engine_sha256', 'model_session')
+        return
+    # A78 — lỗi model ưu tiên hơn tranh khóa; tiến trình test giữ khóa như A22.
+    if case == 'A78':
+        import fcntl
+        with running(cfg, root / 'valid') as r:
+            r.boot(); r.finish()
+        with (root / 'vehicle.lock').open('w') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with running(cfg, root / 'contender', lock=root / 'vehicle.lock',
+                         setup=lambda r: stale_onnx(r, 'unet')) as r:
+                reject_model(r)
+                need('build_engine.sh unet' in r.text(), 'Lỗi khóa che lỗi model', 'model_rebuild')
+                need(r.process.returncode != 6, 'Trả lỗi khóa thay vì lỗi model', 'model_preflight')
+        return
+    # A79 — từng cờ cũ vẫn phải bị từ chối khi có model-dir hợp lệ.
+    if case == 'A79':
+        with yolo_running(cfg, root / 'valid') as r:
+            r.boot(); r.finish()
+        for flag, filename in (('--engine', 'unet.engine'), ('--info', 'unet_info.json'),
+                               ('--yolo-engine', 'yolo.engine'), ('--yolo-info', 'yolo_info.json')):
+            folder = root / flag[2:]
+            with yolo_running(cfg, folder, args=[flag, str(folder / 'models' / filename)]) as r:
+                reject_model(r)
+        return
+    # A80 — HOME tạm đủ bộ, không truyền model-dir; đường dẫn session nếu có phải khớp.
+    if case == 'A80':
+        with yolo_running(cfg, root / 'default_home', use_home_models=True) as r:
+            r.boot(); r.finish()
+            data = json.loads((r.session() / 'session.json').read_text(encoding='utf-8'))
+            for key, value in data.items():
+                if isinstance(value, str) and value and (key == 'model_dir' or
+                        (('/' in value or '\\' in value) and
+                         any(part in key for part in ('model', 'engine', 'onnx', 'info')))):
+                    path = Path(value)
+                    need(path.is_absolute() and (path == r.models or path.parent == r.models),
+                         'Đường dẫn session không thuộc HOME tạm: ' + key, 'model_session')
+        return
+    # A73 — T47l mục 4: truy nguồn theo từng info/ONNX, giữ khóa băm engine cũ.
+    if case == 'A73':
+        for no_yolo in (False, True):
+            def provenance(r):
+                for name, variant, seed in (('unet', 'S2', 17), ('yolo', 'D2', 29)):
+                    path = r.models / (name + '_info.json')
+                    if path.exists():
+                        data = json.loads(path.read_text(encoding='utf-8'))
+                        data.update(variant=variant, seed=seed if not no_yolo else 0,
+                                    data_tag='t47l_{}_{}'.format(name, no_yolo))
+                        path.write_text(json.dumps(data), encoding='utf-8')
+            with running(cfg, root / str(no_yolo), no_yolo=no_yolo, setup=provenance,
+                         yolo_schedule=None if no_yolo else ((1, 'empty'),)) as r:
+                r.boot(); r.finish(); inspect_model_session(r)
+        return
     # A01 — H3/N2: chờ G, ready duy nhất, không chuyển động khi chưa có phím.
     if case == 'A01':
         with running(cfg, root) as r:
@@ -694,23 +897,23 @@ def test_case(case, cfg, root):
             r.wait(lambda: any(e[2] == 'CHO_DEN_XUAT_PHAT' for e in r.of('reason', mark)),
                    message='YOLO hợp lệ không vào chờ xanh')
             r.frames(6, lambda: held(r, mark)); r.finish()
-        for flag in (None, '--yolo-engine', '--yolo-info'):
-            folder = root / ('missing_' + str(flag))
-            args = [] if flag is None else [flag, str(folder / ('yolo.engine' if flag.endswith('engine') else 'yolo_info.json'))]
-            with running(cfg, folder, no_yolo=False, args=args,
-                         setup=lambda r: yolo_fixtures(r.root, ((1, 'empty'),))) as r:
+        for missing in (('yolo.engine', 'yolo_info.json'), ('yolo.engine',), ('yolo_info.json',)):
+            def remove_files(r, missing=missing):
+                for name in missing:
+                    (r.models / name).unlink()
+            with yolo_running(cfg, root / ('missing_' + '_'.join(missing)), setup=remove_files) as r:
                 reject(r)
-        bad = [lambda r: (r.root / 'yolo.engine').unlink(),
-               lambda r: (r.root / 'yolo.engine').write_bytes(b''),
-               lambda r: (r.root / 'yolo_info.json').unlink(),
-               lambda r: (r.root / 'yolo_info.json').write_text('{', encoding='utf-8'),
-               lambda r: (r.root / 'yolo_info.json').write_text('{}', encoding='utf-8')]
+        bad = [lambda r: (r.models / 'yolo.engine').unlink(),
+               lambda r: (r.models / 'yolo.engine').write_bytes(b''),
+               lambda r: (r.models / 'yolo_info.json').unlink(),
+               lambda r: (r.models / 'yolo_info.json').write_text('{', encoding='utf-8'),
+               lambda r: (r.models / 'yolo_info.json').write_text('{}', encoding='utf-8')]
         for i, setup in enumerate(bad):
             with yolo_running(cfg, root / ('bad_' + str(i)), setup=setup) as r:
                 reject(r)
         for index in range(9):
             def wrong_class(r, index=index):
-                path = r.root / 'yolo_info.json'
+                path = r.models / 'yolo_info.json'
                 data = json.loads(path.read_text(encoding='utf-8'))
                 data['class_names'][index] = 'ten_lop_khong_khop'
                 path.write_text(json.dumps(data), encoding='utf-8')
@@ -818,14 +1021,14 @@ def test_case(case, cfg, root):
                   lambda r: (r.root / 'straight.png').write_bytes(b'broken'),
                   lambda r: (r.root / 'list.csv').unlink(),
                   lambda r: (r.root / 'list.csv').write_text('frame_id,mask\n2,straight.png\n', encoding='utf-8'),
-                  lambda r: (r.root / 'road_info.json').unlink(),
-                  lambda r: (r.root / 'road_info.json').write_text('{}', encoding='utf-8'),
-                  lambda r: (r.root / 'road_info.json').write_text('{', encoding='utf-8'),
+                  lambda r: (r.models / 'unet_info.json').unlink(),
+                  lambda r: (r.models / 'unet_info.json').write_text('{}', encoding='utf-8'),
+                  lambda r: (r.models / 'unet_info.json').write_text('{', encoding='utf-8'),
                   lambda r: (r.root / 'straight.png').write_bytes(png_bytes([bytearray([3] * 160)] * 96))]
         for i, setup in enumerate(setups):
             with running(cfg, root / str(i), setup=setup) as r:
                 reject(r)
-        with running(cfg, root / 'no_info_option', info=False) as r:
+        with running(cfg, root / 'no_info_file', setup=lambda r: (r.models / 'unet_info.json').unlink()) as r:
             reject(r)
         return
     # A11 — B4/L5/L7, M6: ảnh về vẫn chốt tới G mới.
@@ -1620,7 +1823,7 @@ def selftest():
     with tempfile.TemporaryDirectory(prefix='ucr-yolo-selftest-') as tmp:
         root = Path(tmp)
         yolo_fixtures(root, ((1, 'empty'), (120, 'green'), (210, 'red_edge')))
-        info = json.loads((root / 'yolo_info.json').read_text(encoding='utf-8'))
+        info = json.loads((root / 'models' / 'yolo_info.json').read_text(encoding='utf-8'))
         assert info['class_names'] == YOLO_CLASSES and info['output_shape'] == [1, 13, 100]
         assert (root / 'yolo.csv').read_text(encoding='utf-8').splitlines() == [
             'frame_id,tensor', '1,empty.npy', '120,green.npy', '210,red_edge.npy']
@@ -1666,12 +1869,167 @@ def selftest():
             try:
                 argv = popen.call_args[0][0]
                 env = popen.call_args[1]['env']
-                assert '--no-yolo' not in argv and '--yolo-engine' in argv and '--yolo-info' in argv
+                assert '--no-yolo' not in argv
+                assert argv[argv.index('--model-dir') + 1] == str(run.models)
+                assert not {'--engine', '--info', '--yolo-engine', '--yolo-info'} & set(argv)
+                for name in ('unet', 'yolo'):
+                    for suffix in ('.onnx', '_info.json', '.engine', '.engine.src'):
+                        assert (run.models / (name + suffix)).is_file()
+                    assert (run.models / (name + '.engine.src')).read_bytes() == (
+                        hashlib.sha256((run.models / (name + '.onnx')).read_bytes()).hexdigest() + '\n').encode('ascii')
                 assert env['UCR_AUTO_MODEL_LOAD_FAIL'] == 'yolo'
                 assert env['UCR_AUTO_FAKE_YOLO_TENSORS'] == str(run.root / 'yolo.csv')
                 assert 'UCR_AUTO_FAKE_MODEL_LOAD_FAIL' not in env
             finally:
                 run.log.close()
+        with patch.object(subprocess, 'Popen') as popen:
+            run = Run(cfg, root / 'launch_no_yolo')
+            try:
+                argv = popen.call_args[0][0]
+                assert '--no-yolo' in argv and '--model-dir' in argv
+                assert not list(run.models.glob('yolo*'))
+            finally:
+                run.log.close()
+        with patch.object(subprocess, 'Popen') as popen:
+            run = Run(cfg, root / 'launch_home', no_yolo=False,
+                      yolo_schedule=((1, 'empty'),), use_home_models=True)
+            try:
+                argv, options = popen.call_args[0][0], popen.call_args[1]
+                assert '--model-dir' not in argv and '--no-yolo' not in argv
+                assert options['env']['HOME'] == str(run.root / 'home')
+                assert run.models == run.root / 'home' / 'ucr_models'
+                assert not (run.root / 'models').exists()
+                assert (run.models / 'unet.onnx').is_file() and (run.models / 'yolo.onnx').is_file()
+                assert options['stdout'] is options['stderr'] is run.log
+            finally:
+                run.log.close()
+        # Chạy luồng ca bằng Popen giả: kiểm fixture thật và số lượt, không xác nhận DEV.
+        launches = []
+        fault = [None]
+        @contextmanager
+        def model_running(cfg, folder, **kwargs):
+            with patch.object(subprocess, 'Popen'):
+                run = Run(cfg, folder, **kwargs)
+            try:
+                bad = []
+                for name in ('unet', 'yolo'):
+                    if name == 'yolo' and run.no_yolo:
+                        continue
+                    paths = [run.models / (name + suffix) for suffix in
+                             ('.onnx', '_info.json', '.engine', '.engine.src')]
+                    if not all(p.is_file() for p in paths):
+                        bad.append(name)
+                        continue
+                    digest = hashlib.sha256(paths[0].read_bytes()).hexdigest().encode('ascii')
+                    if paths[3].read_bytes() not in (digest, digest + b'\n'):
+                        bad.append(name)
+                if struct.unpack('>II', (folder / 'straight.png').read_bytes()[16:24]) != (160, 96):
+                    bad.append('unet')
+                if not run.no_yolo:
+                    raw = (folder / 'empty.npy').read_bytes()
+                    length = struct.unpack('<H', raw[8:10])[0]
+                    shape = ast.literal_eval(raw[10:10 + length].decode('ascii'))['shape']
+                    assert len(raw[10 + length:]) == shape[0] * shape[1] * shape[2] * 4
+                    if shape != (1, 13, 100):
+                        bad.append('yolo')
+                legacy = any(flag in (kwargs.get('args') or []) for flag in
+                             ('--engine', '--info', '--yolo-engine', '--yolo-info'))
+                invalid = bool(bad or legacy)
+                run.process.returncode = 1 if invalid else 0
+                run.process.poll.return_value = run.process.returncode
+                run.events = MagicMock(return_value=[])
+                run.of = MagicMock(return_value=[])
+                run.wait = lambda predicate, *args, **kw: predicate()
+                run.text = MagicMock(return_value='Lỗi ' + ' '.join('build_engine.sh ' + n for n in bad))
+                if fault[0] == 'yolo_hint':
+                    run.text.return_value += ' build_engine.sh yolo'
+                if fault[0] == 'lock_code' and kwargs.get('lock'):
+                    run.process.returncode = 6
+                run.boot = MagicMock(side_effect=lambda: need(not invalid, 'Đối chứng bị hỏng', 'setup'))
+                run.finish = MagicMock()
+                run.frames = lambda count, check: check()
+                session = folder / 'session'
+                session.mkdir()
+                data = {}
+                for name in ('unet', 'yolo'):
+                    enabled = name == 'unet' or not run.no_yolo
+                    info = json.loads((run.models / (name + '_info.json')).read_text(encoding='utf-8')) if enabled and not invalid else {}
+                    for field in ('variant', 'seed', 'data_tag', 'onnx_sha256'):
+                        data[name + '_' + field] = (hashlib.sha256((run.models / (name + '.onnx')).read_bytes()).hexdigest()
+                                                   if field == 'onnx_sha256' else info.get(field, '')) if enabled and not invalid else ''
+                    key = 'engine_sha256' if name == 'unet' else 'yolo_engine_sha256'
+                    data[key] = hashlib.sha256((run.models / (name + '.engine')).read_bytes()).hexdigest() if enabled and not invalid else ''
+                data['engine_name'] = str(run.models / 'unet.engine')
+                if fault[0] == 'home_path':
+                    data['engine_name'] = str(folder / 'wrong' / 'unet.engine')
+                if fault[0] == 'yolo_session':
+                    data['yolo_variant'] = 'khong rong'
+                (session / 'session.json').write_text(json.dumps(data), encoding='utf-8')
+                run.session = lambda: session
+                launches.append((folder, invalid))
+                yield run
+                assert run.boot.call_count == run.finish.call_count == (0 if invalid else 1)
+            finally:
+                run.log.close()
+        counts = dict(A70u=5, A70y=5, A71u=2, A71y=2, A72u=2, A72y=2, A73=2,
+                      A74ua=5, A74ub=6, A74ya=5, A74yb=6, A75=2, A77=4, A78=2, A79=5, A80=1)
+        flock = SimpleNamespace(flock=MagicMock(), LOCK_EX=2, LOCK_NB=4)
+        with patch('{}.running'.format(__name__), model_running), patch.dict(sys.modules, fcntl=flock):
+            for case, count in counts.items():
+                launches[:] = []
+                test_case(case, cfg, root / ('flow_' + case))
+                assert len(launches) == count <= 6
+                assert not launches[0][1], 'Thiếu đối chứng hợp lệ ' + case
+                if case.startswith('A74'):
+                    assert not launches[1][1] and all(bad for _, bad in launches[2:])
+                elif case not in ('A73', 'A77', 'A80'):
+                    assert all(bad for _, bad in launches[1:])
+                else:
+                    assert not any(bad for _, bad in launches)
+            assert flock.flock.call_count == 1
+            for broken, case, tag in (('yolo_hint', 'A71u', 'model_rebuild'),
+                                      ('lock_code', 'A78', 'model_preflight'),
+                                      ('home_path', 'A80', 'model_session'),
+                                      ('yolo_session', 'A77', 'model_session')):
+                fault[0] = broken
+                fails(lambda: test_case(case, cfg, root / ('mutant_' + broken)), tag)
+        # Bộ kiểm mới phải bắt cả lệnh 0 / lệnh fail, không chỉ chuyển động.
+        probe = MagicMock()
+        probe.process.returncode = 1
+        probe.of.return_value = []
+        probe.text.return_value = 'Lỗi model'
+        probe.events.return_value = []
+        reject_model(probe)
+        for kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'test_ucr_stop'):
+            for failed in (False, True):
+                probe.events.return_value = [(0, kind, 0, failed)]
+                fails(lambda: reject_model(probe), 'model_preflight')
+        # Session tổng hợp: bắt thiếu khóa, ghi cứng, băm sai và no-yolo không rỗng.
+        for no_yolo in (False, True):
+            models = root / ('session_models_' + str(no_yolo))
+            data = {}
+            for name, seed in (('unet', 17), ('yolo', 29)):
+                enabled = name == 'unet' or not no_yolo
+                meta = dict(variant=name + '_variant', seed=seed, data_tag=name + '_tag')
+                if enabled:
+                    model_files(models, name, meta)
+                for field in ('variant', 'seed', 'data_tag', 'onnx_sha256'):
+                    data[name + '_' + field] = (hashlib.sha256((models / (name + '.onnx')).read_bytes()).hexdigest()
+                                                if field == 'onnx_sha256' else meta[field]) if enabled else ''
+                key = 'engine_sha256' if name == 'unet' else 'yolo_engine_sha256'
+                data[key] = hashlib.sha256((models / (name + '.engine')).read_bytes()).hexdigest() if enabled else ''
+            session_run = SimpleNamespace(models=models, no_yolo=no_yolo, session=lambda: root)
+            def write_session(value):
+                (root / 'session.json').write_text(json.dumps(value), encoding='utf-8')
+            write_session(data); inspect_model_session(session_run)
+            for key in data:
+                bad = dict(data); del bad[key]
+                write_session(bad)
+                fails(lambda: inspect_model_session(session_run), 'model_session')
+                if key != 'yolo_engine_sha256' or not no_yolo:
+                    bad = dict(data); bad[key] = 'sai'
+                    write_session(bad)
+                    fails(lambda: inspect_model_session(session_run), 'model_session')
     # Mốc cùng ms: lô mới đếm bằng frame_id; lệnh trước lô thứ3 không được lọt.
     events = [(100, 'detections', '3 90', False), (100, 'motor_speed', 0, False),
               (100, 'servo_angle', 0, False), (100, 'detections', '6 95', False),
@@ -1794,7 +2152,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: P1/M7, fixture YOLO, CLI/env, lô mới, chốt đèn và A32 bấm lại G (vết tổng hợp)')
+        print('PASS selftest: P1/M7, fixture YOLO, CLI/env, lô mới, chốt đèn, A32 và hợp đồng model T47l (vết tổng hợp)')
         return
     if not cfg.case or not cfg.hooks:
         parser.error('--case và --hooks là bắt buộc nếu không dùng --selftest')
