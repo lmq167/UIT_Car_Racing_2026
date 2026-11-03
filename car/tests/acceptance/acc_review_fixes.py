@@ -161,7 +161,7 @@ class ReviewSuite(LimitsSuite):
             if kind in ("before_init", "stop"):
                 cases = [("soft_start_s", "0.199", 500), ("camera_resume_max_s", "5.001", 500)]
         for key, value, timeout in cases:
-            modes = ("manual", "collect", "calib", "smoke") if kind == "before_init" else (None,)
+            modes = ("manual", "calib", "smoke") if kind == "before_init" else (None,)
             for mode in modes:
                 folder, config, env = self.setup({key: value, "image_timeout_ms": str(timeout)})
                 command = ([self.main, "--check-config", "--config", config] if mode is None else

@@ -34,7 +34,6 @@
 #include "acc_seed_gate.h"
 #include "app/Backend.h"
 #include "app/IController.h"
-#include "common/CollectRecorder.h"
 #include "common/Config.h"
 #include "common/RunLogger.h"
 #include "common/SharedChannels.h"

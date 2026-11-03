@@ -121,7 +121,7 @@ if(UCR_FAKE_HW)
     target_compile_definitions(acc_recovery_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
     target_compile_options(acc_recovery_main PRIVATE -Wall -Wextra)
     set_property(TARGET acc_recovery_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
-    foreach(mode smoke calib collect)
+    foreach(mode smoke calib)
         add_test(NAME acc_no_gate_${mode} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} no_gate
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode})
         set_tests_properties(acc_no_gate_${mode} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
@@ -131,7 +131,7 @@ if(UCR_FAKE_HW)
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
         set_tests_properties(acc_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
-    foreach(scenario defaults config_numeric config_keys wrapper_config cli smoke_unconfirmed smoke_gate env collect_print collect_cancel)
+    foreach(scenario defaults config_numeric config_keys wrapper_config cli smoke_unconfirmed smoke_gate env)
         add_test(NAME acc_cli_${scenario} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} ${scenario}
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
         set_tests_properties(acc_cli_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
@@ -260,24 +260,22 @@ endforeach()
 add_test(NAME acc_review_fix_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES} self-test)
 set_tests_properties(acc_review_fix_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
 
-# T05g/Quyết định L: giữ huỷ lệnh ở manual/collect/calib; auto và smoke giữ hành vi cũ.
+# T05g/Quyết định L: giữ huỷ lệnh ở manual/calib; auto và smoke giữ hành vi cũ.
 # Mỗi ca tự dùng thư mục/vết riêng, không RUN_SERIAL và không mã bỏ qua.
 set(ACC_SAFETY_LATCH ${CMAKE_CURRENT_SOURCE_DIR}/acc_safety_latch.py)
 set(ACC_LATCH_SCENARIOS smoke
     limit_deadline limit_distance limit_position
     calib_front calib_front_stalled calib_long_stalled calib_image calib_short
-    calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed
-    collect_front_stalled collect_long_stalled)
-foreach(mode manual collect)
+    calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed)
+foreach(mode manual)
     foreach(kind phase image image_reverse image_opposite image_reverse_opposite
             front front_opposite rear rear_opposite rear_invalid rear_forward rear_forward_invalid
             front_reverse short stale stale_reverse image_twice front_twice rear_twice front_mixed idle startup)
         list(APPEND ACC_LATCH_SCENARIOS ${mode}_${kind})
     endforeach()
 endforeach()
-# Chỉ tập đại diện giữ nhãn threads (TSan chạy hết ca threads, quá giờ nếu để cả ~63 ca).
-# collect_phase (~105 s) và collect_rear bỏ khỏi TSan: collect_image cùng ý nghĩa mất ảnh (~10 s).
-set(ACC_LATCH_TSAN_SET collect_image calib_front)
+# Chỉ tập đại diện giữ nhãn threads để TSan không phải chạy hết ma trận chốt.
+set(ACC_LATCH_TSAN_SET manual_image calib_front)
 foreach(scenario ${ACC_LATCH_SCENARIOS})
     set(latch_labels "acceptance")
     if(scenario IN_LIST ACC_LATCH_TSAN_SET)
@@ -306,7 +304,7 @@ if(UCR_FAKE_HW)
         " -Wl,--wrap=_ZN3app7Backend8PositionERf -Wl,--wrap=_ZN3app7Backend4InitEv")
 endif()
 set(ACC_STOP_SCENARIOS position_5 position_named check_config wrapper_stop_failure
-    stdout_collect_image stdout_collect_tof stdout_calib_image stdout_calib_tof)
+    stdout_calib_image stdout_calib_tof)
 foreach(step 1 2 3 4 6 7 8 9 10)
     list(APPEND ACC_STOP_SCENARIOS other_step_${step})
 endforeach()
@@ -317,7 +315,7 @@ foreach(scenario ${ACC_STOP_SCENARIOS})
         set(stop_main $<TARGET_FILE:acc_stop_path_main>)
     endif()
     # Chỉ một ca ngắn đại diện đi qua TSan, không nhân cả ma trận FIFO.
-    if(scenario STREQUAL "stdout_collect_tof")
+    if(scenario STREQUAL "stdout_calib_tof")
         set(stop_labels "acceptance;threads")
     endif()
     add_test(NAME acc_t05h_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH}

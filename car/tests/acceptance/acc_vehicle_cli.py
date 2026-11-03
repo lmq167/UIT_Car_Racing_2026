@@ -146,33 +146,10 @@ def log_rows(folder, mode="auto"):
     return rows
 
 
-def collect_metadata(process):
-    # Sáu mục theo docs: mã, họ tên, thời tiết, rèm, đèn, đạo cụ; giữ stdin mở sau khi nhập.
-    process.stdin.write("a\nNguoi kiem thu\n1\n1\n1\nkhông\n".encode("utf-8"))
-    process.stdin.flush()
-
-
 def held_at(rows, kind, at):
     values = [float(v) for ms, k, v in rows if k == kind and ms <= at]
     require(values, "Thiếu vết {} trước mốc {}".format(kind, at))
     return values[-1]
-
-
-def check_collect_trace(rows, gap_end, key_at):
-    # Đọc cả lệnh đang giữ giữa hai lần gửi, không chỉ các dòng mới hoặc lệnh dừng khi dọn test.
-    require(rows and rows[-1][0] >= key_at + 120, "C': phải quan sát qua hạn xử lý phím mới")
-    require(key_at - gap_end > 3000, "C': giữ ảnh mới không phím lâu hơn W+S")
-    speeds = [(ms, float(v)) for ms, k, v in rows if k == "motor_speed"]
-    require(all(math.isfinite(v) and abs(v) <= 25 + SPEED_EPS for _, v in speeds), "C': motor hữu hạn, không vượt 25")
-    require(any(1500 <= ms < 3000 and abs(v - 20) <= SPEED_EPS for ms, v in speeds) and
-            abs(held_at(rows, "motor_speed", 2800) - 20) <= SPEED_EPS, "C': w đầu phải cho +20 trước mất ảnh")
-    require(abs(held_at(rows, "motor_speed", 3610)) <= SPEED_EPS and
-            abs(held_at(rows, "servo_angle", 3610) - 7) <= SPEED_EPS, "C': tới timeout + một chu kỳ +100 ms phải 0/trim")
-    require(all(abs(v) <= SPEED_EPS for ms, v in speeds if 3610 <= ms < key_at) and
-            abs(held_at(rows, "motor_speed", key_at - 1)) <= SPEED_EPS, "C': ảnh cũ/ảnh về vẫn 0 tới w mới, không ghi nhớ phím cũ")
-    require(abs(held_at(rows, "motor_speed", key_at + 120) - 20) <= SPEED_EPS and
-            all(abs(v - 20) <= SPEED_EPS for ms, v in speeds if ms >= key_at + 120),
-            "C': w mới chạy +20 ngay, không chờ W/tăng mềm hoặc cộng lại lệnh đã xóa")
 
 
 def wait_ready(process, predicate, message):
@@ -528,7 +505,7 @@ class Suite:
         invalid = [["--mode", "calib"], ["--mode", "calib", "--step"]]
         invalid += [["--mode", "calib", "--step", value] for value in ("0", "11", "unknown")]
         invalid.append(["--mode", "calib", "--step", "2", "--unknown"])
-        for mode in ("auto", "collect", "calib"):
+        for mode in ("auto", "calib"):
             invalid.append(["--mode", mode] + (["--step", "2"] if mode == "calib" else []) + ["--smoke-drop-camera"])
         for args in invalid:
             folder, config, env = self.setup({"tof_mapping_confirmed": "1"}, gate=True)
@@ -545,11 +522,7 @@ class Suite:
             args += ["--step", "2"]
         if mode == "smoke":
             args += self.smoke_args(folder)
-        if mode == "collect":
-            env["UCR_FAKE_KEYS"] = "0:+"  # Có đường nhận phím không cửa sổ, không phát lệnh chuyển động.
         def observe(process):
-            if mode == "collect":
-                collect_metadata(process)
             wait_ready(process, lambda: log_ready(folder, mode), "S17: " + mode + " phải tạo log/ảnh/cảm biến khi thiếu gate")
             process.send_signal(signal.SIGTERM)
         code, _ = run(args, folder, env, observe)
@@ -558,41 +531,6 @@ class Suite:
         require(sum(k == "motor_init" for _, k, _ in rows) == 1, "S17: khởi tạo một lần")
         require(not any(k == "motor_speed" and abs(float(v)) > SPEED_EPS for _, k, v in rows), "S17: chưa phím chuyển động luôn giữ motor 0")
         tail(rows)
-
-    def collect_cancel(self):
-        # C'/A03/A06: main thật, phím vào collect không cửa sổ; H10 vẫn dành cho xe thật.
-        for duration in (600, 2300):
-            folder, config, env = self.setup({"tof_mapping_confirmed": "1", "camera_hz": "25",
-                "control_hz": "100", "sensor_hz": "100", "ui_hz": "100", "imu_drift_ms": "100",
-                "keyboard_speed_step_cms": "20", "max_speed_cms": "25", "resume_stable_s": "2",
-                "soft_start_s": "1", "camera_resume_max_s": "2", "image_timeout_ms": "500", "image_every_n": "1000000",
-                "collect_keys": '["w","s","a","d"," ","c","u","esc","[","]","+","-"]'})
-            gap_end, key_at = 3000 + duration, 3000 + duration + 3700
-            env["UCR_FAKE_CAMERA_GAPS"] = "3000:" + str(gap_end)
-            env["UCR_FAKE_KEYS"] = "1500:w," + ("4000:w," if duration > 2000 else "") + str(key_at) + ":w"
-            def observe(process):
-                collect_metadata(process)
-                wait_ready(process, lambda: log_ready(folder, "collect") and
-                           any(k == "motor_speed" and 1500 <= ms < 3000 and abs(float(v)-20) <= SPEED_EPS
-                               for ms, k, v in trace(folder / "trace.csv", live=True)), "C': phải có ảnh/ToF và +20 trước ngắt")
-                def held_after_return():
-                    hw, logs = trace(folder / "trace.csv", live=True), log_rows(folder, "collect")
-                    return bool(hw and hw[-1][0] >= gap_end + 3100 and logs and
-                                int(logs[-1]["frame_id"]) > 0 and float(logs[-1]["image_age_ms"]) < 500 and
-                                all(float(logs[-1]["tof"+str(i)]) > 0 for i in range(4)))
-                wait_ready(process, held_after_return, "C': ảnh/ToF phải có lại >W+S trước phím mới")
-                hw = trace(folder / "trace.csv", live=True)
-                require(hw[-1][0] < key_at and abs(held_at(hw, "motor_speed", hw[-1][0])) <= SPEED_EPS,
-                        "C': có ảnh mới mà chưa bấm lại vẫn phải 0, quan sát trước phím mới")
-                wait_ready(process, lambda: bool(trace(folder / "trace.csv", live=True)) and
-                           trace(folder / "trace.csv", live=True)[-1][0] >= key_at + 200, "C': phải quan sát sau phím mới")
-                check_collect_trace(trace(folder / "trace.csv", live=True), gap_end, key_at)
-                process.send_signal(signal.SIGTERM)
-            code, _ = run([self.main, "--mode", "collect", "--config", config], folder, env, observe)
-            require(code in (0, 143), "C': collect kết thúc chủ động sau SIGTERM")
-            rows = trace(folder / "trace.csv")
-            require(sum(k == "motor_init" for _, k, _ in rows) == 1, "C': không khởi tạo motor lại")
-            tail(rows)
 
     def calib(self, step, sig):
         # C02/C13/A01: mỗi bước số hợp lệ, stdin giữ mở tới hết quan sát.
@@ -664,7 +602,6 @@ class Suite:
             for field in ("source_id", "camera", "sensors", "servo", "tof_brake", "camera_brake",
                           "encoder_moving", "kill9", "encoder_stopped"):
                 require(field in result, "S12: thiếu trường " + field)
-            require(not list((folder / "runs").glob("*_collect")), "S14: smoke không tự chạy collect")
 
     def fault(self, mode, fault):
         # A02: tiêm lỗi khi chờ nhập calib/smoke; terminate qua trình bao vẫn phải dừng độc lập.
@@ -709,11 +646,6 @@ def static(root, scenario):
         text = read(root / "scripts/env_check.sh")
         require(not re.search(r"\bapt(?:-get)?\b|\bpip[0-9]*\s+install\b|\bnvpmodel\s+-s\b", text),
                 "C03: env_check không được cài gói/đổi nguồn")
-    elif scenario == "collect_print":
-        lines = read(root / "scripts/smoke_test.sh").splitlines()
-        matches = [line for line in lines if "--mode collect" in line]
-        require(matches and all(re.search(r"\b(?:printf|echo)\b", line) for line in matches),
-                "S14: collect chỉ nằm trong lệnh được in")
     elif scenario == "defaults":
         text = read(root / "config.yaml")
         for key, expected in [("max_speed_cms", 25), ("camera_resume_max_s", 2), ("soft_start_s", 1), ("resume_stable_s", 2)]:
@@ -773,30 +705,6 @@ def self_test():
         except AssertionError:
             caught = True
         require(caught, "Kiểm cuối vẫn phải bắt dòng vết cụt")
-        for gap_end in (3600, 5300):
-            key_at = gap_end + 3700
-            good = [(0, "motor_speed", "0"), (0, "servo_angle", "7"),
-                    (1500, "motor_speed", "20"), (3500, "motor_speed", "0"),
-                    (3500, "servo_angle", "7"), (key_at, "motor_speed", "20"),
-                    (key_at+200, "servo_angle", "7")]
-            check_collect_trace(good, gap_end, key_at)
-            variants = [good[:2] + good[3:],
-                        [row for row in good if row[:2] != (3500, "motor_speed")],
-                        good[:5] + [(gap_end+200, "motor_speed", "20")] + good[5:],
-                        good[:5] + [(key_at, "motor_speed", "25")] + good[6:],
-                        good[:5] + [(key_at, "motor_speed", "2")] + good[6:]]
-            for bad in variants:
-                caught = False
-                try:
-                    check_collect_trace(bad, gap_end, key_at)
-                except AssertionError:
-                    caught = True
-                require(caught, "C': phải bắt thiếu lệnh chạy/dừng, tự hồi lệnh, giữ phím cũ hoặc tăng mềm sai")
-        with io.BytesIO() as metadata:
-            from types import SimpleNamespace
-            collect_metadata(SimpleNamespace(stdin=metadata))
-            require(len(metadata.getvalue().splitlines()) == 6 and not metadata.closed,
-                    "Collect: gửi đủ sáu mục thông tin, không đóng stdin trước quan sát")
         require(diagnostic("lỗi <&>\x00\x1b\n") == "lỗi <&>\\x00\\x1b\n", "Chỉ thoát ký tự cấm trong XML")
         log = folder / "runs/now_calib/log.csv"
         log.parent.mkdir(parents=True)
@@ -877,12 +785,12 @@ def main():
         self_test()
         return
     scenario, root = sys.argv[1:3]
-    if scenario in ("env", "collect_print", "defaults"):
+    if scenario in ("env", "defaults"):
         static(root, scenario)
     else:
         with tempfile.TemporaryDirectory(prefix="acc_vehicle_cli_") as folder:
             suite = Suite(root, sys.argv[3], sys.argv[4], folder)
-            if scenario in ("config_numeric", "config_keys", "wrapper_config", "cli", "smoke_unconfirmed", "smoke_gate", "collect_cancel"):
+            if scenario in ("config_numeric", "config_keys", "wrapper_config", "cli", "smoke_unconfirmed", "smoke_gate"):
                 getattr(suite, scenario)()
             elif scenario.startswith("check_config_"):
                 suite.check_config(scenario)

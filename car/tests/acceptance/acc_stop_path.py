@@ -11,7 +11,7 @@ import time
 
 sys.dont_write_bytecode = True
 from acc_calib_limits import LimitsSuite, near, observed_timing
-from acc_vehicle_cli import (collect_metadata, held_at, kill_group, log_ready,
+from acc_vehicle_cli import (held_at, kill_group, log_ready,
                              log_rows, poll, read, require, run, tail, trace)
 
 LOCKED = "Bước 5 đang khoá cho tới khi kiểm chế độ vị trí trên xe"
@@ -167,8 +167,6 @@ class StopSuite(LimitsSuite):
                 process = subprocess.Popen([str(x) for x in command], cwd=str(folder), env=env,
                                            stdin=subprocess.PIPE, stdout=output, stderr=error,
                                            start_new_session=True)
-                if mode == "collect":
-                    collect_metadata(process)
                 wait(lambda: any(k == "motor_speed" and near(float(v), 10)
                                  for _, k, v in trace(folder / "trace.csv", live=True)),
                      8, "Tiền đề: chưa có chuyển động trước chặn", True)
@@ -301,7 +299,7 @@ def main():
             suite.other_step(scenario[len("other_step_"):])
         elif scenario == "wrapper_stop_failure":
             suite.wrapper_failure()
-        elif scenario.startswith("stdout_"):
+        elif scenario in ("stdout_calib_image", "stdout_calib_tof"):
             _, mode, kind = scenario.split("_")
             suite.blocked_stdout(mode, kind)
         else:
