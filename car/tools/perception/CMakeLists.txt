@@ -1,6 +1,15 @@
-add_library(perception_cpu STATIC ../../src/perception/InfoJson.cpp ../../src/perception/RoadSegmenter.cpp)
+find_package(OpenCV 4.1 REQUIRED COMPONENTS core imgproc imgcodecs dnn)
+add_library(perception_cpu STATIC ../../src/perception/InfoJson.cpp ../../src/perception/RoadSegmenter.cpp
+    ../../src/perception/YoloDetector.cpp)
 target_include_directories(perception_cpu PUBLIC ../../include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(perception_cpu PUBLIC ${OpenCV_LIBS})
+
+if(BUILD_TESTING)
+    add_executable(test_yolo ../../tests/test_yolo.cpp)
+    target_link_libraries(test_yolo PRIVATE perception_cpu)
+    add_test(NAME test_yolo COMMAND test_yolo)
+    set_tests_properties(test_yolo PROPERTIES LABELS "unit" TIMEOUT 15)
+endif()
 
 if(UCR_WITH_TRT)
     set(TENSORRT_LIB_DIR "/usr/lib/aarch64-linux-gnu" CACHE PATH "Thư mục thư viện TensorRT")
