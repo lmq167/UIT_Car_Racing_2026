@@ -1313,7 +1313,12 @@ def test_case(case, cfg, root):
     if case == 'A41':
         with yolo_running(cfg, root, values={'start_wait_green': 0, 'kp': 0}, schedule=((1, 'straight'),),
                           yolo_schedule=((1, 'empty'), (120, 'red_mid'))) as r:
-            r.boot(); r.go(); speed_is(r, 8)
+            r.boot(); r.go()
+            r.wait(lambda: any(row['planner_state'] == row['reason'] == 'BAM_LAN'
+                               and abs(float(row['sent_speed_cms']) - 8) < 1e-6
+                               and 0 <= float(row['det_age_ms']) <= r.values['det_max_age_ms']
+                               for row in r.rows()), 15, 'Chưa bám làn 8 với lô YOLO tươi')
+            speed_is(r, 8)
             need(last_detection_frame(r.events()) < 120, 'Đỏ đến trước tiền đề cruise', 'setup')
             mark = len(r.events())
             ev = r.wait(lambda: next((e for e in r.of('reason', mark) if e[2] == 'TIEP_CAN_DEN_DO'), None),
