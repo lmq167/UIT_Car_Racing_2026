@@ -181,7 +181,7 @@ class Run:
         helper.write_text('#!' + sys.executable + '\n'
                           'import os,time\n'
                           'with open(os.environ["UCR_DRIVE_FAKE_TRACE"],"a") as f:\n'
-                          ' f.write("%.6f test_ucr_stop\\n" % (time.monotonic()*1000))\n',
+                          ' f.write("%d test_ucr_stop\\n" % int(time.monotonic()*1000))\n',
                           encoding='utf-8')
         helper.chmod(0o755)
         self.out = self.project / 'data_raw' if default else root / 'out'
