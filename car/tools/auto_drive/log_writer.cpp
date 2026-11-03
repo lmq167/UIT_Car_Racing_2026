@@ -89,7 +89,7 @@ double processRssMb() {
 }
 LogWriter::LogWriter(const Options& o,const std::string& yaml,
                      std::function<void(const char*,const std::string&)> trace)
-    : root_(o.outRoot),yaml_(yaml),info_(o.info),engine_(o.engine),trace_(std::move(trace)) {
+    : root_(o.outRoot),yaml_(yaml),info_(o.info),engine_(o.engine),yoloInfo_(o.yoloInfo),yoloEngine_(o.yoloEngine),yoloEnabled_(!o.noYolo),trace_(std::move(trace)) {
     worker_=std::thread(&LogWriter::run,this);
 }
 bool LogWriter::tryImage(const ModelResult& image) noexcept {
@@ -99,6 +99,13 @@ bool LogWriter::tryImage(const ModelResult& image) noexcept {
         if (!lock.owns_lock() || images_.size()>=8) { ++dropped; return false; }
         images_.push_back(image); available_.notify_one(); return true;
     } catch (...) { ++dropped; return false; }
+}
+void LogWriter::offerDetections(const control::Detections& batch) noexcept {
+    try {
+        std::unique_lock<std::mutex> lock(mutex_,std::try_to_lock);
+        if (!lock.owns_lock() || quit_ || finished || detections_.size()>=64) { ++detectionsDropped; return; }
+        detections_.push_back(batch); available_.notify_one();
+    } catch (...) { ++detectionsDropped; }
 }
 void LogWriter::offerControl(const std::string& row) noexcept {
     try {
@@ -128,16 +135,24 @@ void LogWriter::run() noexcept {
         const auto infoHash=sha256(folder+"/road_info.json");
         if (engineHash=="loi" || controlHash=="loi" || infoHash=="loi")
             warningNonBlocking("CANH BAO: bam SHA-256 that bai, van ghi log phien\n");
+        const auto yoloInfo=yoloEnabled_ ? readBytes(yoloInfo_) : "null";
+        if (yoloEnabled_) writeFile(folder+"/yolo_info.json",yoloInfo);
+        const auto yoloHash=yoloEnabled_ && !yoloEngine_.empty() ? sha256(yoloEngine_) : "";
         writeFile(folder+"/session.json","{\n\"git_hash\":"+jsonString(UCR_AUTO_GIT_HASH)+
             ",\n\"git_branch\":"+jsonString(UCR_AUTO_GIT_BRANCH)+
             ",\n\"control_yaml\":"+jsonString(yaml_)+",\n\"control_sha256\":"+jsonString(controlHash)+
             ",\n\"info_json\":"+info+",\n\"info_sha256\":"+jsonString(infoHash)+
-            ",\n\"engine_name\":"+jsonString(engine_)+",\n\"engine_sha256\":"+jsonString(engineHash)+"\n}\n");
+            ",\n\"engine_name\":"+jsonString(engine_)+",\n\"engine_sha256\":"+jsonString(engineHash)+
+            ",\n\"yolo_enabled\":"+std::to_string(int(yoloEnabled_))+",\n\"yolo_info_json\":"+yoloInfo+
+            ",\n\"yolo_info_sha256\":"+jsonString(yoloEnabled_ ? sha256(folder+"/yolo_info.json") : "")+
+            ",\n\"yolo_engine_name\":"+jsonString(yoloEngine_)+",\n\"yolo_engine_sha256\":"+jsonString(yoloHash)+"\n}\n");
         const auto csvPath=folder+"/control_log.csv";
         writeFile(csvPath,"t_ms,frame_id,mask_file,cmd_cms,cmd_deg,mask_ms,image_ms,go,stop,lane_ref,planner_state,"
             "image_age_ms,mask_age_ms,det_age_ms,scan_rows,e,p,d,requested_steer_deg,requested_speed_cms,"
             "sent_steer_deg,sent_speed_cms,reason,road_ms,yolo_ms,loop_ms,dropped,csv_dropped,"
-            "camera_fps,loop_p95_ms,rss_mb,free_mb,command_id,command_ms,mask_id\n");
+            "camera_fps,loop_p95_ms,rss_mb,free_mb,command_id,command_ms,mask_id,det_frame_id,det_captured_ms,detections_dropped\n");
+        const auto detectionsPath=folder+"/detections.csv";
+        writeFile(detectionsPath,"frame_id,captured_ms,class,conf,x1,y1,x2,y2\n");
         auto nextDisk=int64_t(0),nextStats=timeMs()+2000;
         Statistics stats;
         bool stallNotice=false;
@@ -161,10 +176,10 @@ void LogWriter::run() noexcept {
             }
             if (timeMs()>=nextStats) {
                 stats.rss_mb=processRssMb(); rssMb=stats.rss_mb; stats.free_mb=freeMb;
-                std::cout<<"camera_fps="<<stats.camera_fps<<" road_ms="<<stats.road_ms<<" yolo_ms=0 loop_p95_ms="
+                std::cout<<"camera_fps="<<stats.camera_fps<<" road_ms="<<stats.road_ms<<" yolo_ms="<<stats.yolo_ms<<" loop_p95_ms="
                          <<stats.loop_p95_ms<<" rss_mb="<<stats.rss_mb<<" dropped="<<dropped
                          <<" free_mb="<<stats.free_mb<<" csv_dropped="<<csvDropped
-                         <<" jpeg_fail="<<jpegFail<<" csv_fail="<<csvFail<<'\n'<<std::flush;
+                         <<" detections_dropped="<<detectionsDropped<<" jpeg_fail="<<jpegFail<<" csv_fail="<<csvFail<<'\n'<<std::flush;
                 trace_("record",std::to_string(recordEvery_.load())+" "+std::to_string(dropped.load())+" "+std::to_string(stats.free_mb));
                 nextStats=timeMs()+2000;
             }
@@ -173,14 +188,25 @@ void LogWriter::run() noexcept {
                 poll(nullptr,0,10); continue;
             }
             stallNotice=false;
-            std::string row; ModelResult image;
+            std::string row; ModelResult image; control::Detections batch;
             {
                 std::unique_lock<std::mutex> lock(mutex_);
-                if (csv_.empty() && images_.empty() && !quit_)
+                if (csv_.empty() && images_.empty() && detections_.empty() && !quit_)
                     available_.wait_for(lock,std::chrono::milliseconds(10));
                 if (!csv_.empty()) { row=std::move(csv_.front()); csv_.pop_front(); }
                 if (!images_.empty()) { image=std::move(images_.front()); images_.pop_front(); }
-                if (quit_ && row.empty() && image.mask.empty()) break;
+                if (!detections_.empty()) { batch=std::move(detections_.front()); detections_.pop_front(); }
+                if (quit_ && row.empty() && image.mask.empty() && !batch.frame_id) break;
+            }
+            if (batch.frame_id) {
+                try {
+                    std::ofstream f; f.exceptions(std::ios::badbit|std::ios::failbit);
+                    f.open(detectionsPath,std::ios::app); f<<std::setprecision(12);
+                    if (batch.items.empty()) f<<batch.frame_id<<','<<batch.captured_ms<<",,,,,,\n";
+                    for (const auto& d:batch.items) f<<batch.frame_id<<','<<batch.captured_ms<<','<<csvString(d.class_name)<<','
+                        <<d.confidence<<','<<d.box.x<<','<<d.box.y<<','<<double(d.box.x)+d.box.width<<','<<double(d.box.y)+d.box.height<<'\n';
+                    f.close();
+                } catch (...) { ++detectionsDropped; ++csvFail; }
             }
             if (!image.mask.empty() && imagesEnabled) {
                 const auto stem=std::to_string(image.frame.id);
@@ -208,7 +234,11 @@ void LogWriter::run() noexcept {
         }
     } catch (const std::exception& e) { std::cerr<<"Cảnh báo: ghi log: "<<e.what()<<'\n'; }
     catch (...) { std::cerr<<"Cảnh báo: ghi log thất bại\n"; }
-    finished=true;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        finished=true;
+        detectionsDropped+=detections_.size(); detections_.clear();
+    }
 }
 std::string scanJson(const control::ControlDebug& debug,const control::ControlParams& params,int width) {
     std::ostringstream out; out<<'[';
