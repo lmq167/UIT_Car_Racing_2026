@@ -11,7 +11,8 @@
 
 namespace auto_drive {
 struct Options {
-    std::string control, engine, info, outRoot, yoloEngine, yoloInfo;
+    std::string control, modelDir, engine, info, outRoot, yoloEngine, yoloInfo;
+    std::string unetOnnxSha256, yoloOnnxSha256;
     bool noYolo=false, help=false;
 };
 inline Options parse(int argc, char** argv) {
@@ -20,15 +21,12 @@ inline Options parse(int argc, char** argv) {
         const std::string key=argv[i];
         if (key=="--help") { o.help=true; continue; }
         if (key=="--no-yolo") { o.noYolo=true; continue; }
-        if (key!="--control" && key!="--engine" && key!="--info" && key!="--out-root" && key!="--yolo-engine" && key!="--yolo-info")
+        if (key!="--control" && key!="--model-dir" && key!="--out-root")
             throw std::runtime_error("Tham số không biết: "+key);
         if (++i>=argc || !*argv[i] || std::string(argv[i]).compare(0,2,"--")==0)
             throw std::runtime_error("Thiếu giá trị: "+key);
         if (key=="--control") o.control=argv[i];
-        else if (key=="--engine") o.engine=argv[i];
-        else if (key=="--info") o.info=argv[i];
-        else if (key=="--yolo-engine") o.yoloEngine=argv[i];
-        else if (key=="--yolo-info") o.yoloInfo=argv[i];
+        else if (key=="--model-dir") o.modelDir=argv[i];
         else o.outRoot=argv[i];
     }
     return o;
