@@ -14,6 +14,7 @@ struct Detection {
 };
 struct Detections {
     std::vector<Detection> items;
-    int64_t captured_ms=0;
+    int64_t captured_ms=-1;
+    uint64_t frame_id=0;
 };
 }

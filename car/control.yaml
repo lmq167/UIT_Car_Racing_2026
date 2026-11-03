@@ -25,3 +25,15 @@ lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
 regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
 record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
+start_wait_green: 1 # Chờ xanh khi xuất phát, 1
+vote_window: 5 # Cửa sổ bỏ phiếu, lô
+vote_min: 3 # Số phiếu tối thiểu, lô
+green_frames: 3 # Số lô xanh liên tiếp, lô
+red_conf_min: 0.5 # Tin cậy đỏ, 1
+green_conf_min: 0.5 # Tin cậy xanh, 1
+off_conf_min: 0.5 # Tin cậy tắt, 1
+red_box_min_area_frac: 0.0001 # Diện tích đỏ tối thiểu, W*H
+green_box_min_area_frac: 0.0001 # Diện tích xanh tối thiểu, W*H
+off_box_min_area_frac: 0.0001 # Diện tích tắt tối thiểu, W*H
+approach_cms: 5.0 # Tốc độ tiếp cận đỏ, cm/s
+red_stop_x_frac: 0.90 # Mép phải hộp đỏ để dừng, W

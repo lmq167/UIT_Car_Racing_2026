@@ -11,6 +11,7 @@ struct ControlInput {
     bool enabled=false;
     uint64_t epoch=0;
     std::shared_ptr<const control::ControlParams> params;
+    YoloResult yolo;
 };
 struct CommandStamped {
     control::Plan plan;
@@ -19,6 +20,7 @@ struct CommandStamped {
     uint64_t id=0, epoch=0;
     int64_t created_ms=-1, image_ms=-1;
     double loop_ms=0;
+    YoloResult yolo;
 };
 double percentile95(std::vector<double> samples) {
     if (samples.empty()) return 0;
@@ -43,21 +45,25 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
     if (imageMs>=0) out<<imageMs;
     out<<','<<go<<','<<stop<<",RIGHT,"<<state<<','
        <<(imageMs<0 ? -1 : now-imageMs)<<','
-       <<(model.frame.captured_ms<0 ? -1 : now-model.frame.captured_ms)<<",-1,"
+       <<(model.frame.captured_ms<0 ? -1 : now-model.frame.captured_ms)<<','
+       <<(command.yolo.detections.captured_ms<0 ? -1 : now-command.yolo.detections.captured_ms)<<','
        <<csvString(scanJson(command.plan.debug,params,model.mask.cols))<<','
        <<command.plan.debug.e<<','<<command.plan.debug.p<<','<<command.plan.debug.d<<','
        <<command.plan.cmd.deg<<','<<command.plan.cmd.cms<<','<<sentAngle<<','<<sentSpeed<<','
-       <<csvString(reason)<<','<<model.road_ms<<",0,"<<command.loop_ms<<','
+       <<csvString(reason)<<','<<model.road_ms<<','<<command.yolo.yolo_ms<<','<<command.loop_ms<<','
        <<writer.dropped<<','<<writer.csvDropped<<','<<stats.camera_fps<<','<<stats.loop_p95_ms
        <<','<<stats.rss_mb<<','<<writer.freeMb<<','<<command.id<<',';
     if (command.created_ms>=0) out<<command.created_ms;
-    out<<','<<model.frame.id<<'\n';
+    out<<','<<model.frame.id<<','<<command.yolo.detections.frame_id<<',';
+    if (command.yolo.detections.captured_ms>=0) out<<command.yolo.detections.captured_ms;
+    out<<','<<writer.detectionsDropped<<'\n';
     return out.str();
 }
 
 int driveAuto(const Options& options,const Paths& paths,int lockFd,
               std::shared_ptr<const control::ControlParams> params,const std::string& yaml,
-              const perception::InfoJson& info,std::unique_ptr<perception::IInferEngine>& engine) {
+              const perception::InfoJson& info,std::unique_ptr<perception::IInferEngine>& engine,
+              const perception::YoloInfo* yoloInfo,std::unique_ptr<perception::IInferEngine>& yoloEngine) {
     DriveMotor motor(kReverseMotor); DriveServo servo;
     terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
     std::unique_ptr<Camera> camera;
@@ -71,6 +77,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     std::atomic<uint64_t> frameCount{0};
     Mailbox<Frame> frames;
     Mailbox<ModelResult> models;
+    Mailbox<YoloResult> detections;
+    std::atomic<int> yoloEvery{params->yolo_every_n};
     Mailbox<ControlInput> inputs;
     Mailbox<CommandStamped> commands;
     std::thread cameraThread,modelThread,controllerThread;
@@ -83,6 +91,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
         // CUDA có thể tạo luồng nội bộ: nạp sau các fork, vẫn trước Motor::Init.
         engine.reset(new perception::TrtEngine(options.engine,&info));
+        if (yoloInfo) {
+            validateYoloEngine(options.yoloEngine,*yoloInfo);
+            yoloEngine.reset(new perception::TrtEngine(options.yoloEngine));
+        }
 #endif
         if (stopping) throw SignalStop{};
         InitSignalMask initMask;
@@ -117,7 +129,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         modelThread=std::thread([&] {
             try {
                 perception::RoadSegmenter segmenter(info);
-                uint64_t last=0;
+                uint64_t last=0,processed=0;
+                std::unique_ptr<perception::YoloDetector> detector;
+                if (yoloInfo) detector.reset(new perception::YoloDetector(*yoloInfo));
                 while (!quit) {
                     if (hooks.roadStall) { ::poll(nullptr,0,2); continue; }
                     Frame frame;
@@ -133,6 +147,26 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         const double ms=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
                         trace("mask",std::to_string(frame.id)+" "+std::to_string(frame.captured_ms));
                         models.offer(ModelResult{frame,mask,ms});
+                        if (detector && ++processed%yoloEvery.load()==0) {
+                            while (!quit && hooks.yoloStall) ::poll(nullptr,0,2);
+                            if (quit) break;
+                            try {
+                                if (hooks.yoloThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi YOLO");
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+                                static_cast<FakeYoloEngine&>(*yoloEngine).select(frame.id);
+#endif
+                                const auto yoloStart=Clock::now();
+                                const auto found=detector->Infer(frame.bgr,*yoloEngine);
+                                YoloResult result;
+                                result.detections.frame_id=frame.id; result.detections.captured_ms=frame.captured_ms;
+                                for (const auto& d:found) result.detections.items.push_back({d.class_name,d.box,d.confidence,frame.captured_ms});
+                                result.yolo_ms=std::chrono::duration<double,std::milli>(Clock::now()-yoloStart).count();
+                                if (detections.offer(result)) {
+                                    writer->offerDetections(result.detections);
+                                    trace("detections",std::to_string(frame.id)+" "+std::to_string(frame.captured_ms));
+                                }
+                            } catch (...) { trace("model_notice","yolo_throw"); }
+                        }
                     } catch (...) { trace("model_notice","road_throw"); }
                 }
             } catch (...) { trace("model_notice","road_worker_failed"); }
@@ -158,20 +192,23 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         control::PlannerInput pi;
                         pi.mask=input.model.mask; pi.mask_ms=input.model.frame.captured_ms;
                         pi.image_ms=input.image_ms;
+                        pi.detections=input.yolo.detections; pi.yolo_enabled=!options.noYolo;
                         if (epoch!=input.epoch) {
-                            planner.Reset(); epoch=input.epoch; goPending=input.enabled;
+                            planner.Reset(!options.noYolo); epoch=input.epoch; goPending=input.enabled;
                         }
                         pi.go=goPending && input.enabled;
                         pi.stop=!input.enabled;
                         const auto now=nowMs();
+                        if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
-                        if (plan.state==control::PlannerState::BAM_LAN || !input.enabled) goPending=false;
+                        if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
+                            plan.state==control::PlannerState::DUNG_DEN_DO || !input.enabled) goPending=false;
                         if (input.enabled && hooks.overridePending.load()) {
                             plan.cmd={hooks.overrideCms.load(),hooks.overrideDeg.load()};
                             hooks.overridePending=false;
                         }
                         const double loop=std::max(interval,std::chrono::duration<double,std::milli>(Clock::now()-start).count());
-                        CommandStamped command{plan,input.model,input.params,++id,epoch,now,input.image_ms,loop};
+                        CommandStamped command{plan,input.model,input.params,++id,epoch,now,input.image_ms,loop,input.yolo};
                         if (commands.offer(command)) trace("command",std::to_string(id)+" "+std::to_string(now));
                     } catch (...) { controllerFault=true; }
                     const auto target=start+std::chrono::milliseconds(input.params->control_period_ms+hooks.controlDelay.load());
@@ -193,6 +230,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         Statistics stats;
         std::deque<std::pair<int64_t,double>> timings;
         ModelResult model;
+        YoloResult yolo;
         CommandStamped command;
         while (!exit && !stopping) {
             const auto now=nowMs(); watchdog->heartbeat=now;
@@ -201,7 +239,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             const auto child=preview.pollChild();
             if (child==drive::PreviewChildStatus::Closed || child==drive::PreviewChildStatus::Died)
                 throw Failure(1,"Cửa sổ chính đã đóng/chết");
-            models.latest(model); commands.latest(command);
+            models.latest(model); detections.latest(yolo); commands.latest(command);
             const auto image=imageMs.load();
             if (cameraError) throw Failure(1,"Camera đã lỗi");
             if (now-boot>kFrameTimeoutMs && (image<0 || model.mask.empty() || !preview.wasShown()))
@@ -233,14 +271,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             // Toàn bộ bộ tham số bất biến được thay một lần sau khi kiểm đủ.
                             std::ostringstream table;
                             auto replacement=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,table));
-                            params=replacement; every=params->record_every_n; ++epoch;
+                            if (yoloInfo && yoloInfo->conf_threshold>float(std::min({replacement->red_conf_min,replacement->green_conf_min,replacement->off_conf_min})))
+                                throw std::runtime_error("conf_threshold YOLO cao hơn conf_min đèn");
+                            params=replacement; every=params->record_every_n; yoloEvery=params->yolo_every_n; ++epoch;
                             std::cout<<table.str()<<std::flush; trace("reload","accepted");
                         } catch (...) { trace("reload","error"); }
                     }
                 }
             }
             if (exit || stopping) break;
-            inputs.offer(ControlInput{model,image,enabled,epoch,params});
+            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo});
             double speed=0; int angle=0;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
@@ -316,7 +356,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             if (now>=nextStats) {
                 const auto count=frameCount.load();
                 stats.camera_fps=double(count-lastFrames)*1000/std::max<int64_t>(1,now-statsStart);
-                stats.road_ms=model.road_ms; stats.free_mb=writer->freeMb; stats.rss_mb=writer->rssMb;
+                stats.road_ms=model.road_ms; stats.yolo_ms=yolo.yolo_ms; stats.free_mb=writer->freeMb; stats.rss_mb=writer->rssMb;
                 lastFrames=count; statsStart=now; nextStats=now+2000;
                 writer->offerStatistics(stats,every);
             }
@@ -368,11 +408,10 @@ int main(int argc,char** argv) {
     try { options=parse(argc,argv); }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
     if (options.help) {
-        std::cout<<"ucr_auto --control control.yaml --engine road.engine --info road_info.json --no-yolo [--out-root runs_auto]\n"
+        std::cout<<"ucr_auto --control control.yaml --engine road.engine --info road_info.json [--no-yolo | --yolo-engine yolo.engine --yolo-info yolo_info.json] [--out-root runs_auto]\n"
                  <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
         return 0;
     }
-    if (!options.noYolo) { std::cerr<<"YOLO chưa hỗ trợ, dùng --no-yolo\n"; return 2; }
     struct sigaction action{}; action.sa_handler=signalStop; sigemptyset(&action.sa_mask);
     for (int s:{SIGINT,SIGTERM,SIGHUP,SIGQUIT,SIGTSTP}) if (sigaction(s,&action,nullptr)!=0) return 1;
     signal(SIGPIPE,SIG_IGN);
@@ -391,7 +430,30 @@ int main(int argc,char** argv) {
 #else
         const perception::InfoJson info(options.info);
 #endif
-        std::unique_ptr<perception::IInferEngine> engine;
+        std::unique_ptr<perception::IInferEngine> engine,yoloEngine;
+        std::unique_ptr<perception::YoloInfo> yoloInfo;
+        if (!options.noYolo) {
+            if (options.yoloInfo.empty()) throw Failure(2,"Thiếu --yolo-info");
+            options.yoloInfo=absolutePath(options.yoloInfo);
+            yoloInfo.reset(new perception::YoloInfo(options.yoloInfo));
+            if (yoloInfo->conf_threshold>float(std::min({params->red_conf_min,params->green_conf_min,params->off_conf_min})))
+                throw Failure(2,"conf_threshold YOLO cao hơn conf_min đèn");
+            if (options.yoloEngine.empty()) throw Failure(2,"Thiếu --yolo-engine");
+            options.yoloEngine=absolutePath(options.yoloEngine);
+            struct stat yoloStat{};
+            if (stat(options.yoloEngine.c_str(),&yoloStat)!=0 || !S_ISREG(yoloStat.st_mode) || yoloStat.st_size<=0)
+                throw Failure(1,"Không tìm thấy engine YOLO");
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+            for (const char* key:{"UCR_AUTO_MODEL_LOAD_FAIL","UCR_AUTO_FAKE_MODEL_LOAD_FAIL"}) {
+                const char* fail=std::getenv(key);
+                if (fail && std::string(fail)=="yolo") throw Failure(1,"Không nạp được engine YOLO");
+            }
+            const char* tensors=std::getenv("UCR_AUTO_FAKE_YOLO_TENSORS");
+            if (!tensors) throw Failure(1,"Thiếu UCR_AUTO_FAKE_YOLO_TENSORS");
+            options.yoloEngine.clear();
+            yoloEngine.reset(new FakeYoloEngine(absolutePath(tensors),*yoloInfo));
+#endif
+        }
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
         if (const char* fail=std::getenv("UCR_AUTO_FAKE_MODEL_LOAD_FAIL")) {
             if (std::string(fail)=="road") throw Failure(1,"Không nạp được engine đường");
@@ -409,7 +471,7 @@ int main(int argc,char** argv) {
         std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=10 cm/s, người giám sát đứng sát xe\n"<<std::flush;
         if (!externalStop(paths)) { warning(); return 1; }
         int code=0;
-        if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine);
+        if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine,yoloInfo.get(),yoloEngine);
         if (!externalStop(paths)) { warning(); if (!code) code=1; }
         return code;
     } catch (const Failure& e) { std::cerr<<e.what()<<'\n'; return e.code; }

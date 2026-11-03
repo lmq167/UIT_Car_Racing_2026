@@ -42,3 +42,8 @@ endif()
 ")
 add_test(NAME control_replay COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/replay_test_$<CONFIG>.cmake)
 set_tests_properties(control_params control_lane control_replay PROPERTIES LABELS "control" TIMEOUT 60)
+
+add_executable(test_planner test_planner.cpp)
+target_link_libraries(test_planner PRIVATE ucr_control)
+add_test(NAME control_planner COMMAND test_planner)
+set_tests_properties(control_planner PROPERTIES LABELS "control" TIMEOUT 15)

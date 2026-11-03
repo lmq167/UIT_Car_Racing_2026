@@ -29,9 +29,13 @@ void pollHooks(int64_t now, const std::function<void(const char*,const std::stri
         else if (cmd=="road_stall") hooks.roadStall=true;
         else if (cmd=="road_resume") hooks.roadStall=false;
         else if (cmd=="road_throw") hooks.roadThrow=true;
+        else if (cmd=="yolo_stall") hooks.yoloStall=true;
+        else if (cmd=="yolo_resume") hooks.yoloStall=false;
+        else if (cmd=="yolo_throw") hooks.yoloThrow=true;
+        else if (cmd=="planner_throw") hooks.plannerThrow=true;
         else if (cmd=="controller_stall") hooks.controllerStall=true;
         else if (cmd=="controller_resume") hooks.controllerStall=false;
-        else if (cmd=="controller_throw" || cmd=="planner_throw") hooks.controllerThrow=true;
+        else if (cmd=="controller_throw") hooks.controllerThrow=true;
         else if (cmd=="writer_stall") hooks.writerStall=true;
         else if (cmd=="writer_resume") hooks.writerStall=false;
         else if (cmd=="jpeg_fail") hooks.jpegFail=true;

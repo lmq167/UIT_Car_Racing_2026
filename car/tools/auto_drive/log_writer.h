@@ -7,15 +7,17 @@
 
 namespace auto_drive {
 struct Statistics {
-    double camera_fps=0, road_ms=0, loop_p95_ms=0, rss_mb=0, free_mb=0;
+    double camera_fps=0, road_ms=0, yolo_ms=0, loop_p95_ms=0, rss_mb=0, free_mb=0;
 };
 class LogWriter {
-    std::string root_, yaml_, info_, engine_;
+    std::string root_, yaml_, info_, engine_, yoloInfo_, yoloEngine_;
+    bool yoloEnabled_;
     std::function<void(const char*,const std::string&)> trace_;
     std::mutex mutex_;
     std::condition_variable available_;
     std::deque<ModelResult> images_;
     std::deque<std::string> csv_;
+    std::deque<control::Detections> detections_;
     std::atomic<bool> quit_{false};
     Mailbox<Statistics> statistics_;
     std::atomic<int> recordEvery_{5};
@@ -25,11 +27,12 @@ class LogWriter {
 public:
     std::string folder;
     std::atomic<bool> ready{false}, finished{false}, imagesEnabled{true};
-    std::atomic<uint64_t> dropped{0}, csvDropped{0}, jpegFail{0}, csvFail{0};
+    std::atomic<uint64_t> dropped{0}, csvDropped{0}, detectionsDropped{0}, jpegFail{0}, csvFail{0};
     std::atomic<double> freeMb{0}, rssMb{0};
     LogWriter(const Options&, const std::string& yaml,
               std::function<void(const char*,const std::string&)> trace);
     bool tryImage(const ModelResult& image) noexcept;
+    void offerDetections(const control::Detections&) noexcept;
     void offerControl(const std::string& row) noexcept;
     void offerStatistics(const Statistics&, int every, bool p95=false);
     void requestStop() noexcept;

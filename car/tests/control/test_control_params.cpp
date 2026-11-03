@@ -76,6 +76,29 @@ int main(int argc, char **argv) {
         load(raw,true);
         Check(control::ControlParams::FileHash(temporary)!=rawHash,"FNV phải phân biệt byte tiêu đề gốc");
         for(const auto &item:std::vector<std::pair<std::string,std::string>>{
+            {"start_wait_green: 2\n","start_wait_green"},
+            {"start_wait_green: 0.5\n","start_wait_green"},
+            {"vote_window: 0\n","vote_window"},
+            {"vote_window: 31\n","vote_window"},
+            {"vote_min: 6\n","vote_min"},
+            {"green_frames: 6\n","green_frames"},
+            {"approach_cms: 11\n","approach_cms"},
+            {"red_stop_x_frac: 1.01\n","red_stop_x_frac"},
+            {"red_conf_min: -0.01\n","red_conf_min"},
+            {"red_conf_min: 1.01\n","red_conf_min"},
+            {"red_conf_min: \"0.5\"\n","red_conf_min"},
+            {"red_box_min_area_frac: -0.1\n","red_box_min_area_frac"},
+            {"red_box_min_area_frac: 1.1\n","red_box_min_area_frac"},
+            {"green_conf_min: -0.01\n","green_conf_min"},
+            {"green_conf_min: 1.01\n","green_conf_min"},
+            {"green_conf_min: \"0.5\"\n","green_conf_min"},
+            {"green_box_min_area_frac: -0.1\n","green_box_min_area_frac"},
+            {"green_box_min_area_frac: 1.1\n","green_box_min_area_frac"},
+            {"off_conf_min: -0.01\n","off_conf_min"},
+            {"off_conf_min: 1.01\n","off_conf_min"},
+            {"off_conf_min: \"0.5\"\n","off_conf_min"},
+            {"off_box_min_area_frac: -0.1\n","off_box_min_area_frac"},
+            {"off_box_min_area_frac: 1.1\n","off_box_min_area_frac"},
             {"unknown: 1\n","unknown"}, {"lane_width_px: [100]\n","lane_width_px"},
             {"kp: .Nan\n","kp"}, {"kd: .Inf\n","kd"}, {"kp: -1\n","kp"},
             {"steer_max_deg: 41\n","steer_max_deg"}, {"max_speed_cms: 11\n","max_speed_cms"},
@@ -96,6 +119,8 @@ int main(int argc, char **argv) {
         Reject([&] { invalid.Validate(); },"kp");
         invalid=defaults; invalid.row_weights={1e308,1e308,0};
         Reject([&] { invalid.Validate(); },"row_weights");
+        const auto zeroSpeed=load("max_speed_cms: 0\ncruise_cms: 0\nmin_cms: 0\nlost_cms: 0\napproach_cms: 5\n");
+        Check(zeroSpeed.max_speed_cms==0 && zeroSpeed.approach_cms==5,"Trần tốc độ 0 vẫn nạp được approach_cms 5");
         const auto one=load("scan_rows: [0.5]\nrow_weights: [2]\nlane_width_frac: [1]\nmin_valid_rows: 1\n");
         Check(one.scan_rows.size()==1 && one.row_weights[0]==2,"Trọng số không cần chuẩn hóa hoặc <= 1");
         { std::ofstream out(temporary,std::ios::binary); out << "hello"; }

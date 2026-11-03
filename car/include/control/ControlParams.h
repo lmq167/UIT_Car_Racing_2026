@@ -13,6 +13,10 @@ struct ControlParams {
     double lane_width_min_ratio, lane_width_max_ratio, center_offset_frac;
     int min_valid_rows, lost_hold_ms, lost_stop_ms, regain_frames;
     int record_every_n, yolo_every_n;
+    int start_wait_green, vote_window, vote_min, green_frames;
+    double red_conf_min, green_conf_min, off_conf_min;
+    double red_box_min_area_frac, green_box_min_area_frac, off_box_min_area_frac;
+    double approach_cms, red_stop_x_frac;
 
     static ControlParams Load(const std::string &path, std::ostream &report);
     void Validate() const;

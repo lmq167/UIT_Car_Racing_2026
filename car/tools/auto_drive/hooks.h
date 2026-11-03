@@ -12,6 +12,7 @@
 namespace auto_drive {
 struct HookState {
     std::atomic<bool> cameraStall{false}, roadStall{false}, roadThrow{false};
+    std::atomic<bool> yoloStall{false}, yoloThrow{false}, plannerThrow{false};
     std::atomic<bool> controllerStall{false}, controllerThrow{false};
     std::atomic<bool> writerStall{false}, jpegFail{false}, csvFail{false};
     std::atomic<bool> overridePending{false};
