@@ -12,7 +12,7 @@
 namespace auto_drive {
 struct Options {
     std::string control, engine, info, outRoot;
-    bool noYolo=false, help=false;
+    bool noYolo=false, help=false, debugWindows=false;
 };
 inline Options parse(int argc, char** argv) {
     Options o;
@@ -20,6 +20,7 @@ inline Options parse(int argc, char** argv) {
         const std::string key=argv[i];
         if (key=="--help") { o.help=true; continue; }
         if (key=="--no-yolo") { o.noYolo=true; continue; }
+        if (key=="--debug-windows") { o.debugWindows=true; continue; }
         if (key!="--control" && key!="--engine" && key!="--info" && key!="--out-root")
             throw std::runtime_error("Tham số không biết: "+key);
         if (++i>=argc || !*argv[i] || std::string(argv[i]).compare(0,2,"--")==0)

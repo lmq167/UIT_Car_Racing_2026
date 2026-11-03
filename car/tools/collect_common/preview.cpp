@@ -1,4 +1,5 @@
 #include "preview.h"
+#include "debug_view.h"
 #if defined(UCR_AUTO_PREVIEW)
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
 #define UCR_DRIVE_TEST_HOOKS 1
@@ -22,6 +23,7 @@
 #include <fcntl.h>
 #include <new>
 #include <limits>
+#include <memory>
 #include <poll.h>
 #include <pthread.h>
 #include <sstream>
@@ -192,6 +194,10 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
     try {
         const char* window = "UCR Drive Collect";
         cv::namedWindow(window, cv::WINDOW_AUTOSIZE);
+        const bool debug_on = shared.debug_windows.load(std::memory_order_acquire) != 0;
+        const char* mask_window = "UCR Mask";
+        std::unique_ptr<PreviewDebug> debug(debug_on ? new PreviewDebug() : nullptr);
+        if (debug_on) cv::namedWindow(mask_window, cv::WINDOW_AUTOSIZE);
         shared.ready.store(1, std::memory_order_release);
         PreviewFrame frame;
         PreviewState state{};
@@ -232,6 +238,14 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
                 if (state.recording_rejected)
                     cv::putText(display, "DUNG XE TRUOC KHI BAM P", cv::Point(8, 68),
                                 cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(0, 0, 255), 2);
+                if (debug_on) {
+                    // Vẽ gỡ lỗi chỉ ở con; lỗi vẽ không được làm chết cửa sổ chính.
+                    try {
+                        shared.debug.read(*debug);
+                        drawDebugOverlay(display, *debug, state, frame.captured_ms);
+                        cv::imshow(mask_window, renderDebugMask(*debug));
+                    } catch (...) {}
+                }
                 cv::imshow(window, display);
                 shared.shown.store(1, std::memory_order_release);
                 next_redraw = Clock::now() + std::chrono::milliseconds(100);
@@ -239,6 +253,7 @@ int runPreviewChild(PreviewShared& shared, int key_fd) {
             ::poll(nullptr, 0, 2);
         }
         cv::destroyWindow(window);
+        if (debug_on) cv::destroyWindow(mask_window);
         return 0;
     } catch (...) { return 11; }
 #else
@@ -280,6 +295,7 @@ PreviewStartResult PreviewHost::start() {
     if (memory == MAP_FAILED) { unavailable("không tạo được bộ nhớ preview"); return PreviewStartResult::Unavailable; }
     shared_ = new (memory) PreviewShared;
     shared_->state.write(PreviewState{});
+    shared_->debug_windows.store(options_.debug_windows ? 1 : 0, std::memory_order_release);
     int pipe_fd[2];
     if (pipe2(pipe_fd, O_NONBLOCK | O_CLOEXEC) != 0) {
         shutdown(); unavailable("không tạo được ống phím preview"); return PreviewStartResult::Unavailable;
@@ -340,6 +356,9 @@ bool PreviewHost::publishFrame(const cv::Mat& bgr, int64_t captured_ms) {
 }
 void PreviewHost::publishState(const PreviewState& state) noexcept {
     if (shared_) shared_->state.write(state);
+}
+void PreviewHost::publishDebug(const PreviewDebug& debug) noexcept {
+    if (shared_ && options_.debug_windows) shared_->debug.write(debug);
 }
 void PreviewHost::feed() {
     try {

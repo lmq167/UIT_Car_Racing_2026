@@ -20,6 +20,7 @@ struct PreviewOptions {
     bool require_preview = false;
     double preview_scale = 0.5;
     int preview_fps = 10;
+    bool debug_windows = false; // Chỉ ucr_auto: bật thêm cửa sổ mask và lớp phủ gỡ lỗi (--debug-windows).
 };
 enum class PreviewOptionResult { Unhandled, Parsed, Error };
 inline bool validatePreviewOptions(const PreviewOptions& options, std::string& error) {
@@ -149,6 +150,32 @@ private:
     double last_value_ = 0;
 };
 
+// Dữ liệu gỡ lỗi của ucr_auto: vòng điều khiển chỉ ghi (không chờ), con preview chỉ đọc và vẽ.
+constexpr int kDebugMaxRows = 5, kDebugMaxLines = 8, kDebugMaxBoxes = 8, kDebugMaskBytes = 32768;
+struct PreviewDebugRow {
+    int32_t y = 0, nlines = 0;
+    float lines[kDebugMaxLines] = {};
+    float left = -1, right = -1, center = -1;
+    uint8_t valid = 0;
+};
+struct PreviewDebugBox { // Khung YOLO theo điểm ảnh của khung nguồn (P2 sẽ điền).
+    int32_t x = 0, y = 0, w = 0, h = 0;
+    float confidence = 0;
+    char label[16] = {};
+};
+struct PreviewDebug {
+    int64_t mask_ms = -1;
+    uint64_t frame_id = 0;
+    int32_t mask_w = 0, mask_h = 0;
+    int32_t src_w = 0, src_h = 0, crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
+    int32_t nrows = 0, valid_rows = 0, nboxes = 0;
+    float ref_x = 0, e = 0, p = 0, d = 0, angle_deg = 0, speed_cms = 0;
+    char state[24] = {}, reason[64] = {};
+    PreviewDebugRow rows[kDebugMaxRows];
+    PreviewDebugBox boxes[kDebugMaxBoxes];
+    uint8_t mask[kDebugMaskBytes];
+};
+
 // Seqlock (khóa bằng số thứ tự): một bên ghi, bên đọc thử đúng một lần.
 // Từng byte nguyên tử tránh tranh chấp dữ liệu C++ khi số thứ tự đang lẻ.
 template <class T> struct PreviewSlot {
@@ -190,6 +217,8 @@ struct PreviewShared {
     unsigned char pixels[kPreviewMaxBytes];
     PreviewSlot<PreviewState> state;
     PreviewSlot<PreviewMonitor> monitor;
+    PreviewSlot<PreviewDebug> debug;
+    std::atomic<uint32_t> debug_windows{0};
     std::atomic<uint32_t> ready{0}, shown{0}, stop{0};
     std::atomic<uint32_t> window_warning{0};
     std::atomic<uint32_t> window_closed{0};
@@ -223,6 +252,8 @@ public:
     bool publishFrame(const cv::Mat& bgr, int64_t captured_ms);
     // Một nguồn trạng thái ở vòng điều khiển, độc lập với bên ghi ảnh.
     void publishState(const PreviewState& state) noexcept;
+    // Như publishState: không chờ, ghi đè bản cũ; chỉ có tác dụng khi bật debug_windows.
+    void publishDebug(const PreviewDebug& debug) noexcept;
     std::string pollKeys(); // Tối đa 64 byte; E = Esc, 3 = Ctrl+C.
     void discardKeys() noexcept;
     PreviewChildStatus pollChild() noexcept;

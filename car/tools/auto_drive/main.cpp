@@ -1,6 +1,7 @@
 #include "vehicle_runtime.h"
 #include "model_worker.h"
 #include "log_writer.h"
+#include "debug_fill.h"
 #include "control/Planner.h"
 
 namespace auto_drive { HookState hooks; }
@@ -61,7 +62,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     DriveMotor motor(kReverseMotor); DriveServo servo;
     terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
     std::unique_ptr<Camera> camera;
-    drive::PreviewHost preview;
+    drive::PreviewOptions previewOptions;
+    previewOptions.debug_windows=options.debugWindows;
+    drive::PreviewHost preview(previewOptions);
     std::unique_ptr<Watchdog> watchdog;
     std::unique_ptr<LogWriter> writer;
     std::atomic<bool> quit{false},cameraDone{true},modelDone{true},controllerDone{true};
@@ -200,6 +203,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         std::deque<std::pair<int64_t,double>> timings;
         ModelResult model;
         CommandStamped command;
+        // --debug-windows: bộ đệm cấp một lần; vòng này chỉ chép sang bộ nhớ chung, vẽ ở tiến trình preview.
+        std::unique_ptr<drive::PreviewDebug> debugData;
+        if (options.debugWindows) debugData.reset(new drive::PreviewDebug());
+        uint64_t debugFrame=0,debugCommand=0;
         while (!exit && !stopping) {
             const auto now=nowMs(); watchdog->heartbeat=now;
             try { pollHooks(now,trace); }
@@ -331,6 +338,20 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             ps.cmd_speed=speed; ps.cmd_steer=angle; ps.frame_age_ms=image<0 ? -1 : now-image;
             ps.images=frameCount; ps.recording=writer->imagesEnabled;
             preview.publishState(ps);
+            if (debugData) {
+                const bool withRows=command.params && !command.plan.debug.rows.empty();
+                const auto& shown=withRows ? command.model : model;
+                if (!shown.mask.empty() && (shown.frame.id!=debugFrame || command.id!=debugCommand)) {
+                    debugFrame=shown.frame.id; debugCommand=command.id;
+                    auto fill=[&](const control::ControlDebug* plan,double offset) {
+                        fillPreviewDebug(*debugData,shown.mask,shown.frame.captured_ms,shown.frame.id,plan,offset,info.source,info.crop);
+                        preview.publishDebug(*debugData);
+                    };
+                    if (withRows) fill(&command.plan.debug,command.params->center_offset_frac);
+                    else fill(nullptr,params->center_offset_frac);
+                    trace("debug",std::to_string(shown.frame.id)+" "+std::to_string(debugData->nrows));
+                }
+            }
             ::poll(nullptr,0,kPollMs);
         }
     } catch (const SignalStop&) {}
