@@ -463,7 +463,18 @@ def read_png(data):
 def check_gitignore():
     # T47m LOW-1: bản rsync không có kho Git; cô lập exclude cá nhân trong kho tạm.
     git = shutil.which('git')
-    need(git is not None, 'Không tìm được lệnh git', 'environment')
+    if git is None:
+        ignored = False
+        for line in (HERE.parents[1] / '.gitignore').read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line.startswith('#'):
+                continue
+            if line in ('runs_auto/', '/runs_auto/', 'runs_auto'):
+                ignored = True
+            elif line.startswith('!runs_auto'):
+                ignored = False
+        need(ignored, 'runs_auto chưa được bỏ qua trong ucr_car/.gitignore', 'gitignore')
+        return
     with tempfile.TemporaryDirectory(prefix='ucr-t47-gitignore-') as tmp:
         repo_root = Path(tmp)
         env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', HOME=tmp)
@@ -651,13 +662,22 @@ def test_case(case, cfg, root):
             with running(cfg, root / str(low), values=values) as r:
                 r.boot(); r.go()
                 for sign in (1, -1):
-                    ev = r.inject('controller_command {} {}'.format(sign * 50, sign * 90))
                     def sent():
                         es = [e for e in r.events() if e[0] >= ev[0] and not e[3]]
                         return (any(e[1] == 'motor_speed' and e[2] == sign * 10 for e in es) and
                                 any(e[1] == 'servo_angle' and e[2] == sign * 40 for e in es))
-                    r.wait(sent, message='Không gửi đúng biên kẹp từ lệnh tiêm', tag='hard_cap')
-                    r.wait(lambda: any(float(row['requested_speed_cms']) == sign * 50 and
+                    # Lệnh tiêm một nhịp có thể bị nhịp thường ghi đè trước vòng an toàn.
+                    for attempt in range(5):
+                        ev = r.inject('controller_command {} {}'.format(sign * 50, sign * 90))
+                        try:
+                            r.wait(sent, 2, message='Không gửi đúng biên kẹp từ lệnh tiêm', tag='hard_cap')
+                        except Failure as error:
+                            if error.tag != 'hard_cap' or r.process.poll() is not None or attempt == 4:
+                                raise
+                        else:
+                            break
+                    r.wait(lambda: any(float(row['t_ms']) >= ev[0] and
+                                       float(row['requested_speed_cms']) == sign * 50 and
                                        float(row['requested_steer_deg']) == sign * 90 and
                                        float(row['sent_speed_cms']) == sign * 10 and
                                        float(row['sent_steer_deg']) == sign * 40 for row in r.rows()),
@@ -932,6 +952,19 @@ def test_case(case, cfg, root):
 
 def selftest():
     from unittest.mock import patch
+    with tempfile.TemporaryDirectory(prefix='ucr-t47-ignore-selftest-') as tmp:
+        here = Path(tmp) / 'tools' / 'auto_drive'
+        with patch.dict(globals(), HERE=here), patch.object(shutil, 'which', return_value=None):
+            for text, expected in (('  runs_auto/  \n', True), ('/runs_auto/\n', True),
+                                   ('runs_auto\n', True), ('# runs_auto/\n', False),
+                                   ('runs_auto/\n !runs_auto/keep\n', False)):
+                (Path(tmp) / '.gitignore').write_text(text, encoding='utf-8')
+                try:
+                    check_gitignore()
+                except Failure as error:
+                    assert not expected and error.tag == 'gitignore'
+                else:
+                    assert expected
     with patch.object(td, 'now_ms', return_value=11975221.6):
         stamp = external_stamp_ms()
     assert stamp == 11975221
@@ -961,7 +994,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: 4 vết tổng hợp, bắt M7 và mốc cùng ms')
+        print('PASS selftest: 5 mẫu gitignore, 4 vết tổng hợp, bắt M7 và mốc cùng ms')
         return
     if cfg.case == 'gitignore':
         check_gitignore()
