@@ -27,3 +27,10 @@ endforeach()
 add_test(NAME auto_runs_gitignore
     COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_auto_drive.py" --case gitignore)
 set_tests_properties(auto_runs_gitignore PROPERTIES TIMEOUT 30)
+
+foreach(_auto_preview_case P01 P02)
+    add_test(NAME acc_auto_preview_${_auto_preview_case}
+        COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_auto_preview.py"
+        --case "${_auto_preview_case}" --hooks "${UCR_AUTO_HOOKS_BINARY}" --slack "${_auto_slack}")
+    set_tests_properties(acc_auto_preview_${_auto_preview_case} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
+endforeach()
