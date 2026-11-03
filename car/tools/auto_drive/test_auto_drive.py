@@ -461,19 +461,23 @@ def read_png(data):
 
 
 def check_gitignore():
-    # T47m LOW-1: kiểm quy tắc của kho, không nhận nhầm exclude cá nhân.
-    car_root = HERE.parents[1]
-    result = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=str(car_root),
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
-    need(result.returncode == 0, 'Không tìm được kho Git: ' + result.stderr, 'environment')
-    repo_root = Path(result.stdout.strip()).resolve()
-    probe = (car_root / 'runs_auto' / 'T47m' / 'session.json').relative_to(repo_root).as_posix()
-    result = subprocess.run(['git', 'check-ignore', '--no-index', '--verbose', '--', probe], cwd=str(repo_root),
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
-    need(result.returncode == 0, 'runs_auto chưa được bỏ qua: ' + result.stderr, 'gitignore')
-    source, _, pattern = result.stdout.split('\t', 1)[0].rsplit(':', 2)
-    need((repo_root / source).resolve() == car_root / '.gitignore' and not pattern.startswith('!'),
-         'Quy tắc phải bỏ qua đường dẫn và thuộc ucr_car/.gitignore: ' + result.stdout, 'gitignore')
+    # T47m LOW-1: bản rsync không có kho Git; cô lập exclude cá nhân trong kho tạm.
+    git = shutil.which('git')
+    need(git is not None, 'Không tìm được lệnh git', 'environment')
+    with tempfile.TemporaryDirectory(prefix='ucr-t47-gitignore-') as tmp:
+        repo_root = Path(tmp)
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', HOME=tmp)
+        result = subprocess.run([git, 'init', '-q'], cwd=tmp, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+        need(result.returncode == 0, 'Không tạo được kho Git tạm: ' + result.stderr, 'environment')
+        shutil.copy2(str(HERE.parents[1] / '.gitignore'), str(repo_root / '.gitignore'))
+        result = subprocess.run([git, '-c', 'core.excludesFile=/dev/null', 'check-ignore',
+                                 '--no-index', '--verbose', '--', 'runs_auto/T47m/session.json'], cwd=tmp, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+        need(result.returncode == 0, 'runs_auto chưa được bỏ qua: ' + result.stderr, 'gitignore')
+        source, _, pattern = result.stdout.split('\t', 1)[0].rsplit(':', 2)
+        need((repo_root / source).resolve() == (repo_root / '.gitignore').resolve() and not pattern.startswith('!'),
+             'Quy tắc phải bỏ qua đường dẫn và thuộc bản chép ucr_car/.gitignore: ' + result.stdout, 'gitignore')
 
 
 def test_case(case, cfg, root):
