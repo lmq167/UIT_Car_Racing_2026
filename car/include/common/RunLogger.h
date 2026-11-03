@@ -30,6 +30,5 @@ private:
     bool done_=false;
     std::atomic<bool> failed_{false};
     std::uint64_t last_saved_=0;
-    bool collect_=false;
 };
 }

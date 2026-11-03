@@ -19,7 +19,7 @@ void MakeDirs(const std::string &path) {
     }
 }
 }
-RunLogger::RunLogger(const Config &c,const std::string &source,const std::string &mode):c_(c),collect_(mode=="collect") {
+RunLogger::RunLogger(const Config &c,const std::string &source,const std::string &mode):c_(c) {
     std::time_t now=std::time(nullptr); std::tm tm{}; localtime_r(&now,&tm);
     std::ostringstream name; name << std::put_time(&tm,"%Y%m%d_%H%M%S") << '_' << mode;
     MakeDirs(c.log_dir); directory_=c.log_dir+"/"+name.str();
@@ -57,7 +57,7 @@ void RunLogger::Record(const Snapshot &s) {
     for(const auto &t:o.tof) csv_ << ',' << std::chrono::duration<double,std::milli>(now-t.updatedAt).count();
     csv_ << '\n'; csv_.flush();
     if(!csv_) throw std::runtime_error("Loi ghi CSV");
-    if(!collect_ && o.frame_id && o.frame_id!=last_saved_ && o.frame_id%c_.image_every_n==0 && !o.frame.empty()) {
+    if(o.frame_id && o.frame_id!=last_saved_ && o.frame_id%c_.image_every_n==0 && !o.frame.empty()) {
         std::lock_guard<std::mutex> lock(mutex_);
         if(queue_.size()<static_cast<std::size_t>(c_.image_queue_size)) queue_.emplace_back(o.frame_id,o.frame);
         last_saved_=o.frame_id;
