@@ -252,6 +252,11 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (reason!="SPACE") reason="CHO_G";
             } else if (!maskFresh || !commandMaskFresh) { state="BAM_LAN"; reason="MAT_NAN_CU"; }
             else if (!commandFresh) { state="BAM_LAN"; reason="LENH_CU"; }
+            else if (command.plan.state==control::PlannerState::DUNG && command.plan.reason=="MAT_ANH") {
+                // Hai đồng hồ kiểm 500 ms có thể lệch nhau, nên phải chốt cả mất ảnh do Planner báo.
+                enabled=false; latch="MAT_ANH"; ++epoch; eventStop=true; forceLog=true;
+                state="DUNG"; reason=latch;
+            }
             else {
                 state=command.plan.debug.state; reason=command.plan.reason;
                 speed=command.plan.cmd.cms;
