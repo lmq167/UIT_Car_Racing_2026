@@ -1,4 +1,5 @@
 #include "perception/RoadSegmenter.h"
+#include "InputCompare.h"
 #include <opencv2/imgcodecs.hpp>
 #include <algorithm>
 #include <cmath>
@@ -58,12 +59,19 @@ std::vector<float> ReadNpy(const fs::path &path, const perception::InfoJson &inf
 
 std::map<std::string,std::string> Options(int argc, char **argv) {
     std::map<std::string,std::string> options;
-    for(int i=1;i<argc;i+=2) {
+    for(int i=1;i<argc;) {
         const std::string key=argv[i];
+        if(key=="--raw-input") {
+            if(!options.emplace(key,"").second)
+                throw std::runtime_error("Tham số lặp: "+key);
+            ++i;
+            continue;
+        }
         if((key!="--engine" && key!="--info" && key!="--ref") || i+1==argc ||
            std::string(argv[i+1]).empty() || std::string(argv[i+1]).find("--")==0 ||
            !options.emplace(key,argv[i+1]).second)
             throw std::runtime_error("Tham số không hợp lệ: "+key);
+        i+=2;
     }
     for(const char *key:{"--engine","--info","--ref"})
         if(!options.count(key)) throw std::runtime_error(std::string("Thiếu tham số ")+key);
@@ -74,6 +82,7 @@ std::map<std::string,std::string> Options(int argc, char **argv) {
 int main(int argc, char **argv) {
     try {
         const auto options=Options(argc,argv);
+        const bool raw_input=options.count("--raw-input")!=0;
         const perception::InfoJson info(options.at("--info"));
         perception::RoadSegmenter road(info);
         perception::TrtEngine engine(options.at("--engine"),&info);
@@ -105,19 +114,25 @@ int main(int argc, char **argv) {
         const auto masks=ref/"engine_masks";
         fs::create_directories(masks);
         bool passed=true;
-        std::cout << "anh\tinput_max_abs\targmax_match\tline_iou\tlogits_max_abs\tket_qua\n";
+        std::cout << "anh\tinput_max_abs\targmax_match\tline_iou\tlogits_max_abs\tket_qua"
+                     "\tinput_max_levels\tinput_diff_gt0\tinput_diff_gt1\n";
         for(size_t index=0;index<images.size();++index) {
             std::ostringstream stem;
             stem<<std::setw(3)<<std::setfill('0')<<index;
             const auto input_ref=ReadNpy(ref/(stem.str()+"_input.npy"),info);
             const auto logits_ref=ReadNpy(ref/(stem.str()+"_logits.npy"),info);
-            const auto image=cv::imread((ref/images[index]).string(),cv::IMREAD_COLOR);
-            const auto blob=road.Preprocess(image);
-            double input_error=0, logits_error=0;
-            for(size_t i=0;i<input_ref.size();++i)
-                input_error=std::max(input_error,std::abs(double(blob.ptr<float>()[i])-input_ref[i]));
+            cv::Mat blob;
+            const float *input=input_ref.data();
+            size_t input_size=input_ref.size();
+            if(!raw_input) {
+                blob=road.Preprocess(cv::imread((ref/images[index]).string(),cv::IMREAD_COLOR));
+                input=blob.ptr<float>();
+                input_size=blob.total();
+            }
+            const auto comparison=perception::CompareInput(input,input_size,input_ref.data(),input_ref.size());
+            double logits_error=0;
             std::vector<float> logits(info.Elements());
-            engine.Infer(blob.ptr<float>(),logits.data());
+            engine.Infer(input,logits.data());
             const auto mask=road.Decode(logits.data()), reference=road.Decode(logits_ref.data());
             size_t same=0, intersection=0, union_count=0;
             for(size_t i=0;i<mask.total();++i) {
@@ -128,17 +143,18 @@ int main(int argc, char **argv) {
                 logits_error=std::max(logits_error,std::abs(double(logits[i])-logits_ref[i]));
             const double match=double(same)/mask.total();
             const double line_iou=union_count ? double(intersection)/union_count : 1;
-            const bool ok=match>=0.995 && input_error<=1.0/255;
+            const bool ok=match>=0.995 && comparison.passed;
             passed=passed && ok;
             if(!cv::imwrite((masks/(stem.str()+"_mask.png")).string(),road.Restore(mask)))
                 throw std::runtime_error("Không ghi được mask PNG");
-            std::cout<<images[index]<<'\t'<<input_error<<'\t'<<match<<'\t'<<line_iou<<'\t'
-                     <<logits_error<<'\t'<<(ok ? "ĐẠT" : "KHÔNG ĐẠT")<<'\n';
+            std::cout<<images[index]<<'\t'<<comparison.max_abs<<'\t'<<match<<'\t'<<line_iou<<'\t'
+                     <<logits_error<<'\t'<<(ok ? "ĐẠT" : "KHÔNG ĐẠT")<<'\t'
+                     <<comparison.max_levels<<'\t'<<comparison.different<<'\t'<<comparison.over_one<<'\n';
         }
         std::cout<<(passed ? "ĐẠT" : "KHÔNG ĐẠT")<<": "<<images.size()<<" ảnh\n";
         return passed ? 0 : 1;
     } catch(const std::exception &error) {
-        std::cerr<<"Lỗi: "<<error.what()<<"\nCách dùng: check_engine --engine FILE --info FILE --ref DIR\n";
+        std::cerr<<"Lỗi: "<<error.what()<<"\nCách dùng: check_engine --engine FILE --info FILE --ref DIR [--raw-input]\n";
         return 2;
     }
 }
