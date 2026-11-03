@@ -2,7 +2,7 @@
 
 Không nhập test cũ: thay đổi song song của DEV không được đổi kỳ vọng T33.
 M1–M5 chỉ đọc/vá BẢN SAO nguồn khi chạy Linux, không sửa cây làm việc.
-CTRL và lệnh lỗi kế thừa mẫu test_drive_collect.py, không thêm biến giả mới.
+CTRL và lệnh lỗi kế thừa mẫu test của công cụ thu cũ (đã xóa), không thêm biến giả mới.
 """
 import argparse
 from contextlib import contextmanager
