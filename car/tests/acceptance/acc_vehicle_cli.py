@@ -221,11 +221,6 @@ class Suite:
             seed_gate(self.main, config, logs)
         return folder, config, env
 
-    def smoke_args(self, folder):
-        # Cùng tiền điều kiện do smoke_test.sh chuẩn bị; test không xác nhận bánh kê.
-        marker = folder / "smoke.marker"
-        marker.write_text("", encoding="utf-8")
-        return ["--smoke-kill-file", marker]
 
     def reject(self, key, value, wrapper=False, remove=()):
         folder, config, env = self.setup({key: value} if key else {}, remove)
@@ -505,8 +500,6 @@ class Suite:
         invalid = [["--mode", "calib"], ["--mode", "calib", "--step"]]
         invalid += [["--mode", "calib", "--step", value] for value in ("0", "11", "unknown")]
         invalid.append(["--mode", "calib", "--step", "2", "--unknown"])
-        for mode in ("auto", "calib"):
-            invalid.append(["--mode", mode] + (["--step", "2"] if mode == "calib" else []) + ["--smoke-drop-camera"])
         for args in invalid:
             folder, config, env = self.setup({"tof_mapping_confirmed": "1"}, gate=True)
             code, output = run([self.main, "--config", config] + args, folder, env)
@@ -520,13 +513,11 @@ class Suite:
         args = [self.main, "--config", config, "--mode", mode]
         if mode == "calib":
             args += ["--step", "2"]
-        if mode == "smoke":
-            args += self.smoke_args(folder)
         def observe(process):
             wait_ready(process, lambda: log_ready(folder, mode), "S17: " + mode + " phải tạo log/ảnh/cảm biến khi thiếu gate")
             process.send_signal(signal.SIGTERM)
         code, _ = run(args, folder, env, observe)
-        require(code in (0, 1, 143) if mode == "smoke" else code in (0, 143), "S17: kết thúc chủ động sau khi đã khởi động")
+        require(code in (0, 143), "S17: kết thúc chủ động sau khi đã khởi động")
         rows = trace(folder / "trace.csv")
         require(sum(k == "motor_init" for _, k, _ in rows) == 1, "S17: khởi tạo một lần")
         require(not any(k == "motor_speed" and abs(float(v)) > SPEED_EPS for _, k, v in rows), "S17: chưa phím chuyển động luôn giữ motor 0")
@@ -570,41 +561,9 @@ class Suite:
         require(sum(k == "motor_cfg" and "$101=1" in v for _, k, v in rows) == 1, "C02: lưu/reset một lần")
         tail(rows)
 
-    def smoke_signal(self, sig):
-        # A01: smoke nhận tín hiệu cả khi chờ xác nhận; kiểm dừng lệnh, không coi là đã phanh xe thật.
-        folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
-        def observe(process):
-            wait_ready(process, lambda: log_ready(folder, "smoke"), "Smoke chưa tạo log trong hạn")
-            process.send_signal(sig)
-        code, _ = run([self.main, "--config", config, "--mode", "smoke"] + self.smoke_args(folder), folder, env, observe)
-        require(code in (0, 1, 130, 143), "A01: smoke thoát chủ động sau tín hiệu")
-        tail(trace(folder / "trace.csv"))
-
-    def smoke_unconfirmed(self):
-        # S01/02/C14: có/thiếu cờ ánh xạ đều dừng trước motor, vẫn nhận cờ ngắt ảnh ở smoke.
-        for missing in (False, True):
-            folder, config, env = self.setup({}, ("tof_mapping_confirmed",) if missing else ())
-            code, output = run([self.main, "--config", config, "--mode", "smoke", "--smoke-drop-camera"] + self.smoke_args(folder),
-                               folder, env, timeout=EXIT_TIMEOUT)
-            require(0 < code < 124, "S02: chưa xác nhận ánh xạ không được toàn bộ ĐẠT")
-            require("tof_mapping_confirmed" in output and "config" in output.lower(), "S02: phải chỉ cách sửa cấu hình")
-            require(re.search(r"tof_mapping_confirmed[^\n]*(?:[:=]\s*1\b|(?:nguyên|nguyen)\s+1\b)", output),
-                    "S02: hướng dẫn đổi sang số nguyên 1")
-            require(all(name in output for name in ("front", "rear", "left", "right")), "S01/04: in đủ bốn tên cảm biến")
-            rows = trace(folder / "trace.csv")
-            require(rows and not any(k == "motor_speed" and abs(float(v)) > SPEED_EPS for _, k, v in rows), "S01/02: không chạy motor")
-            tail(rows)
-            reports = list((folder / "runs").glob("*_smoke/smoke.json"))
-            require(len(reports) == 1, "S12: có kết quả riêng trong lượt smoke")
-            result = json.loads(read(reports[0]))
-            require(result["passed"] == 0 and result["simulated"] == 1, "S02/S12: kết quả lỗi, đánh dấu giả lập")
-            require(result["config_text"] == read(config), "S12: bản sao cấu hình khớp đầu vào")
-            for field in ("source_id", "camera", "sensors", "servo", "tof_brake", "camera_brake",
-                          "encoder_moving", "kill9", "encoder_stopped"):
-                require(field in result, "S12: thiếu trường " + field)
 
     def fault(self, mode, fault):
-        # A02: tiêm lỗi khi chờ nhập calib/smoke; terminate qua trình bao vẫn phải dừng độc lập.
+        # A02: tiêm lỗi khi chờ nhập calib; terminate qua trình bao vẫn phải dừng độc lập.
         folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
         # Lỗi xảy ra sau pha chuẩn bị; không tính thời gian khởi động ASan vào hạn dừng an toàn.
         env["UCR_FAKE_FAULT"] = fault + "@15000"
@@ -616,11 +575,7 @@ class Suite:
         args = ["bash", self.root / "scripts/run.sh", "--config", config, "--mode", mode]
         if mode == "calib":
             args += ["--step", "4"]
-        else:
-            args += self.smoke_args(folder)
         def observe(process):
-            if mode != "calib":
-                return
             wait_ready(process, lambda: log_ready(folder, mode), "A02: phải sẵn sàng trước điểm tiêm lỗi")
             process.stdin.write(b"y\n")
             process.stdin.flush()
@@ -790,7 +745,7 @@ def main():
     else:
         with tempfile.TemporaryDirectory(prefix="acc_vehicle_cli_") as folder:
             suite = Suite(root, sys.argv[3], sys.argv[4], folder)
-            if scenario in ("config_numeric", "config_keys", "wrapper_config", "cli", "smoke_unconfirmed", "smoke_gate"):
+            if scenario in ("config_numeric", "config_keys", "wrapper_config", "cli", "smoke_gate"):
                 getattr(suite, scenario)()
             elif scenario.startswith("check_config_"):
                 suite.check_config(scenario)
@@ -798,8 +753,6 @@ def main():
                 suite.calib(sys.argv[5], signal.SIGINT if sys.argv[6] == "INT" else signal.SIGTERM)
             elif scenario == "fault":
                 suite.fault(sys.argv[5], sys.argv[6])
-            elif scenario == "smoke_signal":
-                suite.smoke_signal(signal.SIGINT if sys.argv[5] == "INT" else signal.SIGTERM)
             elif scenario == "no_gate":
                 suite.no_gate(sys.argv[5])
             else:

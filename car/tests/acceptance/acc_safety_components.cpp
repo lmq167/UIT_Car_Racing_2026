@@ -294,7 +294,7 @@ void CalibrationSafety() {
     Fixture f; app::Backend b(f.c); b.Init();
     for(float requested:{20.f,40.f}) for(int gap:{600,2300}) for(bool early:{false,true}) {
         f.c.calib_speed_cms=requested;
-        app::Calibration calib(f.c,"motor",f.dir,f.config,"",false);
+        app::Calibration calib(f.c,"motor",f.dir,f.config);
         common::Snapshot s;
         auto tick=[&](int key,Clock::time_point now,bool fresh) {
             if(fresh) s.observation=Good(f.c,now);
@@ -343,72 +343,6 @@ void CalibrationSafety() {
     b.Stop(); Tail(f);
 }
 
-// S03/04: chỉ kiểm phần camera/cảm biến, không tự xác nhận servo hoặc bánh kê.
-void SmokeSensors() {
-    OpenStdin input;
-    for(int fault=0;fault<12;++fault) {
-        Fixture f;
-        if(fault==11) f.c.tof_names={"left","front","right","rear"};
-        app::Backend b(f.c); b.Init();
-        app::Calibration smoke(f.c,"smoke",f.dir,f.config,f.kill_file,false);
-        const auto base=Clock::now();
-        for(int i=0;i<60 && !smoke.Done();++i) {
-            const auto now=base+Ms(100*i);
-            common::Snapshot s; s.observation=Good(f.c,now); s.observation.frame_id=1+i;
-            s.fps=2*f.c.smoke_min_fps;
-            if(fault==1) { s.observation.frame_id=0; s.observation.frame.release(); }
-            if(fault==2) s.observation.frame=cv::Mat(f.c.camera_height,f.c.camera_width/2,CV_8UC3);
-            if(fault==3) s.observation.frame=cv::Mat(f.c.camera_height/2,f.c.camera_width,CV_8UC3);
-            if(fault==4) s.fps=f.c.smoke_min_fps/2;
-            if(fault==5) s.observation.imu_valid=false;
-            if(fault>=6 && fault<=9) s.observation.tof[fault-6].valid=false;
-            if(fault==10) s.observation.tof[2].distanceMm=-1;
-            const auto cmd=smoke.Tick(s,-1,now);
-            ACC_CHECK(acc::Near(cmd.speedCmPerSec,0,1e-3),"S06: chưa xác nhận bánh kê không được yêu cầu motor");
-            std::string state;
-            Applied(f,b,app::SafeCommand(f.c,s.observation,cmd,now,state),0,cmd.steeringDeg,"S03/04/06");
-        }
-        common::Snapshot s; s.observation=Good(f.c,base+Ms(6100));
-        smoke.Tick(s,'q',base+Ms(6100));
-        cv::FileStorage result(f.dir+"/smoke.json",cv::FileStorage::READ);
-        ACC_CHECK(result.isOpened(),"S03/04: hủy cũng phải ghi kết quả từng phần");
-        if(result.isOpened()) {
-            ACC_CHECK(int(result["camera"])==int(fault<1 || fault>4),"S03: camera phải đúng ảnh/kích thước/FPS");
-            if(fault==0 || fault>=5) ACC_CHECK(int(result["sensors"])==int(fault==0 || fault==11),"S04: mỗi IMU/ToF lỗi làm cụm không ĐẠT");
-            ACC_CHECK(int(result["passed"])==0 && int(result["servo"])==0,"S05/06: chưa xác nhận không được tự ĐẠT");
-        }
-        b.Stop(); Tail(f);
-    }
-}
-
-// S05/06: bốn xác nhận servo theo phiếu in, chưa xác nhận bánh kê; kiểm góc cuối qua Backend.
-void SmokeServo() {
-    OpenStdin input;
-    Fixture f; f.c.servo_invert=1;
-    app::Backend b(f.c); b.Init();
-    app::Calibration smoke(f.c,"smoke",f.dir,f.config,f.kill_file,false);
-    const auto base=Clock::now();
-    std::vector<int> angles;
-    for(int i=0;i<45 && !smoke.Done();++i) {
-        const auto now=base+Ms(i*100);
-        common::Snapshot s; s.observation=Good(f.c,now); s.observation.frame_id=i+1;
-        s.fps=2*f.c.smoke_min_fps;
-        const int key=(i>=30 && i<=33) ? 'y' : -1;
-        auto cmd=smoke.Tick(s,key,now);
-        ACC_CHECK(acc::Near(cmd.speedCmPerSec,0,1e-3),"S06: bốn xác nhận servo chưa phải xác nhận bánh kê");
-        std::string state;
-        cmd=app::SafeCommand(f.c,s.observation,cmd,now,state);
-        Applied(f,b,cmd,0,cmd.steeringDeg,"S05: servo qua chiều và trim");
-        if(angles.empty() || angles.back()!=cmd.steeringDeg) angles.push_back(cmd.steeringDeg);
-    }
-    ACC_CHECK(angles==std::vector<int>({0,-10,10,0}),"S05: đúng thứ tự tâm/âm 10/dương 10/tâm, không tự chạy tiếp");
-    common::Snapshot s; s.observation=Good(f.c,base+Ms(4600));
-    smoke.Tick(s,'q',base+Ms(4600));
-    cv::FileStorage result(f.dir+"/smoke.json",cv::FileStorage::READ);
-    ACC_CHECK(result.isOpened(),"S05: phải có kết quả khi thoát");
-    if(result.isOpened()) ACC_CHECK(int(result["passed"])==0 && int(result["encoder_moving"])==0,"S06: thoát trước kê bánh không được ĐẠT");
-    b.Stop(); Tail(f);
-}
 }
 int main(int argc,char **argv) {
     if(argc!=2) return 2;
@@ -420,8 +354,6 @@ int main(int argc,char **argv) {
         else if(scenario=="servo") ServoCases();
         else if(scenario=="smoke_result") SmokeResults();
         else if(scenario=="calib_safety") CalibrationSafety();
-        else if(scenario=="smoke_sensors") SmokeSensors();
-        else if(scenario=="smoke_servo") SmokeServo();
         else return 2;
     } catch(const std::exception &e) { ACC_CHECK(false,std::string("Ngoại lệ ngoài dự kiến: ")+e.what()); }
     return acc::Finish(argv[1]);

@@ -23,7 +23,7 @@ inline void RemoveTemp(const std::string &path) {
 }
 struct Fixture {
     std::string dir=acc::MakeTempDir("acc_fixture_");
-    std::string config=dir+"/config.yaml", trace=dir+"/trace.csv", kill_file=dir+"/smoke.marker";
+    std::string config=dir+"/config.yaml", trace=dir+"/trace.csv";
     common::Config c;
     Fixture() {
         if(dir.empty()) throw std::runtime_error("Không tạo được thư mục tạm");
@@ -33,7 +33,6 @@ struct Fixture {
         c.tof_mapping_confirmed=1; c.image_every_n=1000000;
         c.fake_source="";
         WriteConfig();
-        if(!acc::WriteFile(kill_file,"")) throw std::runtime_error("Không tạo được tệp đánh dấu smoke");
         if(setenv("UCR_FAKE_HW_TRACE",trace.c_str(),1)!=0) throw std::runtime_error("Không đặt được vết giả");
     }
     ~Fixture() { unsetenv("UCR_FAKE_HW_TRACE"); RemoveTemp(dir); }

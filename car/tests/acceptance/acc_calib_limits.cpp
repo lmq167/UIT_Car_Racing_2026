@@ -34,7 +34,7 @@ struct Trial {
     app::Calibration calib;
     common::Snapshot s;
     Clock::time_point start;
-    explicit Trial(const std::string &step):backend(f.c),calib(f.c,step,f.dir,f.config,"",false) {
+    explicit Trial(const std::string &step):backend(f.c),calib(f.c,step,f.dir,f.config) {
         backend.Init();
         // Thời gian chuẩn bị là thời gian thật vì constructor không nhận đồng hồ.
         const bool ready=WaitUntil(Clock::now()+std::chrono::seconds(3),[&] {
