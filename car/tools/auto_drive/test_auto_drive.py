@@ -30,7 +30,7 @@ _spec_info = importlib.util.spec_from_file_location('road_fixture', str(HERE.par
 road_fixture = importlib.util.module_from_spec(_spec_info)
 _spec_info.loader.exec_module(road_fixture)
 
-CASES = ['A{:02d}'.format(i) for i in range(1, 36) if i != 30]
+CASES = ['A{:02d}'.format(i) for i in range(1, 36) if i != 30] + ['A60']
 BOUNDS = {
     'control_period_ms': (50, 20, 100, 'ms'), 'mask_max_age_ms': (300, 50, 1000, 'ms'),
     'cmd_max_age_ms': (200, 50, 500, 'ms'), 'det_max_age_ms': (500, 50, 2000, 'ms'),
@@ -100,7 +100,7 @@ def cap(events):
 class Run(td.Run):
     """Dùng lại wait/observe/text/send/ack/children/close của T33; chỉ đổi khởi chạy auto."""
     def __init__(self, cfg, root, values=None, env=None, schedule=((1, 'straight'),),
-                 args=None, lock=None, setup=None, no_yolo=True, info=True):
+                 args=None, lock=None, setup=None, no_yolo=True, info=True, stderr=None):
         need(b'UCR_AUTO_FAKE_TRACE' in Path(cfg.hooks).read_bytes(),
              'Từ chối binary không có hooks auto', 'environment')
         self.root, self.slack, self.seq = root, cfg.slack, 0
@@ -144,7 +144,8 @@ class Run(td.Run):
         self.log = tempfile.TemporaryFile()
         try:
             self.process = subprocess.Popen(argv, cwd=str(root), env=child_env, stdin=subprocess.DEVNULL,
-                                            stdout=self.log, stderr=self.log, start_new_session=True)
+                                            stdout=self.log, stderr=self.log if stderr is None else stderr,
+                                            start_new_session=True)
         except BaseException:
             self.log.close()
             raise
@@ -363,7 +364,7 @@ def counter(run, name):
     return max([int(v) for v in values] or [0])
 
 
-def inspect_session(run):
+def inspect_session(run, sha256_failed=False):
     folder = run.session()
     data = json.loads((folder / 'session.json').read_text(encoding='utf-8'))
     for name in ('git_hash', 'git_branch', 'control_yaml', 'control_sha256', 'info_json', 'engine_name', 'engine_sha256'):
@@ -375,8 +376,11 @@ def inspect_session(run):
         need(data['git_hash'] == data['git_branch'] == 'unknown',
              'Bản không có .git phải ghi unknown cho revision/nhánh', 'record_format')
     raw = run.control.read_bytes()
-    need(data['control_yaml'].encode('utf-8') == raw and data['control_sha256'] == hashlib.sha256(raw).hexdigest(),
-         'Bản chép/băm yaml sai', 'record_format')
+    need(data['control_yaml'].encode('utf-8') == raw, 'Bản chép yaml sai', 'record_format')
+    if sha256_failed:
+        need(data['control_sha256'] in ('loi', ''), 'Băm lỗi phải là loi hoặc rỗng', 'record_format')
+    else:
+        need(data['control_sha256'] == hashlib.sha256(raw).hexdigest(), 'Băm yaml sai', 'record_format')
     need(data['info_json'] == json.loads((run.root / 'road_info.json').read_text(encoding='utf-8')),
          'Metadata session sai', 'record_format')
     rows = run.rows()
@@ -454,6 +458,22 @@ def read_png(data):
         out.extend(row)
         prev = row
     return bytes(out)
+
+
+def check_gitignore():
+    # T47m LOW-1: kiểm quy tắc của kho, không nhận nhầm exclude cá nhân.
+    car_root = HERE.parents[1]
+    result = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=str(car_root),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+    need(result.returncode == 0, 'Không tìm được kho Git: ' + result.stderr, 'environment')
+    repo_root = Path(result.stdout.strip()).resolve()
+    probe = (car_root / 'runs_auto' / 'T47m' / 'session.json').relative_to(repo_root).as_posix()
+    result = subprocess.run(['git', 'check-ignore', '--no-index', '--verbose', '--', probe], cwd=str(repo_root),
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=10)
+    need(result.returncode == 0, 'runs_auto chưa được bỏ qua: ' + result.stderr, 'gitignore')
+    source, _, pattern = result.stdout.split('\t', 1)[0].rsplit(':', 2)
+    need((repo_root / source).resolve() == car_root / '.gitignore' and not pattern.startswith('!'),
+         'Quy tắc phải bỏ qua đường dẫn và thuộc ucr_car/.gitignore: ' + result.stdout, 'gitignore')
 
 
 def test_case(case, cfg, root):
@@ -879,6 +899,30 @@ def test_case(case, cfg, root):
                 need(angles and all(v * sign > 0 for v in angles), 'Sai dấu +trái/-phải: ' + repr(angles), 'steer_sign')
                 r.finish()
         return
+    # A60 — T47m LOW-4: lỗi sha256sum vẫn đủ log như A21 và cảnh báo trên stderr.
+    if case == 'A60':
+        from unittest.mock import patch
+        fake_bin = root / 'fake_bin'
+        fake_bin.mkdir(parents=True)
+        sha256 = fake_bin / 'sha256sum'
+        sha256.write_text('#!' + sys.executable + '\nfrom pathlib import Path\n'
+                          'Path(__file__).with_name("called").touch()\nraise SystemExit(1)\n', encoding='utf-8')
+        sha256.chmod(0o755)
+        child_path = str(fake_bin) + os.pathsep + os.environ.get('PATH', '')
+        with patch.dict(os.environ, {'PATH': child_path}), tempfile.TemporaryFile() as error_log:
+            with running(cfg, root / 'run', values={'record_every_n': 5, 'slow_per_deg': 0}, stderr=error_log) as r:
+                r.boot(); r.go(); r.frames(25); r.finish(key='\x1b')
+                need((fake_bin / 'called').is_file(), 'Chưa gọi sha256sum giả', 'setup')
+                inspect_session(r, sha256_failed=True)
+                inspect_images(r)
+                error_log.seek(0)
+                errors = error_log.read().decode('utf-8', errors='replace')
+                warnings = [line for line in errors.splitlines()
+                            if re.search(r'(?i)\bwarn(?:ing)?\b|canh bao|cảnh báo', line)
+                            and re.search(r'(?i)sha|bam|băm|hash', line)]
+                need(len(warnings) == 1,
+                     'Phải có đúng một dòng cảnh báo stderr về băm: ' + errors, 'sha256_warning')
+        return
     raise Failure('setup', 'Chưa có ca ' + case)
 
 
@@ -907,13 +951,17 @@ def selftest():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--selftest', action='store_true')
-    parser.add_argument('--case', choices=CASES + ['B5'])
+    parser.add_argument('--case', choices=CASES + ['B5', 'gitignore'])
     parser.add_argument('--hooks')
     parser.add_argument('--slack', type=int, choices=(0, 300), default=0)
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
         print('PASS selftest: 4 vết tổng hợp, bắt M7 và mốc cùng ms')
+        return
+    if cfg.case == 'gitignore':
+        check_gitignore()
+        print('PASS gitignore')
         return
     if not cfg.case or not cfg.hooks:
         parser.error('--case và --hooks là bắt buộc nếu không dùng --selftest')
