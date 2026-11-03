@@ -153,6 +153,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             try {
                                 if (hooks.yoloThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi YOLO");
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+                                if (hooks.yoloThrowOn.load()) throw std::runtime_error("Tiêm lỗi YOLO liên tục");
                                 static_cast<FakeYoloEngine&>(*yoloEngine).select(frame.id);
 #endif
                                 const auto yoloStart=Clock::now();
