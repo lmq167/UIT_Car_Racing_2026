@@ -8,7 +8,7 @@ struct InfoJson {
     cv::Rect crop;
     std::string input_name, output_name;
     double scale;
-    explicit InfoJson(const std::string &path);
+    explicit InfoJson(const std::string &path, bool allowFakeData=false);
     size_t Elements() const { return size_t(input.height)*input.width*3; }
 };
 }

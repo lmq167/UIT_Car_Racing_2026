@@ -1,0 +1,413 @@
+#include "vehicle_runtime.h"
+#include "model_worker.h"
+#include "log_writer.h"
+#include "control/Planner.h"
+
+namespace auto_drive { HookState hooks; }
+namespace {
+struct ControlInput {
+    ModelResult model;
+    int64_t image_ms=-1;
+    bool enabled=false;
+    uint64_t epoch=0;
+    std::shared_ptr<const control::ControlParams> params;
+};
+struct CommandStamped {
+    control::Plan plan;
+    ModelResult model;
+    std::shared_ptr<const control::ControlParams> params;
+    uint64_t id=0, epoch=0;
+    int64_t created_ms=-1, image_ms=-1;
+    double loop_ms=0;
+};
+double percentile95(std::vector<double> samples) {
+    if (samples.empty()) return 0;
+    std::sort(samples.begin(),samples.end());
+    return samples[static_cast<size_t>(std::ceil(samples.size()*0.95))-1];
+}
+bool stopVehicle(DriveMotor& motor,DriveServo& servo) noexcept {
+    bool motorOk=false,servoOk=false;
+    try { motorOk=motor.SetSpeedCms(0); } catch (...) {}
+    if (!motorOk) motorOk=motor.EmergencyStop();
+    try { servoOk=servo.SetAngle(0); } catch (...) {}
+    return motorOk && servoOk;
+}
+std::string csvRow(const CommandStamped& command,const ModelResult& model,
+                   const control::ControlParams& params,int64_t now,int64_t imageMs,
+                   double sentSpeed,int sentAngle,const std::string& state,const std::string& reason,
+                   bool go,bool stop,const std::string& maskFile,const Statistics& stats,const LogWriter& writer) {
+    std::ostringstream out; out<<std::setprecision(12);
+    out<<now<<','<<model.frame.id<<','<<maskFile<<','<<sentSpeed<<','<<sentAngle<<',';
+    if (model.frame.captured_ms>=0) out<<model.frame.captured_ms;
+    out<<',';
+    if (imageMs>=0) out<<imageMs;
+    out<<','<<go<<','<<stop<<",RIGHT,"<<state<<','
+       <<(imageMs<0 ? -1 : now-imageMs)<<','
+       <<(model.frame.captured_ms<0 ? -1 : now-model.frame.captured_ms)<<",-1,"
+       <<csvString(scanJson(command.plan.debug,params,model.mask.cols))<<','
+       <<command.plan.debug.e<<','<<command.plan.debug.p<<','<<command.plan.debug.d<<','
+       <<command.plan.cmd.deg<<','<<command.plan.cmd.cms<<','<<sentAngle<<','<<sentSpeed<<','
+       <<csvString(reason)<<','<<model.road_ms<<",0,"<<command.loop_ms<<','
+       <<writer.dropped<<','<<writer.csvDropped<<','<<stats.camera_fps<<','<<stats.loop_p95_ms
+       <<','<<stats.rss_mb<<','<<writer.freeMb<<','<<command.id<<',';
+    if (command.created_ms>=0) out<<command.created_ms;
+    out<<','<<model.frame.id<<'\n';
+    return out.str();
+}
+
+int driveAuto(const Options& options,const Paths& paths,int lockFd,
+              std::shared_ptr<const control::ControlParams> params,const std::string& yaml,
+              const perception::InfoJson& info,std::unique_ptr<perception::IInferEngine>& engine) {
+    DriveMotor motor(kReverseMotor); DriveServo servo;
+    terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
+    std::unique_ptr<Camera> camera;
+    drive::PreviewHost preview;
+    std::unique_ptr<Watchdog> watchdog;
+    std::unique_ptr<LogWriter> writer;
+    std::atomic<bool> quit{false},cameraDone{true},modelDone{true},controllerDone{true};
+    std::atomic<bool> controllerFault{false};
+    std::atomic<int> cameraError{0};
+    std::atomic<int64_t> imageMs{-1};
+    std::atomic<uint64_t> frameCount{0};
+    Mailbox<Frame> frames;
+    Mailbox<ModelResult> models;
+    Mailbox<ControlInput> inputs;
+    Mailbox<CommandStamped> commands;
+    std::thread cameraThread,modelThread,controllerThread;
+    int code=0; std::string error;
+    try {
+        // Camera chỉ fork, chưa mở thiết bị; preview cũng fork trước mọi luồng điều khiển.
+        camera.reset(new Camera(lockFd));
+        if (preview.start()!=drive::PreviewStartResult::Started)
+            throw Failure(1,"Không chạy được cửa sổ ảnh: "+preview.diagnostic());
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+        // CUDA có thể tạo luồng nội bộ: nạp sau các fork, vẫn trước Motor::Init.
+        engine.reset(new perception::TrtEngine(options.engine,&info));
+#endif
+        if (stopping) throw SignalStop{};
+        InitSignalMask initMask;
+        watchdog.reset(new Watchdog(motor,servo,paths));
+        trace("state","CHO_SAN_SANG");
+        if (!motor.init()) throw Failure(1,"Motor::Init thất bại");
+        if (!motor.SetSpeedCms(0)) throw Failure(1,"Không xác nhận motor 0 sau Init");
+        if (!servo.open()) throw Failure(1,"Không mở được servo/PWM");
+        if (!servo.SetAngle(0)) throw Failure(1,"Không trả được servo 0 sau motor 0");
+        // Các luồng con thừa hưởng chặn tín hiệu; chỉ vòng an toàn nhận tín hiệu dừng.
+        writer.reset(new LogWriter(options,yaml,trace));
+        cameraDone=false;
+        cameraThread=std::thread([&] {
+            try {
+                uint64_t id=0;
+                while (!quit) {
+                    cv::Mat bgr; Header h;
+                    if (!camera->read(bgr,h,[&] { return !quit.load(); })) break;
+                    if (h.status!=1 || bgr.empty()) continue;
+                    if (hooks.cameraStall || nowMs()<hooks.cameraPauseUntil) continue;
+                    const auto captured=h.ns/1000000;
+                    if (nowMs()-captured>kStaleFrameMs) continue;
+                    Frame frame{bgr,++id,captured};
+                    trace("frame",std::to_string(id)+" "+std::to_string(captured));
+                    imageMs=captured; ++frameCount;
+                    frames.offer(frame); preview.publishFrame(bgr,captured);
+                }
+            } catch (...) { cameraError=1; }
+            cameraDone=true;
+        });
+        modelDone=false;
+        modelThread=std::thread([&] {
+            try {
+                perception::RoadSegmenter segmenter(info);
+                uint64_t last=0;
+                while (!quit) {
+                    if (hooks.roadStall) { ::poll(nullptr,0,2); continue; }
+                    Frame frame;
+                    if (!frames.latest(frame) || !frame.id || frame.id==last) { ::poll(nullptr,0,2); continue; }
+                    last=frame.id;
+                    try {
+                        if (hooks.roadThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi road");
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+                        static_cast<FakeRoadEngine&>(*engine).select(frame.id);
+#endif
+                        const auto start=Clock::now();
+                        auto mask=segmenter.Infer(frame.bgr,*engine);
+                        const double ms=std::chrono::duration<double,std::milli>(Clock::now()-start).count();
+                        trace("mask",std::to_string(frame.id)+" "+std::to_string(frame.captured_ms));
+                        models.offer(ModelResult{frame,mask,ms});
+                    } catch (...) { trace("model_notice","road_throw"); }
+                }
+            } catch (...) { trace("model_notice","road_worker_failed"); }
+            modelDone=true;
+        });
+        controllerDone=false;
+        controllerThread=std::thread([&] {
+            try {
+                control::Planner planner;
+                ControlInput input;
+                uint64_t epoch=~uint64_t(0),id=0;
+                bool goPending=false;
+                auto previous=Clock::now();
+                while (!quit) {
+                    if (hooks.controllerStall) { ::poll(nullptr,0,2); continue; }
+                    inputs.latest(input);
+                    if (!input.params) { ::poll(nullptr,0,2); continue; }
+                    const auto start=Clock::now();
+                    const double interval=std::chrono::duration<double,std::milli>(start-previous).count();
+                    previous=start;
+                    try {
+                        if (hooks.controllerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi controller");
+                        control::PlannerInput pi;
+                        pi.mask=input.model.mask; pi.mask_ms=input.model.frame.captured_ms;
+                        pi.image_ms=input.image_ms;
+                        if (epoch!=input.epoch) {
+                            planner.Reset(); epoch=input.epoch; goPending=input.enabled;
+                        }
+                        pi.go=goPending && input.enabled;
+                        pi.stop=!input.enabled;
+                        const auto now=nowMs();
+                        auto plan=planner.Step(pi,now,*input.params);
+                        if (plan.state==control::PlannerState::BAM_LAN || !input.enabled) goPending=false;
+                        if (input.enabled && hooks.overridePending.load()) {
+                            plan.cmd={hooks.overrideCms.load(),hooks.overrideDeg.load()};
+                            hooks.overridePending=false;
+                        }
+                        const double loop=std::max(interval,std::chrono::duration<double,std::milli>(Clock::now()-start).count());
+                        CommandStamped command{plan,input.model,input.params,++id,epoch,now,input.image_ms,loop};
+                        if (commands.offer(command)) trace("command",std::to_string(id)+" "+std::to_string(now));
+                    } catch (...) { controllerFault=true; }
+                    const auto target=start+std::chrono::milliseconds(input.params->control_period_ms+hooks.controlDelay.load());
+                    // Ngủ từng lát để dọn luồng có hạn, không ảnh hưởng vòng an toàn.
+                    while (!quit && Clock::now()<target) ::poll(nullptr,0,2);
+                }
+            } catch (...) { controllerFault=true; }
+            controllerDone=true;
+        });
+        initMask.restore();
+        if (stopping) throw SignalStop{};
+        watchdog->heartbeat=nowMs(); watchdog->initialized=true;
+        const auto boot=nowMs();
+        bool enabled=false,ready=false,exit=false;
+        std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
+        uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0;
+        int every=params->record_every_n;
+        int64_t nextStats=boot+2000,statsStart=boot,highSince=0,lastAdapt=boot,lastRowMs=boot;
+        Statistics stats;
+        std::deque<std::pair<int64_t,double>> timings;
+        ModelResult model;
+        CommandStamped command;
+        while (!exit && !stopping) {
+            const auto now=nowMs(); watchdog->heartbeat=now;
+            try { pollHooks(now,trace); }
+            catch (...) { trace("hook_error","CTRL invalide"); throw; }
+            const auto child=preview.pollChild();
+            if (child==drive::PreviewChildStatus::Closed || child==drive::PreviewChildStatus::Died)
+                throw Failure(1,"Cửa sổ chính đã đóng/chết");
+            models.latest(model); commands.latest(command);
+            const auto image=imageMs.load();
+            if (cameraError) throw Failure(1,"Camera đã lỗi");
+            if (now-boot>kFrameTimeoutMs && (image<0 || model.mask.empty() || !preview.wasShown()))
+                throw Failure(1,"Quá hạn ảnh/mask/preview đầu tiên");
+            bool eventGo=false,eventStop=false,forceLog=false;
+            const bool imageFresh=image>=0 && now-image<=kStaleFrameMs;
+            const bool maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
+            if (enabled && !imageFresh) { enabled=false; latch="MAT_ANH"; ++epoch; eventStop=true; forceLog=true; }
+            if (controllerFault.exchange(false)) { enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch; eventStop=true; forceLog=true; }
+            const auto keys=preview.pollKeys();
+            const bool batchStop=keys.find(' ')!=std::string::npos;
+            for (unsigned char key:keys) {
+                if (key==27) key='E';
+                if (key==3) key='3';
+                trace("key",std::string(1,key));
+                if (key=='E' || key=='3') { exit=true; eventStop=true; break; }
+                if (key==' ') {
+                    enabled=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
+                    if (!stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng Space");
+                } else if (key=='g' || key=='G') {
+                    eventGo=true; forceLog=true;
+                    if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
+                    else if (!imageFresh || !maskFresh) trace("go",imageFresh ? "ignored MAT_NAN_CU" : "ignored MAT_ANH");
+                    else if (!enabled) { enabled=true; latch.clear(); reason="BAM_LAN"; ++epoch; }
+                } else if (key=='r' || key=='R') {
+                    if (enabled) trace("reload","ignored");
+                    else {
+                        try {
+                            // Toàn bộ bộ tham số bất biến được thay một lần sau khi kiểm đủ.
+                            std::ostringstream table;
+                            auto replacement=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,table));
+                            params=replacement; every=params->record_every_n; ++epoch;
+                            std::cout<<table.str()<<std::flush; trace("reload","accepted");
+                        } catch (...) { trace("reload","error"); }
+                    }
+                }
+            }
+            if (exit || stopping) break;
+            inputs.offer(ControlInput{model,image,enabled,epoch,params});
+            double speed=0; int angle=0;
+            const bool commandMaskFresh=!command.model.mask.empty() &&
+                now-command.model.frame.captured_ms<=params->mask_max_age_ms;
+            const bool commandFresh=command.created_ms>=0 && command.epoch==epoch &&
+                now-command.created_ms<=params->cmd_max_age_ms;
+            if (!latch.empty()) { state="DUNG"; reason=latch; }
+            else if (!enabled) {
+                state=reason=="SPACE" ? "DUNG" : "CHO_SAN_SANG";
+                if (reason!="SPACE") reason="CHO_G";
+            } else if (!maskFresh || !commandMaskFresh) { state="BAM_LAN"; reason="MAT_NAN_CU"; }
+            else if (!commandFresh) { state="BAM_LAN"; reason="LENH_CU"; }
+            else {
+                state=command.plan.debug.state; reason=command.plan.reason;
+                speed=command.plan.cmd.cms;
+                if (!std::isfinite(speed) || !std::isfinite(command.plan.cmd.deg)) {
+                    enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch;
+                    speed=0; state="DUNG"; reason=latch;
+                } else angle=int(std::lround(std::max(-double(kMaxAutoSteerDeg),
+                                                      std::min(double(kMaxAutoSteerDeg),command.plan.cmd.deg))));
+            }
+            if (stopping) break;
+            // Kẹp độc lập YAML, ngay tại tầng gửi; motor luôn trước servo trên đường dừng.
+            speed=clampAutoSpeed(static_cast<float>(speed)); angle=clampAutoSteer(angle);
+            if (speed==0 && angle==0) {
+                if (!stopVehicle(motor,servo)) throw Failure(1,"Không xác nhận được dừng");
+            } else {
+                if (!motor.SetSpeedCms(static_cast<float>(speed))) throw Failure(1,"Lỗi gửi motor");
+                if (!servo.SetAngle(angle)) throw Failure(1,"Lỗi gửi servo");
+            }
+            if (state!=lastState) { trace("state",state); lastState=state; }
+            if (reason!=lastReason) { trace("reason",reason); lastReason=reason; }
+            if (!ready && imageFresh && maskFresh && preview.wasShown() && writer->ready) {
+                ready=true; trace("ready");
+            }
+            const bool newCommand=command.id && command.id!=lastLog;
+            if (newCommand) {
+                timings.emplace_back(now,command.loop_ms);
+                while (!timings.empty() && now-timings.front().first>5000) timings.pop_front();
+                std::vector<double> values;
+                for (const auto& t:timings) values.push_back(t.second);
+                stats.loop_p95_ms=percentile95(values);
+                if (stats.loop_p95_ms>2*params->control_period_ms) {
+                    if (!highSince) highSince=now;
+                    if (now-highSince>=5000 && now-lastAdapt>=5000 && every<40) {
+                        every=std::min(40,every*2); lastAdapt=now; highSince=now;
+                        writer->offerStatistics(stats,every,true);
+                    }
+                } else highSince=0;
+            }
+            if (model.frame.id && model.frame.id!=lastImage) {
+                lastImage=model.frame.id;
+                if (model.frame.id%every==0) writer->tryImage(model);
+            }
+            if (newCommand || forceLog) {
+                const bool applied=commandFresh && enabled && maskFresh && commandMaskFresh && latch.empty() && !forceLog;
+                const auto& decision=applied ? command.model : model;
+                const auto& decisionParams=applied ? *command.params : *params;
+                const auto decisionTime=applied ? std::max(lastRowMs,command.created_ms) : now;
+                const auto decisionImage=applied ? command.image_ms : image;
+                const auto maskFile=decision.frame.id ? "masks/"+std::to_string(decision.frame.id)+".png" : "";
+                try {
+                    writer->offerControl(csvRow(command,decision,decisionParams,decisionTime,decisionImage,speed,angle,state,reason,
+                                                 eventGo,eventStop,maskFile,stats,*writer));
+                } catch (...) { ++writer->csvDropped; }
+                lastRowMs=decisionTime;
+                lastLog=command.id;
+            }
+            if (now>=nextStats) {
+                const auto count=frameCount.load();
+                stats.camera_fps=double(count-lastFrames)*1000/std::max<int64_t>(1,now-statsStart);
+                stats.road_ms=model.road_ms; stats.free_mb=writer->freeMb; stats.rss_mb=writer->rssMb;
+                lastFrames=count; statsStart=now; nextStats=now+2000;
+                writer->offerStatistics(stats,every);
+            }
+            drive::PreviewState ps;
+            std::snprintf(ps.state,sizeof(ps.state),"%s",state.c_str());
+            ps.cmd_speed=speed; ps.cmd_steer=angle; ps.frame_age_ms=image<0 ? -1 : now-image;
+            ps.images=frameCount; ps.recording=writer->imagesEnabled;
+            preview.publishState(ps);
+            ::poll(nullptr,0,kPollMs);
+        }
+    } catch (const SignalStop&) {}
+    catch (const Failure& e) { code=e.code; error=e.what(); }
+    catch (const std::exception& e) { code=1; error=e.what(); }
+    catch (...) { code=1; error="Ngoại lệ vòng an toàn"; }
+
+    if (stopping) code=0;
+    if (watchdog) { watchdog->cleanupCode=code; watchdog->cleanupAt=nowMs(); }
+    // Dừng trước mọi join, ghi đĩa, đóng preview và helper cuối.
+    if (!stopVehicle(motor,servo)) { if (!code) code=1; warning(); }
+    if (writer) {
+        try {
+            writer->offerControl(csvRow(CommandStamped{},ModelResult{},*params,nowMs(),imageMs.load(),0,0,
+                "DUNG",stopping ? "TIN_HIEU" : code ? "LOI" : "THOAT",false,true,"",Statistics{},*writer));
+        } catch (...) {}
+    }
+    quit=true;
+    if (writer) writer->requestStop();
+    const auto deadline=nowMs()+kCleanupTimeoutMs;
+    while ((!cameraDone || !modelDone || !controllerDone || (writer && !writer->finished)) && nowMs()<deadline)
+        ::poll(nullptr,0,kPollMs);
+    if (!cameraDone || !modelDone || !controllerDone || (writer && !writer->finished)) {
+        // Không hủy bộ nhớ mà luồng bị treo còn dùng; giữ khóa tới sau helper.
+        externalStop(paths); warning(); _exit(code ? code : stopping ? 0 : 4);
+    }
+    if (cameraThread.joinable()) cameraThread.join();
+    if (modelThread.joinable()) modelThread.join();
+    if (controllerThread.joinable()) controllerThread.join();
+    preview.shutdown(); camera.reset(); writer.reset(); watchdog.reset();
+    terminateMotor=nullptr; terminateServo=nullptr; terminatePaths=nullptr;
+    if (!error.empty()) std::cerr<<"Lỗi: "<<error<<'\n';
+    return code;
+}
+}
+
+int main(int argc,char** argv) {
+    cv::setNumThreads(1);
+    std::set_terminate(emergencyTerminate);
+    Options options;
+    try { options=parse(argc,argv); }
+    catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
+    if (options.help) {
+        std::cout<<"ucr_auto --control control.yaml --engine road.engine --info road_info.json --no-yolo [--out-root runs_auto]\n"
+                 <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
+        return 0;
+    }
+    if (!options.noYolo) { std::cerr<<"YOLO chưa hỗ trợ, dùng --no-yolo\n"; return 2; }
+    struct sigaction action{}; action.sa_handler=signalStop; sigemptyset(&action.sa_mask);
+    for (int s:{SIGINT,SIGTERM,SIGHUP,SIGQUIT,SIGTSTP}) if (sigaction(s,&action,nullptr)!=0) return 1;
+    signal(SIGPIPE,SIG_IGN);
+    try {
+        const auto paths=executablePaths();
+        if (options.control.empty()) options.control=paths.root+"/control.yaml";
+        if (options.outRoot.empty()) options.outRoot=paths.root+"/runs_auto";
+        options.control=absolutePath(options.control); options.outRoot=absolutePath(options.outRoot);
+        auto params=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,std::cout));
+        std::cout<<"Trần cứng: "<<kMaxAutoSpeedCms<<" cm/s, "<<kMaxAutoSteerDeg<<" độ; + là trái\n"<<std::flush;
+        const auto yaml=readBytes(options.control);
+        if (options.info.empty()) throw Failure(2,"Thiếu --info");
+        options.info=absolutePath(options.info);
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        const perception::InfoJson info(options.info,true);
+#else
+        const perception::InfoJson info(options.info);
+#endif
+        std::unique_ptr<perception::IInferEngine> engine;
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        if (const char* fail=std::getenv("UCR_AUTO_FAKE_MODEL_LOAD_FAIL")) {
+            if (std::string(fail)=="road") throw Failure(1,"Không nạp được engine đường");
+        }
+        const char* list=std::getenv("UCR_AUTO_FAKE_ROAD_MASKS");
+        if (!list) throw Failure(1,"Thiếu UCR_AUTO_FAKE_ROAD_MASKS");
+        options.engine.clear();
+        engine.reset(new FakeRoadEngine(absolutePath(list),info));
+#else
+        if (options.engine.empty()) throw Failure(2,"Thiếu --engine");
+        options.engine=absolutePath(options.engine);
+        if (!regularFile(options.engine)) throw Failure(1,"Không tìm thấy engine đường");
+#endif
+        VehicleLock lock;
+        std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=10 cm/s, người giám sát đứng sát xe\n"<<std::flush;
+        if (!externalStop(paths)) { warning(); return 1; }
+        int code=0;
+        if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine);
+        if (!externalStop(paths)) { warning(); if (!code) code=1; }
+        return code;
+    } catch (const Failure& e) { std::cerr<<e.what()<<'\n'; return e.code; }
+    catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }
+    catch (...) { return 1; }
+}

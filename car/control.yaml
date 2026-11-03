@@ -1,0 +1,27 @@
+%YAML:1.0
+---
+control_period_ms: 50 # Chu kỳ điều khiển, ms
+mask_max_age_ms: 300 # Tuổi mặt nạ tối đa, ms
+cmd_max_age_ms: 200 # Tuổi lệnh tối đa, ms
+det_max_age_ms: 500 # Tuổi phát hiện tối đa, ms (P2)
+max_speed_cms: 10 # Trần tốc độ, cm/s
+cruise_cms: 8 # Tốc độ thẳng, cm/s
+min_cms: 4 # Tốc độ tối thiểu khi bám làn, cm/s
+lost_cms: 4 # Tốc độ giai đoạn giữ khi mất làn, cm/s
+slow_per_deg: 0.1 # Mức giảm tốc theo góc, cm/s/độ
+steer_max_deg: 30 # Trần góc lái, độ; dương là trái
+steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
+kp: 30 # Hệ số tỉ lệ, độ
+kd: 2 # Hệ số vi phân, độ.s
+scan_rows: [0.85, 0.65, 0.45] # Vị trí hàng quét theo chiều cao mặt nạ
+row_weights: [0.5, 0.3, 0.2] # Trọng số tương ứng từng hàng
+lane_width_frac: [0.70, 0.55, 0.40] # Bề rộng làn theo chiều rộng mặt nạ
+lane_width_min_ratio: 0.6 # Tỉ lệ nhỏ nhất để ghép hai biên
+lane_width_max_ratio: 1.4 # Tỉ lệ lớn nhất để ghép hai biên
+center_offset_frac: 0 # Dịch tâm xe theo chiều rộng mặt nạ
+min_valid_rows: 1 # Số hàng hợp lệ tối thiểu
+lost_hold_ms: 300 # Hạn giữ tốc độ khi mất làn, ms
+lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
+regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
+record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung
+yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)

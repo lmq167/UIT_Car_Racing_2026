@@ -32,7 +32,7 @@ void FlagFalse(const cv::FileNode &root, const char *key) {
 }
 }
 
-InfoJson::InfoJson(const std::string &path) {
+InfoJson::InfoJson(const std::string &path, bool allowFakeData) {
     cv::FileStorage file(path,cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
     Require(file.isOpened(),path);
     const auto root=file.root();
@@ -42,7 +42,10 @@ InfoJson::InfoJson(const std::string &path) {
         {"activation","softmax_over_channels_argmax"},
         {"resize","cv2.resize INTER_AREA (crop -> input)"}})
         Require(Text(root,entry.first)==entry.second,entry.first);
-    for(const char *key:{"fake_data","preprocessing_in_model","dynamic"}) FlagFalse(root,key);
+    // Chỉ bản hooks truyền true; metadata xe vẫn bắt buộc fake_data=false.
+    const auto fake=root["fake_data"];
+    Require(fake.isInt() && (int(fake)==0 || (allowFakeData && int(fake)==1)),"fake_data");
+    for(const char *key:{"preprocessing_in_model","dynamic"}) FlagFalse(root,key);
     Require(root["num_classes"].isInt() && int(root["num_classes"])==3,"num_classes");
     const auto classes=root["class_names"];
     Require(classes.isSeq() && classes.size()==3,"class_names");

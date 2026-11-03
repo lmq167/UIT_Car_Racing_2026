@@ -1,0 +1,2 @@
+add_executable(ucr_replay_control main.cpp)
+target_link_libraries(ucr_replay_control PRIVATE ucr_control opencv_imgproc opencv_imgcodecs)

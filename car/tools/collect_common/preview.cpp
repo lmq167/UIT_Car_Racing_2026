@@ -1,4 +1,13 @@
 #include "preview.h"
+#if defined(UCR_AUTO_PREVIEW)
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+#define UCR_DRIVE_TEST_HOOKS 1
+#define UCR_DRIVE_FAKE_PREVIEW_NAME "UCR_AUTO_FAKE_PREVIEW"
+#endif
+#endif
+#ifndef UCR_DRIVE_FAKE_PREVIEW_NAME
+#define UCR_DRIVE_FAKE_PREVIEW_NAME "UCR_DRIVE_FAKE_PREVIEW"
+#endif
 #include <opencv2/imgproc.hpp>
 #if defined(UCR_DRIVE_HAVE_HIGHGUI) && (!defined(UCR_DRIVE_TEST_HOOKS) || !UCR_DRIVE_TEST_HOOKS)
 #include <opencv2/highgui.hpp>
@@ -34,7 +43,11 @@ char decodeKey(int key) {
     if (key == 27) return 'E';
     if (key == 3) return '3';
     if (key >= 'A' && key <= 'Z') key += 'a' - 'A';
+#if defined(UCR_AUTO_PREVIEW)
+    return key < 128 && std::strchr("gr ", key) && key != 0 ? char(key) : 0;
+#else
     return key < 128 && std::strchr("wasdcxp ", key) && key != 0 ? char(key) : 0;
+#endif
 }
 [[maybe_unused]] void sendKey(int fd, int key) {
     const char decoded = decodeKey(key);
@@ -124,7 +137,7 @@ bool samplePreviewWindow(PreviewShared& shared, PreviewWindowTracker& tracker,
 int runPreviewChild(PreviewShared& shared, int key_fd) {
     // Không gọi cv::setNumThreads ở đây: sau fork, TBB của OpenCV 4.1.1 có thể treo; main đã đặt 1 luồng trước fork, con kế thừa.
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
-    const char* env = std::getenv("UCR_DRIVE_FAKE_PREVIEW");
+    const char* env = std::getenv(UCR_DRIVE_FAKE_PREVIEW_NAME);
     const std::string mode = env ? env : "ok";
     if (mode == "fail_start") return 11;
     shared.ready.store(1, std::memory_order_release);
@@ -249,7 +262,7 @@ PreviewStartResult PreviewHost::start() {
     if (options_.no_preview) return PreviewStartResult::Disabled;
 #if defined(UCR_DRIVE_TEST_HOOKS) && UCR_DRIVE_TEST_HOOKS
     // Không chỉ định con giả thì mô phỏng cả lỗi thiếu môi trường hiển thị của bản xe.
-    if (!std::getenv("UCR_DRIVE_FAKE_PREVIEW")) {
+    if (!std::getenv(UCR_DRIVE_FAKE_PREVIEW_NAME)) {
 #elif !defined(UCR_DRIVE_HAVE_HIGHGUI)
     unavailable("bản này không có HighGUI"); return PreviewStartResult::Unavailable;
 #endif

@@ -42,9 +42,9 @@ int main() {
         const int fd=mkstemp(path);
         Check(fd>=0,"Không tạo được file tạm"); close(fd);
         struct Cleanup { const char *path; ~Cleanup() { std::remove(path); } } cleanup{path};
-        auto load=[&](const std::string &text) {
+        auto load=[&](const std::string &text, bool allowFakeData=false) {
             { std::ofstream out(path); out<<text; Check(bool(out),"Không ghi được metadata"); }
-            return perception::InfoJson(path);
+            return perception::InfoJson(path,allowFakeData);
         };
         const auto info=load(json);
         perception::RoadSegmenter road(info);
@@ -92,6 +92,8 @@ int main() {
         Reject([&] { road.Decode(logits.data()); });
         for(const auto &change:std::vector<std::pair<std::string,std::string>>{
             {"\"fake_data\":false","\"fake_data\":true"}, {"\"fake_data\":false","\"other\":false"},
+            {"\"fake_data\":false","\"fake_data\":2"}, {"\"fake_data\":false","\"fake_data\":\"true\""},
+            {"\"dynamic\":false","\"dynamic\":true"}, {"\"preprocessing_in_model\":false","\"preprocessing_in_model\":true"},
             {"\"input_hw\":[3,4]","\"input_hw\":[0,4]"}, {"\"crop_y\":[2,7]","\"crop_y\":[2,8]"},
             {"\"crop_x\":[1,10]","\"crop_x\":[10,1]"}, {"\"color_order\":\"RGB\"","\"color_order\":\"BGR\""},
             {"\"output_shape\":[1,3,3,4]","\"output_shape\":[1,1,3,4]"},
@@ -102,8 +104,12 @@ int main() {
             Check(pos!=std::string::npos,"Không tìm thấy trường thử");
             broken.replace(pos,change.first.size(),change.second);
             Reject([&] { load(broken); });
+            if(change.second=="\"fake_data\":true")
+                Check(load(broken,true).input==info.input,"Hooks phải nhận fake_data=true qua cùng schema");
+            else Reject([&] { load(broken,true); });
         }
         Reject([&] { load("{}"); });
+        Reject([&] { load("{}",true); });
         std::cout<<"ĐẠT: metadata, crop, RGB, uint8/255, NCHW, argmax, mask gốc, engine giả\n";
         return 0;
     } catch(const std::exception &error) {

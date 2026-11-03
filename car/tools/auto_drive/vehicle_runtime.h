@@ -1,0 +1,478 @@
+#pragma once
+#include "options.h"
+#include "hooks.h"
+#include <functional>
+#include <sys/stat.h>
+#include "../collect_common/preview.h"
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
+#include <opencv2/videoio.hpp>
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+#include "hardware/Motor.h"
+#include "hardware/Servo.h"
+#endif
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cerrno>
+#include <chrono>
+#include <condition_variable>
+#include <csignal>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <deque>
+#include <fcntl.h>
+#include <fstream>
+#include <iostream>
+#include <memory>
+#include <mutex>
+#include <exception>
+#include <poll.h>
+#include <pthread.h>
+#include <spawn.h>
+#include <sys/file.h>
+#include <sys/socket.h>
+#include <sys/statvfs.h>
+#include <sys/wait.h>
+#include <thread>
+#include <unistd.h>
+
+#ifndef UCR_DRIVE_GIT_REVISION
+#define UCR_DRIVE_GIT_REVISION "unknown"
+#endif
+extern char** environ;
+using namespace auto_drive;
+using Clock = std::chrono::steady_clock;
+
+namespace {
+static_assert(std::atomic<int>::is_always_lock_free, "Co tin hieu phai khong khoa");
+std::atomic<int> stopping{0};
+void signalStop(int s) { stopping.store(s); }
+int64_t monotonicNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count();
+}
+int64_t nowMs() { return monotonicNs() / 1000000; }
+int64_t wallMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+std::string utcNow() {
+    const auto t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+    std::tm tm{}; gmtime_r(&t, &tm);
+    std::ostringstream out; out << std::put_time(&tm, "%Y-%m-%dT%H:%M:%SZ");
+    return out.str();
+}
+struct Failure : std::runtime_error {
+    int code;
+    Failure(int c, const std::string& message) : std::runtime_error(message), code(c) {}
+};
+struct SignalStop {}; // Tín hiệu tới trong lúc Init: thoát mã 0 qua đường dừng chung.
+// Chép từ drive_collect: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
+// Tạo trước luồng watchdog để luồng đó thừa hưởng mặt nạ; tín hiệu chờ sẽ tới luồng chính sau restore().
+class InitSignalMask {
+    sigset_t original_{};
+    bool active_ = true;
+public:
+    InitSignalMask() {
+        sigset_t blocked;
+        sigemptyset(&blocked);
+        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) sigaddset(&blocked, s);
+        if (pthread_sigmask(SIG_BLOCK, &blocked, &original_) != 0)
+            throw Failure(1, "Không chặn được tín hiệu lúc Init");
+    }
+    void restore() {
+        if (active_ && pthread_sigmask(SIG_SETMASK, &original_, nullptr) != 0)
+            throw Failure(1, "Không khôi phục được mặt nạ tín hiệu");
+        active_ = false;
+    }
+    ~InitSignalMask() { if (active_) pthread_sigmask(SIG_SETMASK, &original_, nullptr); }
+};
+void warning() noexcept {
+    const char text[] = "KIEM TRA XE, DUNG CONG TAC NGUON\n";
+    pollfd out{STDERR_FILENO, POLLOUT, 0};
+    if (poll(&out, 1, 0) > 0 && (out.revents & POLLOUT)) {
+        const auto ignored = ::write(STDERR_FILENO, text, sizeof(text) - 1); (void)ignored;
+    }
+}
+void trace(const char* event, const std::string& value = {}) {
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+    // Lấy giờ và ghi dưới cùng một khóa để các luồng không ghi vết đảo thứ tự giờ.
+    static std::mutex traceMutex;
+    std::lock_guard<std::mutex> traceLock(traceMutex);
+    if (const char* path = std::getenv("UCR_AUTO_FAKE_TRACE")) {
+        const int fd = ::open(path, O_WRONLY | O_CREAT | O_APPEND | O_NONBLOCK | O_CLOEXEC, 0600);
+        if (fd >= 0) {
+            const auto line = std::to_string(nowMs()) + ' ' + event +
+                (value.empty() ? "" : " " + value) + '\n';
+            const auto ignored = ::write(fd, line.data(), line.size()); (void)ignored;
+            ::close(fd);
+        }
+    }
+#else
+    (void)event; (void)value;
+#endif
+}
+class VehicleLock {
+    int fd_ = -1;
+public:
+    VehicleLock() {
+        const char* path = "/tmp/ucr_vehicle.lock";
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        if (const char* value = std::getenv("UCR_AUTO_FAKE_LOCK")) path = value;
+#endif
+        fd_ = ::open(path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd_ < 0) throw Failure(1, "Không mở được khóa xe");
+        if (flock(fd_, LOCK_EX | LOCK_NB) != 0) {
+            const int error = errno; ::close(fd_); fd_ = -1;
+            throw Failure(error == EWOULDBLOCK || error == EAGAIN ? 6 : 1,
+                          "Không lấy được khóa xe; không chạm motor");
+        }
+    }
+    int fd() const { return fd_; }
+    ~VehicleLock() { if (fd_ >= 0) ::close(fd_); }
+};
+struct Paths { std::string root, stop; };
+Paths executablePaths() {
+    std::array<char, 4096> buf{};
+    const auto n = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
+    if (n <= 0 || static_cast<size_t>(n) >= buf.size() - 1)
+        throw Failure(1, "Không tìm được đường dẫn thật của tệp chạy");
+    const std::string executable(buf.data(), static_cast<size_t>(n));
+    const auto dir = parentPath(executable);
+    auto root = dir;
+    while (!regularFile(root + "/config.yaml")
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+           && !regularFile(root + "/control.yaml")
+#endif
+    ) {
+        const auto parent = parentPath(root);
+        if (parent == root) throw Failure(1, "Không tìm thấy config.yaml");
+        root = parent;
+    }
+    const auto stop = dir + "/ucr_stop";
+    if (!regularFile(stop) || access(stop.c_str(), X_OK) != 0)
+        throw Failure(1, "Thiếu ucr_stop cạnh tệp chạy");
+    return {root, stop};
+}
+// posix_spawn dùng được sau khi preview/ghi ảnh đã có luồng; không chạy shell.
+bool externalStop(const Paths& paths) noexcept {
+    try {
+        const auto binary = paths.stop, config = paths.root + "/config.yaml";
+        char* args[] = {const_cast<char*>(binary.c_str()), const_cast<char*>("--config"),
+                        const_cast<char*>(config.c_str()), nullptr};
+        posix_spawnattr_t attr;
+        if (posix_spawnattr_init(&attr) != 0) return false;
+        sigset_t empty, defaults;
+        sigemptyset(&empty); sigemptyset(&defaults);
+        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGPIPE}) sigaddset(&defaults, s);
+        int error = posix_spawnattr_setsigmask(&attr, &empty);
+        if (!error) error = posix_spawnattr_setsigdefault(&attr, &defaults);
+        if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
+        if (!error) error = posix_spawnattr_setflags(&attr,
+            POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
+        pid_t child = -1;
+        if (!error) error = posix_spawn(&child, binary.c_str(), nullptr, &attr, args, environ);
+        posix_spawnattr_destroy(&attr);
+        if (error) return false;
+        const auto deadline = nowMs() + kStopTimeoutMs;
+        int status = 0;
+        while (nowMs() < deadline) {
+            const auto result = waitpid(child, &status, WNOHANG);
+            if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+            if (result < 0 && errno != EINTR) return false;
+            ::poll(nullptr, 0, kPollMs);
+        }
+        ::kill(-child, SIGTERM);
+        const auto killAt = nowMs() + kStopKillMs;
+        while (nowMs() < killAt) {
+            const auto result = waitpid(child, &status, WNOHANG);
+            if (result == child || (result < 0 && errno != EINTR)) return false;
+            ::poll(nullptr, 0, kPollMs);
+        }
+        ::kill(-child, SIGKILL);
+        // Không chờ vô hạn một tiến trình bị kẹt trong nhân hệ điều hành.
+        const auto reapAt = nowMs() + kStopKillMs;
+        while (nowMs() < reapAt) {
+            const auto result = waitpid(child, &status, WNOHANG);
+            if (result == child || (result < 0 && errno != EINTR)) break;
+            ::poll(nullptr, 0, kPollMs);
+        }
+    } catch (...) {}
+    return false;
+}
+
+std::atomic<int64_t> hardwareSince{0};
+std::atomic<int> hardwareKind{0}; // 1 UART, 2 I2C, 3 Init nguyên bản BTC.
+std::atomic<bool> hardwareFault{false};
+struct HardwareCall {
+    explicit HardwareCall(int kind) { hardwareKind = kind; hardwareSince = nowMs(); }
+    ~HardwareCall() {
+        hardwareSince = 0;
+        // Khi watchdog đã nhận quyền dừng, không cho luồng cũ cấp lại lệnh chạy.
+        while (hardwareFault) ::poll(nullptr, 0, kPollMs);
+    }
+};
+struct DriveMotor {
+    bool reverse;
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+    Motor device;
+    int readiness = -1;
+    ~DriveMotor() { if (readiness >= 0) ::close(readiness); }
+#endif
+    explicit DriveMotor(bool r) : reverse(r) {}
+    bool init() {
+        HardwareCall call(3);
+        trace("motor_init");
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        return !fakeOpenFail("motor") && !fakeOpenFail("motor_init");
+#else
+        const bool ok = device.Init(); // Một lần duy nhất, không thử lại.
+        readiness = ::open("/dev/ttyTHS1", O_WRONLY | O_NOCTTY | O_NONBLOCK | O_CLOEXEC);
+        return ok && !device.InitHadWriteFailure() && device.LastWriteOk() && readiness >= 0;
+#endif
+    }
+    bool SetSpeedCms(float v) {
+        HardwareCall call(1);
+        if (hardwareFault) return false;
+        const float command = applyMotorSign(clampAutoSpeed(v), reverse);
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        const bool ok = !fakeMotorFail();
+        trace("motor_speed", std::to_string(command) + (ok ? "" : " fail"));
+        return ok;
+#else
+        pollfd uart{readiness, POLLOUT, 0};
+        if (poll(&uart, 1, kUartPollMs) <= 0 || !(uart.revents & POLLOUT) ||
+            (uart.revents & (POLLERR | POLLHUP | POLLNVAL))) return false;
+        device.SetSpeedCms(command);
+        return device.LastWriteOk();
+#endif
+    }
+    bool EmergencyStop() noexcept {
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        const bool ok = !fakeMotorFail();
+        try { trace("motor_emergency", ok ? "" : "fail"); } catch (...) {}
+        return ok;
+#else
+        return device.EmergencyStop();
+#endif
+    }
+};
+struct DriveServo {
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+    Servo device;
+#endif
+    bool open() {
+        HardwareCall call(2);
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        return !fakeOpenFail("servo");
+#else
+        return device.Init() && device.IsReady() && device.SetPWMFreq(kServoPwmHz);
+#endif
+    }
+    bool rawAngle(int a) {
+        a = clampAutoSteer(a);
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        const bool ok = !fakeOpenFail("servo");
+        trace("servo_angle", std::to_string(a) + (ok ? "" : " fail"));
+        return ok;
+#else
+        return device.SetAngle(static_cast<int16_t>(a));
+#endif
+    }
+    bool SetAngle(int a) {
+        HardwareCall call(2);
+        if (hardwareFault) return false; // Như motor: watchdog đã nhận quyền dừng.
+        return rawAngle(a);
+    }
+};
+// Đường dự phòng khi terminate: dừng motor trước servo/helper, giữ khóa tới khi thoát.
+DriveMotor* terminateMotor = nullptr;
+DriveServo* terminateServo = nullptr;
+const Paths* terminatePaths = nullptr;
+void emergencyTerminate() noexcept {
+    hardwareFault = true;
+    try {
+        std::thread([] {
+            ::poll(nullptr, 0, kCleanupTimeoutMs + kStopTimeoutMs + 2 * kStopKillMs);
+            _exit(4);
+        }).detach();
+    } catch (...) {}
+    if (terminateMotor) {
+        terminateMotor->EmergencyStop();
+        for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); terminateMotor->EmergencyStop(); }
+    }
+    if (terminateServo && hardwareKind != 2) { try { terminateServo->rawAngle(0); } catch (...) {} }
+    if (terminatePaths) externalStop(*terminatePaths);
+    warning();
+    std::abort();
+}
+class Watchdog {
+    DriveMotor& motor_;
+    DriveServo& servo_;
+    const Paths& paths_;
+    std::atomic<bool> done_{false};
+    std::thread worker_;
+    void fail(int kind, int code) noexcept {
+        hardwareFault = true;
+        try {
+            std::thread([code] {
+                ::poll(nullptr, 0, kCleanupTimeoutMs + kStopTimeoutMs + 2 * kStopKillMs);
+                _exit(code);
+            }).detach();
+        } catch (...) { motor_.EmergencyStop(); _exit(code); }
+        motor_.EmergencyStop();
+        // Như drive_collect: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
+        for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); motor_.EmergencyStop(); }
+        // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
+        if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }
+        warning();
+        externalStop(paths_);
+        _exit(code);
+    }
+public:
+    std::atomic<int64_t> heartbeat{0}, cleanupAt{0};
+    std::atomic<int> cleanupCode{4};
+    std::atomic<bool> initialized{false};
+    Watchdog(DriveMotor& motor, DriveServo& servo, const Paths& paths)
+        : motor_(motor), servo_(servo), paths_(paths) {
+        heartbeat = nowMs();
+        worker_ = std::thread([this] {
+            while (!done_) {
+                const auto now = nowMs(), since = hardwareSince.load(), cleanup = cleanupAt.load();
+                const int kind = hardwareKind.load();
+                const int limit = initialized ? kHardwareTimeoutMs : kInitTimeoutMs;
+                if (since && now - since > limit && hardwareSince.load() == since) fail(kind, 4);
+                if (cleanup && now - cleanup > kCleanupTimeoutMs) fail(since ? kind : 0, cleanupCode);
+                if (!cleanup && !since && initialized && now - heartbeat.load() > kStaleFrameMs)
+                    fail(0, 4);
+                ::poll(nullptr, 0, kPollMs);
+            }
+        });
+    }
+    ~Watchdog() { done_ = true; if (worker_.joinable()) worker_.join(); }
+};
+struct Header { int status = 0, width = 0, height = 0; int64_t ns = 0, wall = 0; };
+bool sendAll(int fd, const void* data, size_t size) {
+    const auto* p = static_cast<const char*>(data);
+    while (size && !stopping) {
+        const auto n = ::send(fd, p, size, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        p += n; size -= static_cast<size_t>(n);
+    }
+    return size == 0;
+}
+void cameraWorker(int fd) {
+    try {
+        // Cha tạo con trước preview.start; con chỉ mở camera sau yêu cầu đầu tiên.
+        char request;
+        if (::recv(fd, &request, 1, 0) != 1) return;
+        cv::VideoCapture cap;
+        std::string fake;
+        bool synthetic = false;
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        fake = "ok";
+        if (const char* v = std::getenv("UCR_AUTO_FAKE_CAMERA")) fake = v;
+        synthetic = fake == "ok" || fake == "none" || fake == "stall";
+        if (fakeOpenFail("camera")) { Header h; h.status = -2; sendAll(fd, &h, sizeof(h)); return; }
+#endif
+        if (!synthetic && !cap.open(kPipeline, cv::CAP_GSTREAMER)) {
+            Header h; h.status = -2; sendAll(fd, &h, sizeof(h)); return;
+        }
+        unsigned produced = 0;
+        while (!stopping && ::recv(fd, &request, 1, 0) == 1) {
+            cv::Mat frame;
+            if (synthetic) {
+                if (fake == "none" || (fake == "stall" && produced >= 3)) {
+                    while (!stopping) ::poll(nullptr, 0, kPollMs);
+                    break;
+                }
+                ::poll(nullptr, 0, 2 * kPollMs);
+                frame = cv::Mat(720, 1280, CV_8UC3, cv::Scalar(80, 120, 160));
+                ++produced;
+            } else cap.read(frame);
+            Header h; h.ns = monotonicNs(); h.wall = wallMs();
+            if (!frame.empty()) {
+                if (frame.type() != CV_8UC3 || frame.total() * frame.elemSize() > kMaxFrameBytes)
+                    throw std::runtime_error("Khung camera BGR không hợp lệ hoặc quá lớn");
+                if (!frame.isContinuous()) frame = frame.clone();
+                h.status = 1; h.width = frame.cols; h.height = frame.rows;
+            }
+            if (!sendAll(fd, &h, sizeof(h))) break;
+            if (h.status == 1 && !sendAll(fd, frame.data, frame.total() * frame.elemSize())) break;
+            if (!h.status) ::poll(nullptr, 0, kPollMs);
+        }
+    } catch (...) { Header h; h.status = -2; sendAll(fd, &h, sizeof(h)); }
+}
+class Camera {
+    int fd_ = -1;
+    pid_t child_ = -1;
+    bool started_ = false;
+    bool receive(void* data, size_t size, const std::function<bool()>& tick) {
+        auto* p = static_cast<char*>(data);
+        while (size) {
+            if (!tick()) return false;
+            pollfd ready{fd_, POLLIN, 0};
+            const int result = poll(&ready, 1, kPollMs);
+            if (result < 0 && errno == EINTR) continue;
+            if (result < 0) throw Failure(1, "Không chờ được camera");
+            if (!result) continue;
+            const auto n = ::recv(fd_, p, size, MSG_DONTWAIT);
+            if (n < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+            if (n <= 0) throw Failure(1, "Tiến trình camera đã đóng/chết");
+            p += n; size -= static_cast<size_t>(n);
+        }
+        return true;
+    }
+public:
+    explicit Camera(int lockFd) {
+        int sockets[2];
+        if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) != 0)
+            throw Failure(1, "Không tạo được kênh camera");
+        child_ = fork();
+        if (child_ == 0) {
+            ::close(sockets[0]); ::close(lockFd);
+            cameraWorker(sockets[1]); ::close(sockets[1]); _exit(0);
+        }
+        ::close(sockets[1]);
+        if (child_ < 0) { ::close(sockets[0]); throw Failure(1, "Không tạo được con camera"); }
+        fd_ = sockets[0];
+    }
+    bool read(cv::Mat& frame, Header& h, const std::function<bool()>& tick) {
+        const char request = 1;
+        if (!started_) {
+            if (::send(fd_, &request, 1, MSG_DONTWAIT | MSG_NOSIGNAL) != 1)
+                throw Failure(3, "Không khởi động được camera");
+            started_ = true;
+        }
+        // Mỗi thời điểm chỉ một yêu cầu, không tích lũy khung cũ trong socket.
+        if (::send(fd_, &request, 1, MSG_DONTWAIT | MSG_NOSIGNAL) != 1) {
+            try {
+                if (receive(&h, sizeof(h), tick) && h.status == -2)
+                    throw Failure(3, "Không mở/đọc được camera");
+            } catch (const Failure& e) {
+                if (e.code != 1) throw;
+            }
+            throw Failure(1, "Không yêu cầu được khung camera");
+        }
+        if (!receive(&h, sizeof(h), tick)) return false;
+        if (h.status == -2) throw Failure(3, "Không mở/đọc được camera");
+        if (h.status != 1) return true;
+        if (h.width <= 0 || h.height <= 0 ||
+            static_cast<uint64_t>(h.width) * static_cast<uint64_t>(h.height) * 3 > kMaxFrameBytes)
+            throw Failure(1, "Kích thước camera không hợp lệ");
+        frame.create(h.height, h.width, CV_8UC3);
+        return receive(frame.data, frame.total() * frame.elemSize(), tick);
+    }
+    ~Camera() {
+        if (fd_ >= 0) { ::shutdown(fd_, SHUT_RDWR); ::close(fd_); }
+        if (child_ > 0) {
+            ::kill(child_, SIGKILL);
+            while (waitpid(child_, nullptr, 0) < 0 && errno == EINTR) {}
+        }
+    }
+};
+
+
+} // namespace

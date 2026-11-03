@@ -1,0 +1,27 @@
+#pragma once
+#include <cmath>
+
+namespace auto_drive {
+constexpr float kMaxAutoSpeedCms = 10;
+constexpr int kMaxAutoSteerDeg = 40;
+constexpr bool kReverseMotor = false;
+constexpr int kStaleFrameMs = 500, kPollMs = 10, kUartPollMs = 50;
+constexpr int kHardwareTimeoutMs = 300, kInitTimeoutMs = 5000;
+constexpr int kFrameTimeoutMs = 5000, kCleanupTimeoutMs = 3000;
+constexpr int kStopTimeoutMs = 10000, kStopKillMs = 1000;
+constexpr int kServoPwmHz = 50, kMinFreeMb = 1024, kJpegQuality = 90;
+constexpr unsigned long kMaxFrameBytes = 64UL * 1024 * 1024;
+constexpr const char* kPipeline =
+    "nvarguscamerasrc sensor-mode=5 wbmode=0 ! "
+    "video/x-raw(memory:NVMM),width=1280,height=720,framerate=60/1 ! "
+    "nvvidconv ! video/x-raw,format=BGRx ! videoconvert ! "
+    "video/x-raw,format=BGR ! appsink drop=true max-buffers=1";
+inline float clampAutoSpeed(float v) {
+    return !std::isfinite(v) ? 0 : v < -kMaxAutoSpeedCms ? -kMaxAutoSpeedCms :
+        v > kMaxAutoSpeedCms ? kMaxAutoSpeedCms : v;
+}
+inline int clampAutoSteer(int a) {
+    return a < -kMaxAutoSteerDeg ? -kMaxAutoSteerDeg : a > kMaxAutoSteerDeg ? kMaxAutoSteerDeg : a;
+}
+inline float applyMotorSign(float v, bool reverse) { return v == 0 ? +0.0f : reverse ? -v : v; }
+}
