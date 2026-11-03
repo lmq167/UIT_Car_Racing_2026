@@ -122,7 +122,7 @@ class Run(td.Run):
         helper = bindir / 'ucr_stop'
         helper.write_text('#!' + sys.executable + '\nimport os,time\n'
                           'with open(os.environ["UCR_AUTO_FAKE_TRACE"],"a") as f:\n'
-                          ' f.write("%.6f test_ucr_stop\\n" % (time.monotonic()*1000))\n', encoding='utf-8')
+                          ' f.write("%d test_ucr_stop\\n" % int(time.monotonic()*1000))\n', encoding='utf-8')
         helper.chmod(0o755)
         child_env = {k: v for k, v in os.environ.items()
                      if not k.startswith(('UCR_AUTO_FAKE_', 'UCR_DRIVE_FAKE_', 'UCR_CAM_TEST_'))
