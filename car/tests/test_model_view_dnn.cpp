@@ -6,7 +6,7 @@
 #include <string>
 
 #ifdef UCR_TSAN_SUPP
-// Như harness T33: race giả trong OpenCV/TBB chưa instrument, xem tools/drive_collect/tsan.supp.
+// Như harness T33: race giả trong OpenCV/TBB chưa instrument, xem tools/collect_common/tsan.supp.
 extern "C" const char* __tsan_default_options() { return "suppressions=" UCR_TSAN_SUPP; }
 #endif
 
