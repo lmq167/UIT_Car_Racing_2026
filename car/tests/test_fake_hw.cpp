@@ -223,7 +223,7 @@ int main(int argc,char **argv) {
         const auto file=root+"/calib_"+std::to_string(limit)+"_"+std::to_string(gap_ms)+"_"+std::to_string(int(requested))+".csv";
         setenv("UCR_FAKE_HW_TRACE",file.c_str(),1);
         app::Backend backend(config); backend.Init();
-        app::Calibration calibration(config,"motor",root,root+"/config.yaml","",false);
+        app::Calibration calibration(config,"motor",root,root+"/config.yaml");
         common::Snapshot snapshot;
         const auto origin=common::Clock::now();
         auto motor_speed=[&] {

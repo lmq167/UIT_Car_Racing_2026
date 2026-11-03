@@ -23,7 +23,6 @@ done
 check 'thiếu giá trị tham số: --step' --mode calib --step
 check 'Bước hiệu chuẩn bị lặp' --mode calib servo --step 2
 check '--step chỉ dùng với --mode calib' --step 6 --mode manual
-check 'Cờ smoke chỉ dùng' --mode calib --step 6 --smoke-drop-camera
 folder=$(mktemp -d)
 trap 'rm -rf -- "$folder"' EXIT
 config="$folder/cau hinh.yaml"

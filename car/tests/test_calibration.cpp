@@ -66,9 +66,9 @@ int main() {
     }
     load("max_speed_cms: 100"); std::remove(path);
     Check(app::CalibrationStep("position") && !app::CalibrationStep("unknown"),"kiểm bước trước thiết bị");
-    char folder[]="/tmp/ucr_calibration_flow_XXXXXX"; Check(mkdtemp(folder)!=nullptr,"tạo thư mục smoke giả");
+    char folder[]="/tmp/ucr_calibration_flow_XXXXXX"; Check(mkdtemp(folder)!=nullptr,"tạo thư mục hiệu chuẩn giả");
     c.log_dir=folder; c.tof_mapping_confirmed=1;
-    const std::string cfg=c.log_dir+"/config.yaml", marker=c.log_dir+"/kill.ready";
+    const std::string cfg=c.log_dir+"/config.yaml";
     { std::ofstream out(cfg); out<<"%YAML:1.0\n---\nservo_trim_deg: 0\n"; }
     {
         common::Config bounded=c; bounded.calib_max_duration_s=2;
@@ -78,7 +78,7 @@ int main() {
         obs.frame_id=1; obs.captured_at=obs.odom_at=start; obs.odom_valid=true;
         obs.odom_cm=17; obs.yaw_rel_deg=30;
         for(const char *step:{"motor","radius","position","servo"}) {
-            app::Calibration cal(bounded,step,c.log_dir,cfg,"",false);
+            app::Calibration cal(bounded,step,c.log_dir,cfg);
             auto cmd=cal.Tick(s,'d',start);
             Check(cmd.steeringDeg==bounded.calib_servo_step_deg,"đặt góc trước lượt");
             cmd=cal.Tick(s,'y',start);
@@ -179,68 +179,7 @@ int main() {
         return cal.Tick(snapshot,key,now);
     };
     {
-        app::Calibration cal(c,"smoke",c.log_dir,cfg,"",true);
-        tick(cal,3001);
-        for(int i=0;i<5;++i) Check(tick(cal,3010+i*10,'y').speedCmPerSec==0,"thiếu trình bao: không được chạy motor");
-        Check(cal.Done() && cal.Failed(),"smoke trực tiếp chỉ cho kiểm cảm biến/servo, không bỏ phép kill");
-        Check(tick(cal,4000,'y').speedCmPerSec==0,"smoke đã kết thúc không nhận lệnh chạy lại");
-    }
-    {
-        common::Config unconfirmed=c; unconfirmed.tof_mapping_confirmed=0;
-        app::Calibration cal(unconfirmed,"smoke",c.log_dir,cfg,marker,true);
-        Check(tick(cal,3001).speedCmPerSec==0 && cal.Done() && cal.Failed(),"ánh xạ chưa xác nhận: không motor");
-    }
-    {
-        app::Calibration cal(c,"smoke",c.log_dir,cfg,marker,true);
-        Check(tick(cal,3001).steeringDeg==0,"smoke bắt đầu ở trim");
-        Check(tick(cal,3010,'y').steeringDeg==-10,"servo âm 10 độ cần xác nhận");
-        Check(tick(cal,3020).steeringDeg==-10,"chưa xác nhận thì giữ góc smoke");
-        Check(tick(cal,3020,'y').steeringDeg==10,"servo dương 10 độ cần xác nhận");
-        Check(tick(cal,3030,'y').steeringDeg==0,"servo trả trim");
-        Check(tick(cal,3040,'y').speedCmPerSec==0,"chưa xác nhận kê bánh: không motor");
-        const auto first=tick(cal,3050,'y');
-        Check(first.speedCmPerSec==10 && first.calib_limits.enabled,"đã kê bánh: chạy 10 với giới hạn độc lập UI");
-        snapshot.observation.meas_speed=10;
-        Check(tick(cal,5051).calib_limits.deadline==first.calib_limits.deadline,"smoke 6 sang 7 không gia hạn");
-        snapshot.observation.tof[c.FrontSlot()].distanceMm=100; tick(cal,5100);
-        snapshot.observation.meas_speed=0; Check(tick(cal,5200).speedCmPerSec==0,"encoder dừng sau ToF");
-        snapshot.observation.tof[c.FrontSlot()].distanceMm=2000;
-        const auto drop=tick(cal,5300,'y');
-        Check(drop.calib_limits.enabled && drop.calib_limits.deadline>first.calib_limits.deadline,"đoạn ngắt ảnh có hạn riêng");
-        snapshot.observation.meas_speed=10;
-        Check(tick(cal,6400).calib_limits.deadline==drop.calib_limits.deadline,"smoke 10 sang 11 không gia hạn");
-        Check(cal.DropCamera(),"chỉ ngắt ảnh sau encoder đang chạy");
-        snapshot.observation.meas_speed=0;
-        const auto kill=tick(cal,7000);
-        Check(kill.calib_limits.enabled && kill.calib_limits.deadline>drop.calib_limits.deadline,"đoạn kill có hạn riêng");
-        Check(!cal.DropCamera(),"encoder dừng: cấp ảnh lại");
-        Check(!std::ifstream(marker).good(),"chưa chạy lại: không được kill");
-        snapshot.observation.meas_speed=10;
-        Check(tick(cal,8101).calib_limits.deadline==kill.calib_limits.deadline,"smoke 12 sang 13 không gia hạn");
-        Check(std::ifstream(marker).good(),"encoder chạy lại mới báo run.sh kill");
-    }
-    std::remove(marker.c_str());
-    for(const char *fault:{"duration","distance","encoder","cancel"}) {
-        app::Calibration cal(c,"smoke",c.log_dir,cfg,marker,true);
-        tick(cal,3001); for(int i=0;i<5;++i) tick(cal,3010+i*10,'y');
-        auto now=snapshot.observation.odom_at;
-        if(std::string(fault)=="duration") now+=std::chrono::seconds(61);
-        if(std::string(fault)=="distance") snapshot.observation.odom_cm+=c.calib_distance_cm;
-        if(std::string(fault)=="encoder") snapshot.observation.odom_valid=false;
-        if(std::string(fault)=="cancel") cal.CancelMotion();
-        Check(cal.Tick(snapshot,-1,now).speedCmPerSec==0 && cal.Done() && cal.Failed(),
-            "smoke hết hạn/quãng/encoder hoặc nhận huỷ đều kết thúc KHÔNG ĐẠT");
-        snapshot.observation.odom_cm=0;
-    }
-    {
-        common::Config small=c; small.smoke_servo_deg=8; small.max_steering_deg=6;
-        app::Calibration cal(small,"smoke",c.log_dir,cfg,"",true);
-        tick(cal,3001);
-        Check(tick(cal,3010,'y').steeringDeg==-6,"góc smoke vẫn bị chặn bởi giới hạn cơ khí");
-        Check(tick(cal,3020,'y').steeringDeg==6,"góc smoke dương vẫn bị chặn");
-    }
-    {
-        app::Calibration cal(c,"motor",c.log_dir,cfg,"",false);
+        app::Calibration cal(c,"motor",c.log_dir,cfg);
         Check(tick(cal,100,'y').speedCmPerSec==10,"bắt đầu lượt calib để kiểm mất ảnh");
         auto obs=snapshot.observation; obs.captured_at-=std::chrono::milliseconds(800);
         snapshot.observation=obs;
@@ -258,15 +197,9 @@ int main() {
         Check(tick(cal,990,'y').speedCmPerSec==10,"lượt mới chỉ bắt đầu bằng phím mới");
         Check(tick(cal,1000,'x').speedCmPerSec==0 && tick(cal,1100).speedCmPerSec==0,"x vẫn huỷ lượt calib");
     }
-    {
-        app::Calibration cal(c,"smoke",c.log_dir,cfg,marker,true);
-        tick(cal,3001); for(int i=0;i<5;++i) tick(cal,3010+i*10,'y');
-        snapshot.observation.meas_speed=0;
-        tick(cal,5100); Check(cal.Done() && cal.Failed() && !std::ifstream(marker).good(),"không có encoder chạy thì không tính đạt kill");
-    }
     for(const char *name:{"servo","radius","motor","position","imu","tof","camera","latency","timing"}) {
         const std::string step=name;
-        app::Calibration cal(c,step,c.log_dir,cfg,"",false);
+        app::Calibration cal(c,step,c.log_dir,cfg);
         const bool motion=step=="servo" || step=="radius" || step=="motor" || step=="position";
         const auto cmd=tick(cal,100,'y');
         Check((cmd.speedCmPerSec>0)==motion,"chỉ bước chuyển động mới nhận y chạy motor");
