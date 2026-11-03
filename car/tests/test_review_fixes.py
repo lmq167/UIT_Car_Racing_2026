@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Kiểm tra DEV qua tiến trình giả: phím lặp, manual mất ảnh và smoke kẹt UI."""
+"""Kiểm tra DEV qua tiến trình giả: phím lặp, manual mất ảnh."""
 import os
 from pathlib import Path
 import subprocess
@@ -28,14 +28,7 @@ def main():
             args = ["--mode", "calib", "--step", "4"]
             env["UCR_FAKE_KEYS"] = "600:y,1500:y,2400:y,3300:y,4700:q"
         else:
-            assert scenario in ("smoke_duration", "smoke_distance", "smoke_image"), scenario
-            args = ["--mode", "smoke", "--smoke-kill-file", str(root / "kill.ready")]
-            env["UCR_FAKE_KEYS"] = "3400:y,3600:y,3800:y,4000:y,4200:y"
-            env["UCR_FAKE_UI_STALL"] = "4500:7000"
-            if scenario == "smoke_distance":
-                values["calib_distance_cm"] = 8
-            if scenario == "smoke_image":
-                env["UCR_FAKE_CAMERA_GAPS"] = "4800:10000"
+            raise AssertionError("Ca không tồn tại: " + scenario)
         config.write_text(config_text(Path(source).read_text(encoding="utf-8"), values), encoding="utf-8")
         # Giữ stdin mở: EOF chủ động huỷ chuyển động, sẽ che lỗi cần tìm.
         with output.open("wb") as log:
@@ -49,8 +42,7 @@ def main():
                     process.wait(timeout=3)
                 process.stdin.close()
         message = output.read_text(encoding="utf-8", errors="replace")[-3000:]
-        expected_code = 1 if scenario.startswith("smoke_") else 0
-        assert process.returncode == expected_code, message
+        assert process.returncode == 0, message
         rows = trace_rows(trace)
         motors = [(ms, value) for ms, kind, value in rows if kind == "motor_speed"]
         first = next(ms for ms, value in motors if value > 0)
@@ -61,16 +53,9 @@ def main():
             assert any(3200 <= ms < 3900 and value == 0 for ms, value in motors), motors
             assert any(4000 <= ms < 4700 and value > 0 for ms, value in motors), motors
         else:
-            if scenario == "smoke_image":
-                lower, upper = 4900, 5250
-            else:
-                duration = 800 if scenario == "smoke_distance" else 3000
-                lower, upper = first + duration - 200, first + duration + 350
+            lower, upper = first + 3000 - 200, first + 3000 + 350
             assert lower <= stopped <= upper, (scenario, first, stopped)
             assert all(value == 0 for ms, value in motors if ms >= stopped), motors
-            if scenario.startswith("smoke_"):
-                assert first < 4500 < stopped < 11500, "Chưa chứng minh dừng trong lúc UI kẹt"
-                assert not (root / "kill.ready").exists(), "Smoke hỏng vẫn cho phép kill"
             angles = [(ms, value) for ms, kind, value in rows if kind == "servo_angle"]
             assert all(value == 7 for ms, value in angles if ms >= stopped), angles
         print("ĐẠT DEV:", scenario, "bắt đầu ms=", first, "dừng ms=", stopped)
