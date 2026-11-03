@@ -1,4 +1,4 @@
-"""T47 P1: chấp nhận hộp đen theo leader L1–L7 và bản duyệt; Python 3.6/Linux.
+"""T47 P1/P2: chấp nhận hộp đen theo hợp đồng leader; Python 3.6/Linux.
 
 Chỉ chạy hooks, không đọc nguồn DEV. A27/A33 là kiểm chung và có ca riêng.
 Tên trường CSV/session bổ sung được công bố trong T47t_report.md cho DEV.
@@ -30,7 +30,27 @@ _spec_info = importlib.util.spec_from_file_location('road_fixture', str(HERE.par
 road_fixture = importlib.util.module_from_spec(_spec_info)
 _spec_info.loader.exec_module(road_fixture)
 
-CASES = ['A{:02d}'.format(i) for i in range(1, 36) if i != 30]
+CASES = ['A{:02d}'.format(i) for i in list(range(1, 36)) + list(range(40, 49))]
+CASES += ['A07b', 'A08b', 'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51']
+YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
+                'round_barrier', 'work_barrier']
+YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
+                   green_frames=3, approach_cms=5, red_stop_x_frac=0.90,
+                   det_max_age_ms=500, yolo_every_n=3,
+                   control_period_ms=20, slow_per_deg=0, kd=0)
+P2_BOUNDS = dict(start_wait_green=(1, 0, 1), vote_window=(5, 1, 30),
+                 vote_min=(3, 1, 5), green_frames=(3, 1, 5),
+                 approach_cms=(5, 0, 10), red_stop_x_frac=(0.90, 0, 1))
+for _light in ('red', 'green', 'off'):
+    P2_BOUNDS[_light + '_conf_min'] = (0.5, 0, 1)
+    P2_BOUNDS[_light + '_box_min_area_frac'] = (0.0001, 0, 1)
+    YOLO_VALUES[_light + '_conf_min'] = 0.5
+    YOLO_VALUES[_light + '_box_min_area_frac'] = 0.0001
+YOLO_BOXES = dict(empty=[], green=[('green', 800)], off=[('off', 800)],
+                  red_mid=[('red', 800)], red_edge=[('red', 1152)],
+                  red_089=[('red', 0.89 * 1280)], red_095=[('red', 0.95 * 1280)],
+                  red_050=[('red', 0.50 * 1280)], red_085=[('red', 0.85 * 1280)],
+                  red_green=[('red', 1152), ('green', 800)])
 BOUNDS = {
     'control_period_ms': (50, 20, 100, 'ms'), 'mask_max_age_ms': (300, 50, 1000, 'ms'),
     'cmd_max_age_ms': (200, 50, 500, 'ms'), 'det_max_age_ms': (500, 50, 2000, 'ms'),
@@ -89,6 +109,39 @@ def fixtures(root, schedule):
     (root / 'road_info.json').write_text(json.dumps(road_fixture.info(96, 160)), encoding='utf-8')
 
 
+def yolo_fixtures(root, schedule):
+    """Theo make_fake_yolo.py: tensor cxcywh sau letterbox, không cần numpy/onnx."""
+    info = dict(task='detection', architecture='fake_conv_random', class_names=YOLO_CLASSES,
+                num_classes=9, source_image_hw=[720, 1280], input_name='images',
+                input_shape=[1, 3, 320, 320], input_hw=[320, 320], input_dtype='float32',
+                color_order='RGB', layout='NCHW', preprocessing_in_model=False,
+                normalization=dict(scale=1 / 255, mean=[0, 0, 0], std=[1, 1, 1]),
+                resize='letterbox', letterbox=dict(auto=False, center=True, padding_value=114,
+                                                  scaleup=True, stride=32),
+                letterbox_1280x720=dict(scale=0.25, resized_wh=[320, 180], pad_left=0, pad_top=70),
+                output_name='output0', output_shape=[1, 13, 100],
+                output_type='cxcywh_pixels_and_class_probabilities', box_format='cxcywh',
+                box_units='input_pixels', scores_are_probabilities=True, objectness=False,
+                nms_in_model=False, nms_class_aware=True, conf_threshold=0.25, nms_iou=0.7,
+                opset=12, dynamic=False, seed=0, fake_data=True, recognition_validated=False)
+    (root / 'yolo_info.json').write_text(json.dumps(info), encoding='utf-8')
+    (root / 'yolo.engine').write_bytes(b'fake-yolo-engine\n')
+    header = repr(dict(descr='<f4', fortran_order=False, shape=(1, 13, 100))).encode('ascii')
+    header += b' ' * ((-(10 + len(header) + 1)) % 16) + b'\n'
+    prefix = b'\x93NUMPY\x01\x00' + struct.pack('<H', len(header)) + header
+    for mode, boxes in YOLO_BOXES.items():
+        values = [0.0] * 1300
+        for proposal, (cls, x2) in enumerate(boxes):
+            x1 = x2 - 152
+            box = [(x1 + x2) / 2 * 0.25, 300 * 0.25 + 70, (x2 - x1) * 0.25, 200 * 0.25]
+            for channel, value in enumerate(box):
+                values[channel * 100 + proposal] = value
+            values[(4 + YOLO_CLASSES.index(cls)) * 100 + proposal] = 0.9
+        (root / (mode + '.npy')).write_bytes(prefix + struct.pack('<1300f', *values))
+    (root / 'yolo.csv').write_text('frame_id,tensor\n' + ''.join(
+        '{},{}.npy\n'.format(frame, mode) for frame, mode in schedule), encoding='utf-8')
+
+
 def cap(events):
     # A33: kiểm cả lệnh thử gửi bị fail; không cho lọt giá trị ngoài lớp kẹp.
     for _, kind, value, _ in events:
@@ -100,7 +153,8 @@ def cap(events):
 class Run(td.Run):
     """Dùng lại wait/observe/text/send/ack/children/close của T33; chỉ đổi khởi chạy auto."""
     def __init__(self, cfg, root, values=None, env=None, schedule=((1, 'straight'),),
-                 args=None, lock=None, setup=None, no_yolo=True, info=True):
+                 args=None, lock=None, setup=None, no_yolo=True, info=True,
+                 yolo_schedule=None, model_load_fail=None):
         need(b'UCR_AUTO_FAKE_TRACE' in Path(cfg.hooks).read_bytes(),
              'Từ chối binary không có hooks auto', 'environment')
         self.root, self.slack, self.seq = root, cfg.slack, 0
@@ -117,6 +171,8 @@ class Run(td.Run):
         self.values = {} if values is None else dict(values)
         self.control.write_text(yaml_text(self.values), encoding='utf-8')
         fixtures(root, schedule)
+        if yolo_schedule is not None:
+            yolo_fixtures(root, yolo_schedule)
         if setup:
             setup(self)
         helper = bindir / 'ucr_stop'
@@ -126,13 +182,17 @@ class Run(td.Run):
         helper.chmod(0o755)
         child_env = {k: v for k, v in os.environ.items()
                      if not k.startswith(('UCR_AUTO_FAKE_', 'UCR_DRIVE_FAKE_', 'UCR_CAM_TEST_'))
-                     and k not in ('DISPLAY', 'WAYLAND_DISPLAY')}
+                     and k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'UCR_AUTO_MODEL_LOAD_FAIL')}
         child_env.update(LC_ALL='C.UTF-8', LANG='C.UTF-8', DISPLAY=':ucr_fake_only')
         fake = dict(TRACE=str(self.path), LOCK=str(lock or root / 'vehicle.lock'), CTRL=str(self.ctrl),
                     PREVIEW='stream:' + str(self.keys), CAMERA='ok', FREE_MB='4096',
                     ROAD_MASKS=str(root / 'list.csv'))
+        if yolo_schedule is not None:
+            fake['YOLO_TENSORS'] = str(root / 'yolo.csv')
         fake.update(env or {})
         child_env.update(('UCR_AUTO_FAKE_' + k, v) for k, v in fake.items())
+        if model_load_fail is not None:
+            child_env['UCR_AUTO_MODEL_LOAD_FAIL'] = model_load_fail
         child_env['TSAN_OPTIONS'] = ':'.join(filter(None, (child_env.get('TSAN_OPTIONS', ''),
                                                         'suppressions=' + str(td.TSAN_SUPP))))
         argv = [str(self.binary), '--control', str(self.control), '--out-root', str(self.out)]
@@ -140,6 +200,8 @@ class Run(td.Run):
             argv.extend(['--info', str(root / 'road_info.json')])
         if no_yolo:
             argv.append('--no-yolo')
+        if yolo_schedule is not None:
+            argv.extend(['--yolo-engine', str(root / 'yolo.engine'), '--yolo-info', str(root / 'yolo_info.json')])
         argv.extend(args or [])
         self.log = tempfile.TemporaryFile()
         try:
@@ -282,10 +344,10 @@ def stopping_pair(events, stamp, tag='stop_order'):
     return es[first], es[zeros[0]]
 
 
-def stopped(run, stamp, limit, tag='stop_order', after=None):
+def stopped(run, stamp, limit, tag='stop_order', after=None, mark=0):
     """A27: cắt sau tác nhân, kiểm motor thực/thứ tự; S chỉ cộng đúng một lần."""
     def pair():
-        return stopping_pair(run.events(), stamp if after is None else after, tag)
+        return stopping_pair(run.events()[mark:], stamp if after is None else after, tag)
     result = run.wait(pair, (limit + run.slack) / 1000.0 + 1, 'Thiếu cặp dừng', alive=False, tag=tag)
     need(0 <= result[0][0] - stamp <= limit + run.slack,
          'Motor0 trễ {} ms, trần {}'.format(result[0][0] - stamp, limit + run.slack), tag)
@@ -328,6 +390,136 @@ def reject(run, code=None, before_init=True):
     if before_init:
         need(not run.of('motor_init'), 'Lỗi đầu vào phải trước motor_init')
     need(run.text().strip(), 'Từ chối không nêu lỗi')
+
+
+def yolo_running(cfg, root, values=None, **kwargs):
+    control = dict(YOLO_VALUES)
+    control.update(values or {})
+    kwargs.setdefault('yolo_schedule', ((1, 'empty'),))
+    return running(cfg, root, values=control, no_yolo=False, **kwargs)
+
+
+def detection_batches(events):
+    """Giữ vị trí trace để không nhận lô/lệnh trước tác nhân trong cùng ms."""
+    batches = []
+    for index, event in enumerate(events):
+        if event[1] != 'detections':
+            continue
+        parts = str(event[2]).split()
+        need(len(parts) == 2 and not event[3], 'detections phải có frame_id captured_ms', 'interface')
+        frame, captured = int(parts[0]), float(parts[1])
+        need(frame > 0 and math.isfinite(captured) and 0 <= captured <= event[0],
+             'Mốc detections không hợp lệ', 'interface')
+        need(not batches or frame > batches[-1][1], 'Đếm lại cùng lô YOLO/đảo frame', 'interface')
+        batches.append((index, frame, captured, event[0]))
+    return batches
+
+
+def last_detection_frame(events):
+    # Frame hợp lệ luôn dương; chưa có lô thì chưa vượt mốc nào.
+    batches = detection_batches(events)
+    return batches[-1][1] if batches else 0
+
+
+def held(run, mark):
+    events = run.events()
+    need(td.last_commands(events) == (0, 0), 'Không giữ lệnh cuối motor/servo0', 'light_latch')
+    need(not any(e[1] in ('motor_speed', 'servo_angle') and e[2] != 0 and not e[3]
+                 for e in events[mark:]), 'Có chuyển động khi đang chờ đèn', 'light_latch')
+
+
+def stop_tail(run, stamp, mark):
+    events = run.events()
+    pair = stopping_pair(events[mark:], stamp)
+    need(pair is not None, 'Thiếu cặp dừng trong đoạn trace mới')
+    return next(i for i in range(mark, len(events)) if events[i] is pair[1]) + 1
+
+
+def phase_reached(run, first_frame, mark):
+    def reached():
+        held(run, mark)
+        batches = detection_batches(run.events())
+        return batches and batches[-1][1] >= first_frame
+    return run.wait(reached, 25, 'Chưa quan sát pha đèn frame ' + str(first_frame))
+
+
+def green_release(run, first_frame, mark, since=None):
+    def enough():
+        events = run.events()
+        batches = [b for b in detection_batches(events) if b[0] >= mark and b[1] >= first_frame
+                   and (since is None or b[2] > since)]
+        cutoff = batches[2][0] if len(batches) >= 3 else len(events)
+        need(not any(e[1] in ('motor_speed', 'servo_angle') and e[2] != 0 and not e[3]
+                     for e in events[mark:cutoff]), 'Chạy trước 3 lô xanh mới', 'green_frames')
+        return batches[2] if len(batches) >= 3 else None
+    third = run.wait(enough, 25, 'Thiếu 3 lô xanh mới')
+    run.wait(lambda: any(e[1] == 'motor_speed' and e[2] > 0 and not e[3]
+                         for e in run.events()[third[0] + 1:]), message='Đủ xanh không tự chạy')
+    run.wait(lambda: any(e[2] == 'DEN_XANH' for e in run.of('reason', mark)),
+             message='Thiếu reason DEN_XANH')
+    return third
+
+
+def red_stop(run, first_frame, mark):
+    batches = run.wait(lambda: [b for b in detection_batches(run.events())
+                               if b[0] >= mark and b[1] >= first_frame][2:],
+                       25, 'Thiếu 3 lô đỏ mới')
+    third = batches[0]
+    first = next(b for b in detection_batches(run.events()) if b[0] >= mark and b[1] >= first_frame)
+    need(not any(motor_zero(e) for e in run.events()[first[0]:third[0]]),
+         'Dừng đỏ trước khi đủ 3 phiếu mới', 'red_votes')
+    stopped(run, third[3], run.values['control_period_ms'] + 200, mark=third[0] + 1)
+    run.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in run.of('reason', mark)),
+             message='Thiếu reason DUNG_DEN_DO')
+    # Bắt luôn chuyển động lọt giữa cặp dừng và lần đọc trace này.
+    end = stop_tail(run, third[3], third[0] + 1)
+    held(run, end)
+    return end
+
+
+def phase_batches(run, lo, hi, count):
+    batches = [b for b in detection_batches(run.events()) if lo <= b[1] < hi]
+    need(len(batches) == count, 'Lịch cần {} lô trong [{},{}), thực tế {}'.format(
+        count, lo, hi, [b[1] for b in batches]), 'setup')
+    return batches
+
+
+def moving(run, mark):
+    speeds = [e[2] for e in run.of('motor_speed', mark) if not e[3]]
+    need(not any(motor_zero(e) for e in run.events()[mark:]) and all(0 < v <= 10 for v in speeds),
+         'Dừng đỏ khi chưa đủ phiếu/vị trí hoặc vượt trần10', 'red_boundary')
+
+
+def inspect_detections(run):
+    path = run.session() / 'detections.csv'
+    with path.open(encoding='utf-8', newline='') as stream:
+        reader = csv.DictReader(stream)
+        need(reader.fieldnames == 'frame_id captured_ms class conf x1 y1 x2 y2'.split(),
+             'detections.csv sai cột', 'record_format')
+        rows = list(reader)
+    batches = {b[1]: b[2] for b in detection_batches(run.events())}
+    seen, previous = set(), 0
+    for row in rows:
+        need(None not in row and None not in row.values(), 'CSV thiếu/thừa ô', 'record_format')
+        frame, captured = int(row['frame_id']), float(row['captured_ms'])
+        need(frame >= previous and frame in batches and captured == batches[frame],
+             'CSV sai ID/thời điểm lô', 'record_format')
+        previous = frame
+        cls = row['class']
+        expected = '' if frame < 90 else ('green' if frame < 180 else 'red')
+        need(cls == expected, 'Lớp CSV không khớp tensor', 'record_format')
+        seen.add(cls)
+        if not cls:
+            need(all(row[k] == '' for k in ('class', 'conf', 'x1', 'y1', 'x2', 'y2')),
+                 'Lô rỗng cần sáu ô rỗng', 'record_format')
+        else:
+            numbers = [float(row[k]) for k in ('conf', 'x1', 'y1', 'x2', 'y2')]
+            need(all(math.isfinite(v) for v in numbers), 'CSV NaN/Inf', 'record_format')
+            x2 = 800 if cls == 'green' else 1152
+            expected_box = (0.9, x2 - 152, 200, x2, 400)
+            need(all(abs(a - b) < 0.001 for a, b in zip(numbers, expected_box)),
+                 'CSV sai confidence/hộp ảnh gốc', 'record_format')
+    need(seen == {'', 'green', 'red'}, 'Thiếu lô rỗng/xanh/đỏ trong CSV', 'record_format')
 
 
 def patch_yaml(run, values):
@@ -494,12 +686,71 @@ def test_case(case, cfg, root):
                         r.go(); speed_is(r, 9); space(r)
             r.finish()
         return
-    # A06 — L1: thiếu --no-yolo phải exit2 trước thiết bị.
+    # A06 — hợp đồng P2 thay L1/P1: đủ YOLO chạy; thiếu/hỏng từ chối trước motor_init.
     if case == 'A06':
-        with running(cfg, root, no_yolo=False) as r:
-            reject(r, 2)
-            need('YOLO chưa hỗ trợ, dùng --no-yolo' in r.text(), 'Thiếu hướng dẫn YOLO P1')
-            need(not r.of('motor_speed') and not r.of('servo_angle'), 'Mở thiết bị trước kiểm CLI')
+        with yolo_running(cfg, root / 'valid') as r:
+            r.boot(); mark = len(r.events()); r.key('G')
+            r.wait(lambda: any(e[2] == 'CHO_DEN_XUAT_PHAT' for e in r.of('reason', mark)),
+                   message='YOLO hợp lệ không vào chờ xanh')
+            r.frames(6, lambda: held(r, mark)); r.finish()
+        for flag in (None, '--yolo-engine', '--yolo-info'):
+            folder = root / ('missing_' + str(flag))
+            args = [] if flag is None else [flag, str(folder / ('yolo.engine' if flag.endswith('engine') else 'yolo_info.json'))]
+            with running(cfg, folder, no_yolo=False, args=args,
+                         setup=lambda r: yolo_fixtures(r.root, ((1, 'empty'),))) as r:
+                reject(r)
+        bad = [lambda r: (r.root / 'yolo.engine').unlink(),
+               lambda r: (r.root / 'yolo.engine').write_bytes(b''),
+               lambda r: (r.root / 'yolo_info.json').unlink(),
+               lambda r: (r.root / 'yolo_info.json').write_text('{', encoding='utf-8'),
+               lambda r: (r.root / 'yolo_info.json').write_text('{}', encoding='utf-8')]
+        for i, setup in enumerate(bad):
+            with yolo_running(cfg, root / ('bad_' + str(i)), setup=setup) as r:
+                reject(r)
+        for index in range(9):
+            def wrong_class(r, index=index):
+                path = r.root / 'yolo_info.json'
+                data = json.loads(path.read_text(encoding='utf-8'))
+                data['class_names'][index] = 'ten_lop_khong_khop'
+                path.write_text(json.dumps(data), encoding='utf-8')
+            with yolo_running(cfg, root / ('class_' + str(index)), setup=wrong_class) as r:
+                reject(r)
+        return
+    # A07b — B1/P2: ca bổ sung, không thay bộ sai cấu hình P1.
+    if case == 'A07b':
+        bad = []
+        for key, (_, lo, hi) in P2_BOUNDS.items():
+            bad.extend({key: v} for v in ('sai_kieu', lo - 1, hi + 1))
+        bad += [{key: 1.5} for key in ('start_wait_green', 'vote_window', 'vote_min', 'green_frames')]
+        bad += [dict(vote_window=2, vote_min=3, green_frames=1),
+                dict(vote_window=2, vote_min=1, green_frames=3)]
+        bad += [{key: 1} for key in ('box_min_area_px', 'box_min_area_frac', 'conf_min')]
+        for i, values in enumerate(bad):
+            with running(cfg, root / str(i), values=values) as r:
+                reject(r)
+        for light in ('red', 'green', 'off'):
+            with yolo_running(cfg, root / light, values={light + '_conf_min': 0.1}) as r:
+                reject(r)
+        return
+    # A08b — B1/P2: bảng mặc định và miền đúng; approach được kẹp khi chạy.
+    if case == 'A08b':
+        variants = [{}]
+        for key, (_, lo, hi) in P2_BOUNDS.items():
+            for value in (lo, hi):
+                values = {key: value}
+                if key == 'vote_window':
+                    values.update(vote_min=1, green_frames=1)
+                variants.append(values)
+        variants.append(dict(max_speed_cms=0, cruise_cms=0, min_cms=0, lost_cms=0, approach_cms=10))
+        for i, values in enumerate(variants):
+            with running(cfg, root / str(i), values=values) as r:
+                r.boot(); r.finish()
+                if not values:
+                    for key, (default, _, _) in P2_BOUNDS.items():
+                        pattern = r'\b' + key + r'\b\s*[:=|]?\s*([-+\d.eE]+)'
+                        lines = [l for l in r.text().splitlines() if '(mặc định)' in l]
+                        need(any(re.search(pattern, l) and float(re.search(pattern, l).group(1)) == default
+                                 for l in lines), 'Bảng mặc định P2 thiếu/sai ' + key)
         return
     # A07 — L2: tất cả khóa scalar có sai kiểu/ngoài hai biên; vector và quan hệ chéo.
     if case == 'A07':
@@ -826,6 +1077,267 @@ def test_case(case, cfg, root):
                      'Thống kê CSV sai ' + key)
             r.finish()
         return
+    # A30 — B4/P1: YOLO giữ cả model; mask cũ dừng, tự hồi phục; Space/TERM độc lập.
+    if case == 'A30':
+        for action in ('resume', 'space', 'term'):
+            with yolo_running(cfg, root / action, values=dict(start_wait_green=0, cmd_max_age_ms=500),
+                              yolo_schedule=((1, 'red_mid'),)) as r:
+                r.boot(); r.go()
+                r.wait(lambda: any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason')),
+                       message='Chưa tiếp cận đỏ trước stall')
+                mark = len(r.events()); ev = r.inject('yolo_stall')
+                age = r.values.get('mask_max_age_ms', 300)
+                r.wait(lambda: td.now_ms() - float(str(r.of('mask')[-1][2]).split()[1]) > age,
+                       3, 'Mask không cũ khi YOLO stall')
+                last = r.of('mask')[-1]
+                captured = float(str(last[2]).split()[1])
+                stopped(r, captured, age + r.values['control_period_ms'] + 200,
+                        after=captured + age, mark=mark)
+                r.wait(lambda: any(e[2] == 'MAT_NAN_CU' for e in r.of('reason', mark)),
+                       message='Thiếu MAT_NAN_CU khi YOLO stall')
+                end = stop_tail(r, captured + age, mark)
+                count = len(r.of('detections'))
+                r.frames(4, lambda: held(r, end))
+                need(r.of('mask')[-1] == last and len(r.of('detections')) == count,
+                     'Model vẫn công bố dữ liệu khi stall', 'setup')
+                if action == 'term':
+                    mark = len(r.events()); stamp = external_stamp_ms()
+                    os.kill(r.process.pid, signal.SIGTERM)
+                    stopped(r, stamp, 1000, mark=mark); r.exited()
+                    continue
+                if action == 'space':
+                    mark = len(r.events()); key = r.key(' ')
+                    stopped(r, key[0], 150, mark=mark)
+                resume_mark = len(r.events()); r.inject('yolo_resume')
+                new = r.wait(lambda: next((e for e in r.of('mask', resume_mark)
+                                           if float(str(e[2]).split()[1]) > ev[0]), None),
+                             message='Không có mask mới sau resume')
+                need(not any(e[1] == 'motor_speed' and e[2] != 0 and not e[3]
+                             for e in r.events()[end:r.events().index(new)]), 'Chạy trước mask mới')
+                if action == 'space':
+                    r.frames(6, lambda: held(r, end))
+                else:
+                    r.wait(lambda: td.last_commands(r.events())[0] > 0,
+                           message='Không tự chạy sau resume khi chưa có chốt')
+                r.finish()
+        return
+    # A40 — P2/L1: G không đèn giữ0; không đếm lặp cùng lô để đủ xanh.
+    if case == 'A40':
+        with yolo_running(cfg, root, yolo_schedule=((1, 'empty'), (120, 'green'))) as r:
+            r.boot(); mark = len(r.events()); r.key('G')
+            r.wait(lambda: any(e[2] == 'CHO_DEN_XUAT_PHAT' for e in r.of('reason', mark)),
+                   message='G không đèn không chờ xanh')
+            phase_reached(r, 90, mark)
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ pha không đèn', 'setup')
+            green_release(r, 120, mark)
+            space(r); r.finish()
+        return
+    # A40b — xanh trước G không tính; rỗng/off ngắt hai lô xanh, phải đếm lại.
+    if case == 'A40b':
+        with yolo_running(cfg, root / 'before_g', yolo_schedule=((1, 'green'),)) as r:
+            r.boot()
+            r.wait(lambda: len(detection_batches(r.events())) >= 3, message='Thiếu xanh trước G')
+            no_motion(r, 0)
+            mark = len(r.events()); ev = r.key('G')
+            green_release(r, 1, mark, since=ev[0])
+            r.finish()
+        for breaker in ('empty', 'off'):
+            schedule = ((1, 'empty'), (120, 'green'), (126, breaker), (156, 'green'))
+            with yolo_running(cfg, root / breaker, yolo_schedule=schedule) as r:
+                r.boot(); mark = len(r.events()); r.key('G')
+                phase_reached(r, 150, mark)
+                need(last_detection_frame(r.events()) < 156, 'Bỏ lỡ pha ngắt xanh', 'setup')
+                phase_batches(r, 120, 126, 2)
+                green_release(r, 156, mark)
+                r.finish()
+        return
+    # A41 — P2/L1: đỏ giữa ảnh đủ phiếu chỉ giảm tốc, không lấy motor0 làm PASS.
+    if case == 'A41':
+        with yolo_running(cfg, root, values={'start_wait_green': 0, 'kp': 0}, schedule=((1, 'straight'),),
+                          yolo_schedule=((1, 'empty'), (120, 'red_mid'))) as r:
+            r.boot(); r.go(); speed_is(r, 8)
+            need(last_detection_frame(r.events()) < 120, 'Đỏ đến trước tiền đề cruise', 'setup')
+            mark = len(r.events())
+            ev = r.wait(lambda: next((e for e in r.of('reason', mark) if e[2] == 'TIEP_CAN_DEN_DO'), None),
+                        25, 'Không tiếp cận đèn đỏ')
+            r.wait(lambda: any(e[1] == 'motor_speed' and 0 < e[2] <= 5 and not e[3]
+                               and e[0] >= ev[0] for e in r.events()), message='Không giảm về approach')
+            events = r.events()
+            sent_mark = next(i for i in range(mark, len(events)) if events[i][0] >= ev[0]
+                             and events[i][1] == 'motor_speed' and 0 < events[i][2] <= 5 and not events[i][3])
+            def approaching():
+                speeds = [e[2] for e in r.of('motor_speed', sent_mark) if not e[3]]
+                need(speeds and all(0 < v <= 5 for v in speeds), 'Đỏ giữa ảnh không giữ tốc độ (0,approach]')
+            r.frames(12, approaching)
+            space(r); r.finish()
+        return
+    # A42/A43/A44 — P2/L1: mép x2/W=0,90; chốt đỏ qua mất/off/Space/G.
+    if case in ('A42', 'A43', 'A44'):
+        schedule = ((1, 'empty'), (120, 'red_edge'))
+        if case == 'A43':
+            schedule += ((210, 'empty'), (270, 'off'), (360, 'green'))
+        elif case == 'A44':
+            schedule += ((360, 'green'),)
+        with yolo_running(cfg, root, values={'start_wait_green': 0}, yolo_schedule=schedule) as r:
+            r.boot(); r.go(); mark = len(r.events())
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ tiền đề trước đỏ', 'setup')
+            end = red_stop(r, 120, mark)
+            if case == 'A42':
+                r.frames(12, lambda: held(r, end))
+            elif case == 'A43':
+                phase_reached(r, 240, end)
+                need(last_detection_frame(r.events()) < 270, 'Bỏ lỡ pha rỗng', 'setup')
+                reds = [b for b in detection_batches(r.events()) if 120 <= b[1] < 210]
+                need(reds, 'Thiếu lô đỏ trước pha rỗng', 'setup')
+                red = reds[-1]
+                r.wait(lambda: td.now_ms() - red[2] > r.values['det_max_age_ms'],
+                       3, 'Đỏ chưa quá tuổi')
+                held(r, end)
+                phase_reached(r, 300, end)
+                need(last_detection_frame(r.events()) < 360, 'Bỏ lỡ pha off', 'setup')
+                green_release(r, 360, end)
+            else:
+                space(r)
+                for _ in range(4):
+                    r.key('G'); r.frames(5, lambda: held(r, end))
+                need(last_detection_frame(r.events()) < 360, 'G gửi sau khi đã xanh', 'setup')
+                phase_reached(r, 300, end)
+                green_release(r, 360, end)
+            r.finish()
+        return
+    # A42b — đủ vote mới xét x2 của hộp MỚI NHẤT, không lấy hộp cũ sát mép.
+    if case == 'A42b':
+        variants = dict(below=((1, 'empty'), (120, 'red_089')),
+                        two_votes=((1, 'empty'), (120, 'red_095'), (126, 'empty')),
+                        latest_edge=((1, 'empty'), (120, 'red_050'), (126, 'red_095')),
+                        latest_back=((1, 'empty'), (120, 'red_095'), (123, 'red_085')))
+        for name, schedule in variants.items():
+            with yolo_running(cfg, root / name, values={'start_wait_green': 0}, yolo_schedule=schedule) as r:
+                r.boot(); r.go(); mark = len(r.events())
+                need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước biên đỏ', 'setup')
+                if name == 'latest_edge':
+                    end = red_stop(r, 120, mark)
+                    old = phase_batches(r, 120, 126, 2)
+                    third = [b for b in detection_batches(r.events()) if b[1] >= 126][0]
+                    need(third[2] - old[0][2] <= r.values['det_max_age_ms'],
+                         'Phiếu đỏ cũ đã hết tuổi trước lô mép', 'setup')
+                    r.frames(6, lambda: held(r, end))
+                else:
+                    def reached():
+                        moving(r, mark)
+                        return last_detection_frame(r.events()) >= 156
+                    r.wait(reached, 25, 'Chưa qua pha biên đỏ')
+                    if name == 'two_votes':
+                        phase_batches(r, 120, 126, 2)
+                    elif name == 'latest_back':
+                        phase_batches(r, 120, 123, 1)
+                    else:
+                        need(len([b for b in detection_batches(r.events()) if b[1] >= 120]) >= 3,
+                             'Chưa đủ vote cho đỏ0.89', 'setup')
+                    if name != 'two_votes':
+                        need(any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason', mark)),
+                             'Chưa có bằng chứng xử lý đủ phiếu đỏ', 'setup')
+                    moving(r, mark)
+                r.finish()
+        return
+    # A43b — đỏ và xanh trong cùng tensor: đỏ thắng khi đủ phiếu.
+    if case == 'A43b':
+        with yolo_running(cfg, root, values={'start_wait_green': 0},
+                          yolo_schedule=((1, 'empty'), (120, 'red_green'))) as r:
+            r.boot(); r.go(); mark = len(r.events())
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước đỏ+xanh', 'setup')
+            end = red_stop(r, 120, mark)
+            r.frames(12, lambda: held(r, end)); r.finish()
+        return
+    # A49 — leader: chờ xuất phát/chốt đỏ vẫn enabled, R bị bỏ như A03.
+    if case == 'A49':
+        for state in ('CHO_DEN_XUAT_PHAT', 'DUNG_DEN_DO'):
+            schedule = ((1, 'empty'),) if state == 'CHO_DEN_XUAT_PHAT' else ((1, 'empty'), (120, 'red_edge'))
+            with yolo_running(cfg, root / state, values={'start_wait_green': int(state == 'CHO_DEN_XUAT_PHAT')},
+                              yolo_schedule=schedule) as r:
+                r.boot(); mark = len(r.events())
+                if state == 'DUNG_DEN_DO':
+                    r.go()
+                    need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước đỏ/R', 'setup')
+                    end = red_stop(r, 120, mark)
+                else:
+                    r.key('G')
+                    r.wait(lambda: any(e[2] == state for e in r.of('reason', mark)), message='Chưa chờ xanh')
+                    end = mark
+                values = dict(r.values); values.update(start_wait_green=0, cruise_cms=9)
+                patch_yaml(r, values); reload(r, 'ignored')
+                for _ in range(3):
+                    r.key('G'); r.frames(4, lambda: held(r, end))
+                held(r, end); r.finish()
+        return
+    # A50 — yolo_throw một lần không làm chết model/tiến trình, không mở đỏ.
+    if case == 'A50':
+        with yolo_running(cfg, root, values={'start_wait_green': 0},
+                          yolo_schedule=((1, 'empty'), (120, 'red_edge'))) as r:
+            r.boot(); r.go()
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước đỏ/throw', 'setup')
+            end = red_stop(r, 120, len(r.events()))
+            r.inject('yolo_throw'); mark = len(r.events())
+            def recovered():
+                held(r, end)
+                return len([b for b in detection_batches(r.events()) if b[0] >= mark]) >= 3
+            r.wait(recovered, 10, 'YOLO không tiếp tục sau throw')
+            need(r.process.poll() is None, 'YOLO throw làm thoát tiến trình')
+            r.finish()
+        return
+    # A51 — B5: CSV thật sau khi đóng writer, gồm cả hàng lô rỗng.
+    if case == 'A51':
+        with yolo_running(cfg, root, yolo_schedule=((1, 'empty'), (90, 'green'), (180, 'red_edge'))) as r:
+            r.boot()
+            r.wait(lambda: last_detection_frame(r.events()) >= 195, 25, 'Chưa có đủ ba pha CSV')
+            r.finish(); inspect_detections(r)
+        return
+    # A45 — B4/P2: ngoại lệ Planner một lần không thoát, chốt0 tới G mới.
+    if case == 'A45':
+        with yolo_running(cfg, root, values={'start_wait_green': 0}) as r:
+            r.boot(); r.go(); mark = len(r.events()); ev = r.inject('planner_throw')
+            stopped(r, ev[0], 150, mark=mark)
+            r.wait(lambda: any(e[2] == 'LOI_DIEU_KHIEN' for e in r.of('reason', mark)),
+                   message='Planner throw thiếu LOI_DIEU_KHIEN')
+            end = stop_tail(r, ev[0], mark); r.frames(8, lambda: held(r, end))
+            need(r.process.poll() is None, 'Planner throw làm thoát tiến trình')
+            r.go(); r.finish()
+        return
+    # A46 — hợp đồng P2/B4: biến lỗi nạp KHÔNG mang tiền tố FAKE.
+    if case == 'A46':
+        with yolo_running(cfg, root, model_load_fail='yolo') as r:
+            reject(r)
+        return
+    # A47 — H6/P2: --no-yolo bỏ chờ xanh và không đọc YOLO, cả sau R.
+    if case == 'A47':
+        values = dict(YOLO_VALUES)
+        with running(cfg, root, values=values, yolo_schedule=((1, 'red_edge'),),
+                     model_load_fail='yolo', setup=lambda r: (r.root / 'yolo.csv').write_text('hong\n', encoding='utf-8')) as r:
+            r.boot(); r.go(); speed_is(r, 8)
+            need(not r.of('detections'), '--no-yolo vẫn suy luận YOLO')
+            end = space(r); mark = len(r.events())
+            patch_yaml(r, values); reload(r, 'accepted')
+            r.frames(5, lambda: no_motion(r, end))
+            r.go(); speed_is(r, 8)
+            need(not any(e[2] in ('CHO_DEN_XUAT_PHAT', 'DUNG_DEN_DO') for e in r.of('reason', mark)),
+                 '--no-yolo áp luật đèn sau R')
+            r.finish()
+        return
+    # A48 — hợp đồng fixture P2: lỗi CSV/NPY không được che bằng lô rỗng.
+    if case == 'A48':
+        def wrong_tensor(run, old, new):
+            path = run.root / 'empty.npy'
+            path.write_bytes(path.read_bytes().replace(old, new, 1))
+        bad = [lambda r: (r.root / 'yolo.csv').unlink(),
+               lambda r: (r.root / 'yolo.csv').write_text('frame_id,tensor\nsai,empty.npy\n', encoding='utf-8'),
+               lambda r: (r.root / 'empty.npy').unlink(),
+               lambda r: (r.root / 'empty.npy').write_bytes(b'hong'),
+               lambda r: wrong_tensor(r, b'<f4', b'<i4'),
+               lambda r: wrong_tensor(r, b'(1, 13, 100)', b'(1, 12, 100)')]
+        for i, setup in enumerate(bad):
+            with yolo_running(cfg, root / str(i), setup=setup) as r:
+                reject(r)
+        return
     # A31 — bản duyệt: lỗi mở/khởi tạo thiết bị, không ready khi motor_init lỗi.
     if case == 'A31':
         variants = [dict(OPEN_FAIL=x) for x in ('motor', 'motor_init', 'servo', 'camera')]
@@ -883,7 +1395,21 @@ def test_case(case, cfg, root):
 
 
 def selftest():
+    import ast
+    from types import SimpleNamespace
     from unittest.mock import patch
+    def fails(call, tag):
+        try:
+            call()
+        except Failure as error:
+            assert error.tag == tag
+        else:
+            assert False, 'Bộ kiểm bỏ lọt ' + tag
+    assert len(P2_BOUNDS) == 12
+    assert not {'conf_min', 'box_min_area_frac', 'box_min_area_px'} & set(YOLO_VALUES)
+    for light in ('red', 'green', 'off'):
+        assert YOLO_VALUES[light + '_conf_min'] == 0.5
+        assert YOLO_VALUES[light + '_box_min_area_frac'] == 0.0001
     with patch.object(td, 'now_ms', return_value=11975221.6):
         stamp = external_stamp_ms()
     assert stamp == 11975221
@@ -902,6 +1428,125 @@ def selftest():
     else:
         assert False, 'M7 lọt: servo 0 trước motor 0'
     assert stopping_pair(straight[:-1], 1) is None
+    assert last_detection_frame([]) == 0
+    assert last_detection_frame(straight) == 0
+    for frame in (119, 120, 121):
+        events = [(200, 'detections', '{} 190'.format(frame), False)]
+        assert last_detection_frame(events) == frame
+        assert (last_detection_frame(events) < 120) == (frame < 120)
+    # Fixture tự chứa: đối chiếu header NPY, xác suất và đổi ngược letterbox.
+    with tempfile.TemporaryDirectory(prefix='ucr-yolo-selftest-') as tmp:
+        root = Path(tmp)
+        yolo_fixtures(root, ((1, 'empty'), (120, 'green'), (210, 'red_edge')))
+        info = json.loads((root / 'yolo_info.json').read_text(encoding='utf-8'))
+        assert info['class_names'] == YOLO_CLASSES and info['output_shape'] == [1, 13, 100]
+        assert (root / 'yolo.csv').read_text(encoding='utf-8').splitlines() == [
+            'frame_id,tensor', '1,empty.npy', '120,green.npy', '210,red_edge.npy']
+        for mode, boxes in YOLO_BOXES.items():
+            data = (root / (mode + '.npy')).read_bytes()
+            assert data[:8] == b'\x93NUMPY\x01\x00'
+            length = struct.unpack('<H', data[8:10])[0]
+            assert (10 + length) % 16 == 0
+            assert ast.literal_eval(data[10:10 + length].decode('ascii')) == dict(
+                descr='<f4', fortran_order=False, shape=(1, 13, 100))
+            values = struct.unpack('<1300f', data[10 + length:])
+            assert sum(v > 0.5 for v in values[400:]) == len(boxes)
+            if not boxes:
+                assert not any(values)
+            for proposal, (cls, expected_x2) in enumerate(boxes):
+                assert abs(values[(4 + YOLO_CLASSES.index(cls)) * 100 + proposal] - 0.9) < 1e-6
+                x2 = (values[proposal] + values[200 + proposal] / 2) / 0.25
+                assert abs(x2 - expected_x2) < 0.001
+                assert (values[100 + proposal] - 70) / 0.25 == 300
+                assert values[200 + proposal] * values[300 + proposal] / (0.25 ** 2 * 1280 * 720) > 0.0001
+        csv_events = [(100, 'detections', '1 90', False), (100, 'detections', '90 95', False),
+                      (100, 'detections', '180 99', False)]
+        csv_run = SimpleNamespace(session=lambda: root, events=lambda: csv_events)
+        csv_rows = [['1', '90', '', '', '', '', '', ''],
+                    ['90', '95', 'green', '0.9', '648', '200', '800', '400'],
+                    ['180', '99', 'red', '0.9', '1000', '200', '1152', '400']]
+        def write_csv(rows, header='frame_id captured_ms class conf x1 y1 x2 y2'):
+            with (root / 'detections.csv').open('w', encoding='utf-8', newline='') as stream:
+                writer = csv.writer(stream)
+                writer.writerow(header.split()); writer.writerows(rows)
+        write_csv(csv_rows); inspect_detections(csv_run)
+        for row, col, value in ((0, 3, '0'), (1, 1, '96'), (1, 6, '200'), (2, 2, 'green'), (2, 3, 'nan')):
+            bad = [list(r) for r in csv_rows]; bad[row][col] = value
+            write_csv(bad)
+            fails(lambda: inspect_detections(csv_run), 'record_format')
+        write_csv(csv_rows, header='frame_id captured_ms class conf x1 y1 x2')
+        fails(lambda: inspect_detections(csv_run), 'record_format')
+        hooks = root / 'hooks'
+        hooks.write_bytes(b'UCR_AUTO_FAKE_TRACE')
+        cfg = SimpleNamespace(hooks=str(hooks), slack=0)
+        with patch.object(subprocess, 'Popen') as popen:
+            run = Run(cfg, root / 'launch', no_yolo=False, yolo_schedule=((1, 'empty'),), model_load_fail='yolo')
+            try:
+                argv = popen.call_args[0][0]
+                env = popen.call_args[1]['env']
+                assert '--no-yolo' not in argv and '--yolo-engine' in argv and '--yolo-info' in argv
+                assert env['UCR_AUTO_MODEL_LOAD_FAIL'] == 'yolo'
+                assert env['UCR_AUTO_FAKE_YOLO_TENSORS'] == str(run.root / 'yolo.csv')
+                assert 'UCR_AUTO_FAKE_MODEL_LOAD_FAIL' not in env
+            finally:
+                run.log.close()
+    # Mốc cùng ms: lô mới đếm bằng frame_id; lệnh trước lô thứ3 không được lọt.
+    events = [(100, 'detections', '3 90', False), (100, 'motor_speed', 0, False),
+              (100, 'servo_angle', 0, False), (100, 'detections', '6 95', False),
+              (100, 'detections', '9 99', False), (100, 'motor_speed', 8, False),
+              (100, 'reason', 'DEN_XANH', False)]
+    class SyntheticRun:
+        def __init__(self, es):
+            self.es = es
+            self.slack = 0
+            self.values = {'control_period_ms': 20}
+
+        def events(self):
+            return self.es
+
+        def of(self, kind, mark=0):
+            return [e for e in self.es[mark:] if e[1] == kind]
+
+        def wait(self, predicate, *args, **kwargs):
+            result = predicate()
+            assert result, kwargs.get('message', 'Không đạt điều kiện tổng hợp')
+            return result
+    assert green_release(SyntheticRun(events), 3, 0)[1] == 9
+    # Không nhận lô có ảnh chụp trước G dù công bố sau G.
+    since_events = [(100, 'detections', '1 89', False)] + events
+    assert green_release(SyntheticRun(since_events), 1, 0, since=89)[1] == 9
+    assert len(phase_batches(SyntheticRun(events), 3, 9, 2)) == 2
+    fails(lambda: phase_batches(SyntheticRun(events), 3, 9, 3), 'setup')
+    moving(SyntheticRun([(100, 'motor_speed', 8, False)]), 0)
+    fails(lambda: moving(SyntheticRun(events), 0), 'red_boundary')
+    for bad, tag in ((events[:3] + [(100, 'detections', '3 90', False)], 'interface'),
+                     (events[:3] + [(100, 'motor_speed', 8, False)] + events[3:], 'green_frames')):
+        try:
+            green_release(SyntheticRun(bad), 3, 0)
+        except Failure as error:
+            assert error.tag == tag
+        else:
+            assert False, 'Bỏ lọt lô lặp/chạy trước đủ xanh'
+    try:
+        held(SyntheticRun(events[:3] + [(101, 'motor_speed', 1, False)]), 3)
+    except Failure as error:
+        assert error.tag == 'light_latch'
+    else:
+        assert False, 'Bỏ lọt chuyển động khi chốt đỏ'
+    red = [(99, 'motor_speed', 8, False), (100, 'detections', '3 90', False),
+           (101, 'detections', '6 95', False), (102, 'detections', '9 99', False),
+           (103, 'motor_speed', 0, False), (104, 'servo_angle', 0, False),
+           (104, 'reason', 'DUNG_DEN_DO', False)]
+    assert red_stop(SyntheticRun(red), 3, 0) == 6
+    # Hồi quy review: không được bỏ đoạn motor8→0 đã đến cùng lần đọc trace.
+    bad_red = red[:6] + [(105, 'motor_speed', 8, False), (106, 'motor_speed', 0, False),
+                         (107, 'servo_angle', 0, False)] + red[6:]
+    try:
+        red_stop(SyntheticRun(bad_red), 3, 0)
+    except Failure as error:
+        assert error.tag == 'light_latch'
+    else:
+        assert False, 'Bỏ lọt tái chạy sau cặp dừng'
 
 
 def main():
@@ -913,7 +1558,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: 4 vết tổng hợp, bắt M7 và mốc cùng ms')
+        print('PASS selftest: P1/M7, fixture YOLO, CLI/env, lô mới và chốt đèn (vết tổng hợp)')
         return
     if not cfg.case or not cfg.hooks:
         parser.error('--case và --hooks là bắt buộc nếu không dùng --selftest')
