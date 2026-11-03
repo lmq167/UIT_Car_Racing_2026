@@ -20,9 +20,9 @@ for ((i=0; i<${#args[@]}; ++i)); do
         args[i+1]=$config
         has_config=1
     fi
-    # Giữ nhóm tiền cảnh cho câu hỏi phiên thu, tránh SIGTTIN khi đọc terminal.
+    # Giữ nhóm tiền cảnh cho hiệu chuẩn/smoke, tránh SIGTTIN khi đọc terminal.
     # main tự đăng ký lại SIGINT/SIGTERM ngay khi khởi động.
-    if [[ ${args[i]} == --mode && ( ${args[i+1]:-} == collect || ${args[i+1]:-} == calib || ${args[i+1]:-} == smoke ) ]]; then set +m; fi
+    if [[ ${args[i]} == --mode && ( ${args[i+1]:-} == calib || ${args[i+1]:-} == smoke ) ]]; then set +m; fi
     if [[ ${args[i]} == --smoke-kill-file && $((i+1)) -lt ${#args[@]} ]]; then
         smoke_file=${args[i+1]}
         case "$smoke_file" in /*) ;; *) smoke_file="$PWD/$smoke_file" ;; esac

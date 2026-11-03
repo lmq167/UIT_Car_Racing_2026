@@ -2,7 +2,6 @@
 #include "app/Backend.h"
 #include "app/IController.h"
 #include "common/RunLogger.h"
-#include "common/CollectRecorder.h"
 #include "app/Calibration.h"
 #include "common/SharedChannels.h"
 #include <atomic>
@@ -39,7 +38,6 @@ private:
     common::SharedData shared_;
     common::Snapshot actuator_snapshot_;
     std::unique_ptr<common::RunLogger> logger_;
-    std::unique_ptr<common::CollectRecorder> collector_;
     std::unique_ptr<Calibration> calibration_;
     std::string step_,kill_file_;
     bool smoke_drop_=false;

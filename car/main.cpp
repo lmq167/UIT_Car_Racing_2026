@@ -40,7 +40,7 @@ int main(int argc,char **argv) {
         double calib_drop_after=0;
         for(int i=1;i<argc;++i) {
             const std::string arg=argv[i];
-            if(arg=="--help") { std::cout << "--config <tep.yaml> --mode manual|auto|collect|smoke|calib --step <1..10>\n"
+            if(arg=="--help") { std::cout << "--config <tep.yaml> --mode manual|auto|smoke|calib --step <1..10>\n"
                 <<"--check-config --config <file>: chỉ kiểm cấu hình, không mở thiết bị\n"
                 <<"Bước: 1 môi trường, 2 servo, 3 bán kính, 4 motor, 5 vị trí (đang khoá), 6 IMU, 7 ToF, 8 camera, 9 độ trễ, 10 nhịp vòng.\n"
                 <<"--env-info: chỉ đọc bản build; --calib-drop-camera-after <giây>: chỉ calib motor; smoke dùng scripts/smoke_test.sh --smoke-drop-camera\n"; return 0; }
@@ -80,7 +80,7 @@ int main(int argc,char **argv) {
                 }
             }
         }
-        if(mode!="manual"&&mode!="auto"&&mode!="collect"&&mode!="calib"&&mode!="smoke") throw std::runtime_error("Chế độ không hợp lệ");
+        if(mode!="manual"&&mode!="auto"&&mode!="calib"&&mode!="smoke") throw std::runtime_error("Chế độ không hợp lệ");
         if(mode=="calib" && step.empty()) throw std::runtime_error("thiếu bước hiệu chuẩn: dùng --step <1..10>");
         if(mode!="calib" && !step.empty()) throw std::runtime_error("--step chỉ dùng với --mode calib");
         if(mode=="calib" && step=="position") {

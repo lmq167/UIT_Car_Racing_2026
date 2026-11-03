@@ -39,16 +39,6 @@ void App::Init() {
     logger_.reset(new common::RunLogger(c_,config_path_,mode_));
     if(mode_=="calib" || mode_=="smoke") calibration_.reset(new Calibration(c_,mode_=="smoke" ? "smoke" : step_,
         logger_->Directory(),config_path_,kill_file_,smoke_drop_));
-    if(mode_=="collect") {
-        const char *display=std::getenv("DISPLAY"), *wayland=std::getenv("WAYLAND_DISPLAY");
-        bool keyboard_available=c_.enable_display && ((display&&*display)||(wayland&&*wayland));
-#ifdef UCR_FAKE_HW
-        keyboard_available=keyboard_available || !fake::KeyScript().empty();
-#endif
-        if(!keyboard_available)
-            throw std::runtime_error("Thu ảnh cần cửa sổ nhận bàn phím; bật enable_display và mở phiên màn hình trước khi chạy");
-        collector_.reset(new common::CollectRecorder(c_,logger_->Directory(),std::cin,std::cout));
-    }
     backend_.Init();
 }
 void App::Launch(std::function<void()> work) {
@@ -153,7 +143,7 @@ void App::ActuatorThread() {
 #endif
         auto s=Snapshot(); auto now=common::Clock::now(); auto cmd=s.requested;
         std::string state=mode_=="auto" ? "DUNG" : s.requested_state;
-        const bool held_mode=mode_=="calib" || mode_=="collect" || mode_=="manual";
+        const bool held_mode=mode_=="calib" || mode_=="manual";
         const char *latch_reason=nullptr;
         const auto cancel_held=[&](const char *reason) {
             bool had_command=false;
@@ -263,25 +253,17 @@ void App::UIThread() {
         }
         int key=-1;
         if(show) {
-            if(!s.observation.frame.empty()) cv::imshow("UCR",collector_ ? collector_->View(s) : s.observation.frame);
+            if(!s.observation.frame.empty()) cv::imshow("UCR",s.observation.frame);
             const int raw_key=cv::waitKey(1);
             key=raw_key<0 ? -1 : raw_key&255;
         }
 #ifdef UCR_FAKE_HW
-        if(mode_=="collect" || mode_=="calib" || mode_=="manual" || mode_=="smoke") {
+        if(mode_=="calib" || mode_=="manual" || mode_=="smoke") {
             const int injected=fake::NextKey();
             if(injected>=0) key=injected;
         }
 #endif
-        if(collector_) {
-            auto cmd=s.requested;
-            if(cancel_held_command_.exchange(false)) cmd={};
-            if(collector_->Key(key,cmd)) { RequestStop(); break; }
-            { std::lock_guard<std::mutex> lock(shared_.mutex);
-              shared_.value.requested=cancel_held_command_ || !FreshImage(c_,shared_.value.observation,common::Clock::now())
-                  ? common::ControlCommand{} : cmd; }
-            collector_->Capture(s);
-        } else if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
+        if(key=='q'||key=='Q'||key==27) { RequestStop(); break; }
         if(mode_=="manual") {
             std::lock_guard<std::mutex> lock(shared_.mutex); auto &cmd=shared_.value.requested;
             if(cancel_held_command_.exchange(false)) cmd={};
@@ -318,7 +300,7 @@ void App::UIThread() {
                 !FreshImage(c_,shared_.value.observation,common::Clock::now())) ? common::ControlCommand{} : cmd;
             shared_.value.requested_state=calibration_->State();
         }
-        Sleep((collector_ || calibration_) ? std::max(20,c_.control_hz) : c_.ui_hz);
+        Sleep(calibration_ ? std::max(20,c_.control_hz) : c_.ui_hz);
     }
     if(show) cv::destroyAllWindows();
 }
