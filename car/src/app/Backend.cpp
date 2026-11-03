@@ -165,7 +165,6 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
     }
 #else
     const auto deadline=common::Clock::now()+std::chrono::milliseconds(100);
-    bool position_sent=false;
     {
         std::unique_lock<std::timed_mutex> lock(motor_mutex_,std::defer_lock);
         if(!lock.try_lock_until(deadline)) {
@@ -175,13 +174,14 @@ void Backend::Apply(common::ControlCommand c, bool send_motor) {
         if(stopping_) return;
         AdvanceFake();
         if(send_motor || c.speedCmPerSec==0) {
-            position_sent=c.position_control && c.speedCmPerSec>0 && !position_active_;
+            const bool position_sent=c.position_control && c.speedCmPerSec>0 && !position_active_;
             position_active_=c.position_control && c.speedCmPerSec>0;
             fake_speed_=c.speedCmPerSec;
+            // Ghi vết trong khoá: Stop() không chen được giữa đặt tốc độ và dòng vết.
+            if(position_sent) fake::TraceNumber("motor_position",c.position_cm);
+            fake::TraceNumber("motor_speed",c.speedCmPerSec);
         }
     }
-    if(position_sent) fake::TraceNumber("motor_position",c.position_cm);
-    if(send_motor || c.speedCmPerSec==0) fake::TraceNumber("motor_speed",c.speedCmPerSec);
     const int angle=c_.servo_trim_deg+(c_.servo_invert ? -c.steeringDeg : c.steeringDeg);
     fake::TraceNumber("servo_angle",std::max(-60,std::min(60,angle)));
 #endif
