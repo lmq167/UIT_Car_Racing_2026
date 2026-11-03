@@ -35,23 +35,21 @@ int main(int argc,char **argv) {
     struct sigaction action{}; action.sa_handler=Signal; sigemptyset(&action.sa_mask);
     sigaction(SIGINT,&action,nullptr); sigaction(SIGTERM,&action,nullptr);
     try {
-        std::string path="../config.yaml",mode="manual",step,kill_file;
-        bool smoke_drop=false;
+        std::string path="../config.yaml",mode="manual",step;
         double calib_drop_after=0;
         for(int i=1;i<argc;++i) {
             const std::string arg=argv[i];
-            if(arg=="--help") { std::cout << "--config <tep.yaml> --mode manual|auto|smoke|calib --step <1..10>\n"
+            if(arg=="--help") { std::cout << "--config <tep.yaml> --mode manual|auto|calib --step <1..10>\n"
                 <<"--check-config --config <file>: chỉ kiểm cấu hình, không mở thiết bị\n"
                 <<"Bước: 1 môi trường, 2 servo, 3 bán kính, 4 motor, 5 vị trí (đang khoá), 6 IMU, 7 ToF, 8 camera, 9 độ trễ, 10 nhịp vòng.\n"
-                <<"--env-info: chỉ đọc bản build; --calib-drop-camera-after <giây>: chỉ calib motor; smoke dùng scripts/smoke_test.sh --smoke-drop-camera\n"; return 0; }
+                <<"--env-info: chỉ đọc bản build; --calib-drop-camera-after <giây>: chỉ calib motor\n"; return 0; }
             if(arg=="--env-info") {
                 std::cout<<"OpenCV "<<CV_VERSION<<"; source_id="<<common::SourceId()<<"; simulated="<<common::Simulated()<<'\n';
                 std::istringstream info(cv::getBuildInformation()); std::string line;
                 while(std::getline(info,line)) if(line.find("GStreamer")!=std::string::npos) std::cout<<line<<'\n';
                 return 0;
             }
-            if(arg=="--smoke-drop-camera") { smoke_drop=true; continue; }
-            if(arg!="--config" && arg!="--mode" && arg!="--step" && arg!="--smoke-kill-file" && arg!="--calib-drop-camera-after") throw std::runtime_error("tham số không biết: "+arg);
+            if(arg!="--config" && arg!="--mode" && arg!="--step" && arg!="--calib-drop-camera-after") throw std::runtime_error("tham số không biết: "+arg);
             if(i+1>=argc || std::string(argv[i+1]).compare(0,2,"--")==0)
                 throw std::runtime_error("thiếu giá trị tham số: "+arg);
             if(arg=="--config") path=argv[++i];
@@ -63,7 +61,6 @@ int main(int argc,char **argv) {
                 if(index<0) throw std::runtime_error("Bước hiệu chuẩn không hợp lệ: "+number+"; --step phải từ 1 đến 10");
                 step=steps[index];
             }
-            else if(arg=="--smoke-kill-file") kill_file=argv[++i];
             else if(arg=="--calib-drop-camera-after") {
                 const std::string text=argv[++i]; std::size_t used=0;
                 calib_drop_after=std::stod(text,&used);
@@ -80,14 +77,13 @@ int main(int argc,char **argv) {
                 }
             }
         }
-        if(mode!="manual"&&mode!="auto"&&mode!="calib"&&mode!="smoke") throw std::runtime_error("Chế độ không hợp lệ");
+        if(mode!="manual"&&mode!="auto"&&mode!="calib") throw std::runtime_error("Chế độ không hợp lệ");
         if(mode=="calib" && step.empty()) throw std::runtime_error("thiếu bước hiệu chuẩn: dùng --step <1..10>");
         if(mode!="calib" && !step.empty()) throw std::runtime_error("--step chỉ dùng với --mode calib");
         if(mode=="calib" && step=="position") {
             std::cerr<<"Bước 5 đang khoá cho tới khi kiểm chế độ vị trí trên xe\n";
             return 2;
         }
-        if(mode!="smoke" && (smoke_drop || !kill_file.empty())) throw std::runtime_error("Cờ smoke chỉ dùng với --mode smoke");
         if(calib_drop_after>0 && (mode!="calib" || step!="motor")) throw std::runtime_error("Cờ ngắt ảnh hiệu chuẩn chỉ dùng với calib motor");
         if(step=="env") {
             // Dùng chung phép kiểm chỉ đọc; truyền đúng bản thực thi kể cả khi build ở ngoài repo.
@@ -95,7 +91,7 @@ int main(int argc,char **argv) {
             throw std::runtime_error("Không chạy được scripts/env_check.sh bằng bash");
         }
         common::Config config; config.Load(path);
-        app::App application(config,mode,path,step,kill_file,smoke_drop,calib_drop_after);
+        app::App application(config,mode,path,step,calib_drop_after);
         application.Init();
         if(!stopped) application.Start();
         while(!stopped && application.IsRunning()) std::this_thread::sleep_for(std::chrono::milliseconds(20));

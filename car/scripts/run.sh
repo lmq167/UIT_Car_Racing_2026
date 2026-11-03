@@ -9,9 +9,6 @@ build=${UCR_BUILD_DIR:-"$root/build"}
 case "$build" in /*) ;; *) build="$PWD/$build" ;; esac
 config="$root/config.yaml"
 has_config=0
-smoke_file=
-smoke_report=
-smoke_since=
 args=("$@")
 for ((i=0; i<${#args[@]}; ++i)); do
     if [[ ${args[i]} == --config && $((i+1)) -lt ${#args[@]} ]]; then
@@ -20,14 +17,9 @@ for ((i=0; i<${#args[@]}; ++i)); do
         args[i+1]=$config
         has_config=1
     fi
-    # Giữ nhóm tiền cảnh cho hiệu chuẩn/smoke, tránh SIGTTIN khi đọc terminal.
+    # Giữ nhóm tiền cảnh cho hiệu chuẩn, tránh SIGTTIN khi đọc terminal.
     # main tự đăng ký lại SIGINT/SIGTERM ngay khi khởi động.
-    if [[ ${args[i]} == --mode && ( ${args[i+1]:-} == calib || ${args[i+1]:-} == smoke ) ]]; then set +m; fi
-    if [[ ${args[i]} == --smoke-kill-file && $((i+1)) -lt ${#args[@]} ]]; then
-        smoke_file=${args[i+1]}
-        case "$smoke_file" in /*) ;; *) smoke_file="$PWD/$smoke_file" ;; esac
-        args[i+1]=$smoke_file
-    fi
+    if [[ ${args[i]} == --mode && ${args[i+1]:-} == calib ]]; then set +m; fi
 done
 if [[ $has_config == 0 ]]; then args+=(--config "$config"); fi
 cd "$build" || exit 1
@@ -38,13 +30,9 @@ forward() {
 cleanup() {
     local status=$?
     trap - EXIT INT TERM
-    if [[ -n $smoke_report && $status == 137 ]]; then
-        if "$build/ucr_stop" --config "$config" --smoke-report "$smoke_report/smoke.json" --stop-since "$smoke_since"; then status=0; else status=1; fi
-    else
-        if ! "$build/ucr_stop" --config "$config"; then
-            printf '%s\n' 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' >&2
-            if [[ $status == 0 ]]; then status=1; fi
-        fi
+    if ! "$build/ucr_stop" --config "$config"; then
+        printf '%s\n' 'LOI: ucr_stop khong xac nhan dung duoc thiet bi' >&2
+        if [[ $status == 0 ]]; then status=1; fi
     fi
     exit "$status"
 }
@@ -55,17 +43,6 @@ trap 'forward TERM' TERM
 # Đặt lại SIGINT vốn có thể bị bash bỏ qua cho tác vụ nền không tương tác.
 ( trap - INT TERM; exec "$build/main" "${args[@]}" ) <&0 &
 child=$!
-if [[ -n $smoke_file ]]; then
-    while kill -0 "$child" 2>/dev/null; do
-        if [[ -s $smoke_file ]]; then
-            IFS= read -r smoke_report < "$smoke_file"
-            read -r smoke_since _ < /proc/uptime
-            kill -9 "$child" 2>/dev/null || :
-            break
-        fi
-        sleep 0.01
-    done
-fi
 status=0
 while :; do
     wait "$child"

@@ -16,7 +16,7 @@ REQUIRED = (
     ("calibration_sheet.md", "phiếu", (
         "--mode calib", "--step 1", "--step 2", "--step 3", "--step 4", "--step 5",
         "--step 6", "--step 7", "--step 8", "--step 9", "--step 10",
-        "env_check.sh", "--mode smoke", "thước", "3 m", "băng dính", "điện thoại", "bút")),
+        "env_check.sh", "thước", "3 m", "băng dính", "điện thoại", "bút")),
     ("calibration.md", "bảng", ("khoá config", "tof", "mất ảnh", "10/20", "500 ms", "model_fps.md")),
     ("ucr_car.md", "tài liệu xe", (
         "max_speed_cms", "(0, 100]", "camera_resume_max_s", "soft_start_s", "resume_stable_s", "[0.5, 30]",
