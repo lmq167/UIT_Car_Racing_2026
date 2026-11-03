@@ -100,9 +100,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,input.reference);
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
-    if(input.yolo_enabled && (reason_=="TIEP_CAN_DEN_DO" || released)) {
-        if(reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
-        if(result.debug.state=="BAM_LAN") { plan.reason=reason_; plan.debug.reason=plan.reason; }
+    if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
+        if(!fresh || reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
+        if(result.debug.state=="BAM_LAN") {
+            plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
+        }
         plan.debug.speed_cms=plan.cmd.cms;
     }
     return plan;
