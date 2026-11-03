@@ -14,10 +14,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     params.Validate();
     Plan plan;
     plan.reference=input.reference;
-    const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=500;
+    const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=kStaleImageMs;
     if(input.stop) { state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); }
     else if(state_==PlannerState::BAM_LAN && !image_fresh) {
-        state_=PlannerState::DUNG; reason_="MAT_ANH"; lane_.Reset();
+        state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset();
     }
     else if(input.go && state_!=PlannerState::BAM_LAN) {
         const bool mask_fresh=!input.mask.empty() && input.mask_ms>=0 && input.mask_ms<=now_ms &&

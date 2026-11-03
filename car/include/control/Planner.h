@@ -3,6 +3,8 @@
 #include "control/LaneController.h"
 
 namespace control {
+constexpr int kStaleImageMs = 500;
+constexpr const char* kMissingImageReason = "MAT_ANH";
 enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG };
 const char *StateName(PlannerState state);
 struct PlannerInput {

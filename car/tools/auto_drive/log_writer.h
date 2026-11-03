@@ -6,6 +6,7 @@
 #include <thread>
 
 namespace auto_drive {
+void warningNonBlocking(const char* text) noexcept;
 struct Statistics {
     double camera_fps=0, road_ms=0, loop_p95_ms=0, rss_mb=0, free_mb=0;
 };

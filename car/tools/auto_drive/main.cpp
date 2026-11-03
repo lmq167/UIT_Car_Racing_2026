@@ -135,7 +135,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         models.offer(ModelResult{frame,mask,ms});
                     } catch (...) { trace("model_notice","road_throw"); }
                 }
-            } catch (...) { trace("model_notice","road_worker_failed"); }
+            } catch (...) {
+                warningNonBlocking("CANH BAO: luong model da dung, xe dung, thoat bang Esc\n");
+                trace("model_notice","road_worker_failed");
+            }
             modelDone=true;
         });
         controllerDone=false;
@@ -178,7 +181,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     // Ngủ từng lát để dọn luồng có hạn, không ảnh hưởng vòng an toàn.
                     while (!quit && Clock::now()<target) ::poll(nullptr,0,2);
                 }
-            } catch (...) { controllerFault=true; }
+            } catch (...) {
+                controllerFault=true;
+                warningNonBlocking("CANH BAO: luong dieu khien da dung, xe dung, thoat bang Esc\n");
+            }
             controllerDone=true;
         });
         initMask.restore();
@@ -209,7 +215,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             bool eventGo=false,eventStop=false,forceLog=false;
             const bool imageFresh=image>=0 && now-image<=kStaleFrameMs;
             const bool maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
-            if (enabled && !imageFresh) { enabled=false; latch="MAT_ANH"; ++epoch; eventStop=true; forceLog=true; }
+            if (enabled && !imageFresh) { enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true; }
             if (controllerFault.exchange(false)) { enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch; eventStop=true; forceLog=true; }
             const auto keys=preview.pollKeys();
             const bool batchStop=keys.find(' ')!=std::string::npos;
@@ -252,9 +258,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (reason!="SPACE") reason="CHO_G";
             } else if (!maskFresh || !commandMaskFresh) { state="BAM_LAN"; reason="MAT_NAN_CU"; }
             else if (!commandFresh) { state="BAM_LAN"; reason="LENH_CU"; }
-            else if (command.plan.state==control::PlannerState::DUNG && command.plan.reason=="MAT_ANH") {
+            else if (command.plan.state==control::PlannerState::DUNG && command.plan.reason==control::kMissingImageReason) {
                 // Hai đồng hồ kiểm 500 ms có thể lệch nhau, nên phải chốt cả mất ảnh do Planner báo.
-                enabled=false; latch="MAT_ANH"; ++epoch; eventStop=true; forceLog=true;
+                enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true;
                 state="DUNG"; reason=latch;
             }
             else {

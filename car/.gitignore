@@ -1,5 +1,6 @@
 build*/
 runs/
+runs_auto/
 models/
 *.engine
 *.onnx

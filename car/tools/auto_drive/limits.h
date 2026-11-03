@@ -1,11 +1,12 @@
 #pragma once
+#include "control/Planner.h"
 #include <cmath>
 
 namespace auto_drive {
 constexpr float kMaxAutoSpeedCms = 10;
 constexpr int kMaxAutoSteerDeg = 40;
 constexpr bool kReverseMotor = false;
-constexpr int kStaleFrameMs = 500, kPollMs = 10, kUartPollMs = 50;
+constexpr int kStaleFrameMs = control::kStaleImageMs, kPollMs = 10, kUartPollMs = 50;
 constexpr int kHardwareTimeoutMs = 300, kInitTimeoutMs = 5000;
 constexpr int kFrameTimeoutMs = 5000, kCleanupTimeoutMs = 3000;
 constexpr int kStopTimeoutMs = 10000, kStopKillMs = 1000;

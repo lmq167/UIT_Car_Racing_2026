@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <csignal>
+#include <cstring>
 #include <ctime>
 #include <fcntl.h>
 #include <iostream>
@@ -14,13 +15,19 @@
 
 extern char** environ;
 namespace auto_drive {
+void warningNonBlocking(const char* text) noexcept {
+    pollfd out{STDERR_FILENO, POLLOUT, 0};
+    if (poll(&out, 1, 0) > 0 && (out.revents & POLLOUT)) {
+        const auto ignored = ::write(STDERR_FILENO, text, std::strlen(text)); (void)ignored;
+    }
+}
 namespace {
 int64_t timeMs() {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 // Coreutils có sẵn trên Ubuntu/Jetson; không shell, không nạp toàn engine vào RAM.
-std::string sha256(const std::string& path) {
+std::string sha256(const std::string& path) try {
     int pipefd[2];
     if (pipe2(pipefd,O_CLOEXEC|O_NONBLOCK)!=0) throw std::runtime_error("Không tạo được ống SHA-256");
     posix_spawn_file_actions_t actions;
@@ -50,6 +57,8 @@ std::string sha256(const std::string& path) {
     std::string result(buf.data(),64);
     if (result.find_first_not_of("0123456789abcdef")!=std::string::npos) throw std::runtime_error("SHA-256 sai định dạng");
     return result;
+} catch (...) {
+    return "loi";
 }
 void writeFile(const std::string& path,const std::string& bytes) {
     std::ofstream f; f.exceptions(std::ios::badbit|std::ios::failbit);
@@ -115,10 +124,14 @@ void LogWriter::run() noexcept {
         const auto info=readBytes(info_);
         writeFile(folder+"/road_info.json",info);
         const auto engineHash=engine_.empty() ? "" : sha256(engine_);
+        const auto controlHash=sha256(folder+"/control.yaml");
+        const auto infoHash=sha256(folder+"/road_info.json");
+        if (engineHash=="loi" || controlHash=="loi" || infoHash=="loi")
+            warningNonBlocking("CANH BAO: bam SHA-256 that bai, van ghi log phien\n");
         writeFile(folder+"/session.json","{\n\"git_hash\":"+jsonString(UCR_AUTO_GIT_HASH)+
             ",\n\"git_branch\":"+jsonString(UCR_AUTO_GIT_BRANCH)+
-            ",\n\"control_yaml\":"+jsonString(yaml_)+",\n\"control_sha256\":"+jsonString(sha256(folder+"/control.yaml"))+
-            ",\n\"info_json\":"+info+",\n\"info_sha256\":"+jsonString(sha256(folder+"/road_info.json"))+
+            ",\n\"control_yaml\":"+jsonString(yaml_)+",\n\"control_sha256\":"+jsonString(controlHash)+
+            ",\n\"info_json\":"+info+",\n\"info_sha256\":"+jsonString(infoHash)+
             ",\n\"engine_name\":"+jsonString(engine_)+",\n\"engine_sha256\":"+jsonString(engineHash)+"\n}\n");
         const auto csvPath=folder+"/control_log.csv";
         writeFile(csvPath,"t_ms,frame_id,mask_file,cmd_cms,cmd_deg,mask_ms,image_ms,go,stop,lane_ref,planner_state,"
