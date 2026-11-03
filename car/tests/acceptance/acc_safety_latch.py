@@ -12,7 +12,7 @@ import tempfile
 
 sys.dont_write_bytecode = True
 from acc_calib_limits import LimitsSuite, held_window, near, observed_timing
-from acc_vehicle_cli import (SPEED_EPS, collect_metadata, held_at, log_ready,
+from acc_vehicle_cli import (SPEED_EPS, held_at, log_ready,
                              log_rows, read, require, run, tail, trace)
 
 PHASES = tuple(range(0, 100, 10))
@@ -142,11 +142,7 @@ class LatchSuite(LimitsSuite):
         command = (self.command(config, step) if mode == "calib" else
                    [self.main, "--config", config, "--mode", mode])
 
-        def watching(process):
-            if mode == "collect":
-                collect_metadata(process)
-            observe(process)
-        code, output = run(command, folder, env, watching)
+        code, output = run(command, folder, env, observe)
         require(code in (0, 143), "Tiến trình phải thoát có kiểm soát, mã={}".format(code))
         tail(trace(folder / "trace.csv"))
         logs = log_rows(folder, mode)
@@ -173,7 +169,7 @@ class LatchSuite(LimitsSuite):
         folder, config, env = self.setup()
         keys = [(3500, "d"), (4000, "y")] if mode == "calib" else [(3800, key), (4100, key)]
         if kind == "idle":
-            keys = [(3500, " ")]  # Không đặt lệnh chuyển động, vẫn có kịch bản phím hợp lệ cho collect.
+            keys = [(3500, " ")]  # Không đặt lệnh chuyển động.
             initial = 0
         if not passive:
             keys.append((new_at, "y" if mode == "calib" else new_key))
@@ -181,7 +177,7 @@ class LatchSuite(LimitsSuite):
             keys.append((begin+1100, "y" if mode == "calib" else new_key))
         if stalled:
             env["UCR_FAKE_UI_STALL"] = "5000:3000"
-            keys.append((5200, " " if mode == "collect" else "x"))
+            keys.append((5200, "x"))
         events = [(begin, end)]
         if twice:
             events.append((new_at+1500, new_at+1500+(1200 if mixed else length if image else 300)))

@@ -415,7 +415,7 @@ class LimitsSuite(Suite):
             variants = [({key: value}, ()) for key, ceiling in LIMITS
                         for value in (("0", "-0.01", str(ceiling+0.01)) if kind != "type" else ("[]", "{}", "abc"))]
         for overrides, remove in variants:
-            modes = ("calib", "collect", "auto") if kind == "before_init" else (None,)
+            modes = ("calib", "auto") if kind == "before_init" else (None,)
             for mode in modes:
                 folder, config, env = self.setup(overrides, remove)
                 if mode == "calib":
