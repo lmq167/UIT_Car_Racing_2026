@@ -31,7 +31,8 @@ road_fixture = importlib.util.module_from_spec(_spec_info)
 _spec_info.loader.exec_module(road_fixture)
 
 CASES = ['A{:02d}'.format(i) for i in list(range(1, 36)) + list(range(40, 49))]
-CASES += ['A07b', 'A08b', 'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51']
+CASES += ['A07b', 'A08b', 'A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h',
+          'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -1121,6 +1122,163 @@ def test_case(case, cfg, root):
                            message='Không tự chạy sau resume khi chưa có chốt')
                 r.finish()
         return
+    # A30c..h — T47k bổ sung 03/11 13:50 a–f: lỗi YOLO liên tục, mask vẫn tươi.
+    if case in ('A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h'):
+        for action in (('space', 'term') if case == 'A30f' else ('normal',)):
+            no_yolo = case == 'A30h'
+            values = dict(YOLO_VALUES, start_wait_green=0, cmd_max_age_ms=500,
+                          mask_max_age_ms=300, cruise_cms=8, max_speed_cms=10, kp=0)
+
+            def before_launch(run):
+                if case == 'A30d':
+                    # Tiêm trước Popen để chưa có lô YOLO nào, không chỉ trước phím G.
+                    run.seq = 1
+                    run.ctrl.write_text('1 yolo_throw_on\n', encoding='utf-8')
+
+            schedule = ((1, 'empty'), (120, 'red_edge')) if case == 'A30e' else ((1, 'empty'),)
+            with running(cfg, root / action, values=values, no_yolo=no_yolo,
+                         yolo_schedule=schedule, setup=before_launch) as r:
+                r.boot()
+                approach = r.values['approach_cms']
+                age = r.values['det_max_age_ms']
+
+                def wait_cruise(since=0):
+                    r.wait(lambda: any(float(row['t_ms']) >= since
+                                       and row['planner_state'] == row['reason'] == 'BAM_LAN'
+                                       and abs(float(row['sent_speed_cms']) - 8) < 1e-6
+                                       and (no_yolo or 0 <= float(row['det_age_ms']) <= age)
+                                       and 0 <= float(row['mask_age_ms']) <= 300 + r.slack
+                                       and 0 <= float(row['image_age_ms']) <= 500 + r.slack
+                                       for row in r.rows()), 15, 'Chưa bám làn 8 với dữ liệu tươi')
+                    speed_is(r, 8)
+
+                if case == 'A30d':
+                    r.wait(lambda: any(e[2] == '1 yolo_throw_on' for e in r.of('inject')),
+                           message='Thiếu ACK lỗi YOLO trước G')
+                    need(not detection_batches(r.events()), 'Đã có lô YOLO trước G', 'setup')
+                    mark = len(r.events()); ev = r.key('G')
+                else:
+                    r.go(); wait_cruise()
+                    if case == 'A30e':
+                        need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ pha trước đỏ', 'setup')
+                        red_end = red_stop(r, 120, len(r.events()))
+                    mark = len(r.events()); ev = r.inject('yolo_throw_on')
+                limit = age + r.values['control_period_ms'] + 200 + r.slack
+                deadline = ev[0] + limit
+                r.wait(lambda: td.now_ms() >= deadline, limit / 1000.0 + 1,
+                       'Chưa tới hạn phát hiện cũ')
+
+                def capped():
+                    cap_from = ev[0] if case == 'A30d' else deadline
+                    motors = [e for e in r.of('motor_speed', mark) if e[0] >= cap_from]
+                    need(all(abs(e[2]) <= approach for e in motors),
+                         'Motor vượt approach sau hạn YOLO cũ', 'yolo_stale_cap')
+
+                if case == 'A30e':
+                    check = lambda: held(r, red_end)
+                else:
+                    check = (lambda: None) if no_yolo else capped
+                r.frames(12, check)
+                check()
+                for kind in ('frame', 'mask'):
+                    need(any(float(str(e[2]).split()[1]) > deadline for e in r.of(kind, mark)),
+                         'Không có ảnh/mask mới sau lỗi YOLO', 'setup')
+                motors = [e for e in r.of('motor_speed', mark) if e[0] >= deadline]
+                if no_yolo:
+                    need(motors and all(abs(e[2] - 8) < 1e-6 for e in motors)
+                         and any(not e[3] for e in motors),
+                         '--no-yolo bị đổi tốc độ bởi yolo_throw_on', 'yolo_disabled')
+                elif case != 'A30e':
+                    need(any(0 < e[2] <= approach and not e[3] for e in motors),
+                         'YOLO cũ làm dừng hẳn thay vì hạ trần', 'yolo_stale_motion')
+                    reason_mark = 0 if case == 'A30d' else mark
+                    need(any(e[2] == 'MAT_YOLO' and e[0] <= deadline for e in r.of('reason', reason_mark)),
+                         'Thiếu MAT_YOLO trong hạn', 'yolo_stale_reason')
+                    r.wait(lambda: td.last_commands(r.events())[0] > 0,
+                           3 + r.slack / 1000.0, 'Cần đang chạy MAT_YOLO trước tác nhân', tag='setup')
+                need(not any(e[0] >= deadline for e in r.of('detections', mark)),
+                     'Lỗi YOLO liên tục vẫn công bố lô mới sau hạn', 'setup')
+                if case == 'A30d':
+                    need(not detection_batches(r.events()), 'Lượt chưa có lô đã nhận detections', 'setup')
+                stale_until = external_stamp_ms()
+                recovery_start = recovery_until = None
+
+                if case == 'A30c':
+                    resume_mark = len(r.events()); off = r.inject('yolo_throw_off')
+                    new = r.wait(lambda: next((b for b in detection_batches(r.events())
+                                               if b[0] >= resume_mark and b[2] > off[0]), None),
+                                 15, 'Không có lô chụp mới sau yolo_throw_off')
+                    wait_cruise(new[3])
+                    recovery_start = external_stamp_ms()
+                    speed_is(r, 8)
+                    recovery_until = external_stamp_ms()
+                elif case == 'A30f':
+                    stop_mark = len(r.events())
+                    if action == 'space':
+                        stamp, stop_limit = r.key(' ')[0], 150
+                    else:
+                        stamp, stop_limit = external_stamp_ms(), 1000
+                        os.kill(r.process.pid, signal.SIGTERM)
+                    servo_stamp = stopped(r, stamp, stop_limit, mark=stop_mark)
+                    need(0 <= servo_stamp - stamp <= stop_limit + r.slack,
+                         'Servo0 quá hạn sau motor0', 'stop_order')
+                    end = stop_tail(r, stamp, stop_mark)
+                    if action == 'term':
+                        r.exited(); held(r, end)
+                    else:
+                        r.frames(6, lambda: held(r, end))
+                elif case == 'A30g':
+                    stall_mark = len(r.events()); r.inject('road_stall')
+                    mask_age = r.values['mask_max_age_ms']
+                    r.wait(lambda: td.now_ms() - float(str(r.of('mask')[-1][2]).split()[1]) > mask_age,
+                           3, 'Mask chưa cũ sau road_stall')
+                    last = r.of('mask')[-1]
+                    captured = float(str(last[2]).split()[1])
+                    stopped(r, captured, mask_age + r.values['control_period_ms'] + 200,
+                            after=captured + mask_age, mark=stall_mark)
+                    r.wait(lambda: any(e[2] == 'MAT_NAN_CU' for e in r.of('reason', stall_mark)),
+                           message='Thiếu MAT_NAN_CU sau road_stall')
+                    end = stop_tail(r, captured + mask_age, stall_mark)
+                    r.frames(6, lambda: held(r, end))
+                    need(r.of('mask')[-1] == last, 'road_stall vẫn sinh mask', 'setup')
+
+                if not (case == 'A30f' and action == 'term'):
+                    r.finish()
+                rows = r.rows()
+                stale_rows = [row for row in rows if deadline <= float(row['t_ms']) < stale_until]
+                need(stale_rows, 'CSV thiếu đoạn quan sát sau hạn', 'record_format')
+                if no_yolo:
+                    need(not any(row['reason'] == 'MAT_YOLO' for row in rows)
+                         and not any(e[2] == 'MAT_YOLO' for e in r.of('reason')),
+                         '--no-yolo có MAT_YOLO', 'yolo_disabled')
+                    need(all(abs(float(row['sent_speed_cms']) - 8) < 1e-6 for row in stale_rows),
+                         '--no-yolo không giữ 8 trong CSV', 'yolo_disabled')
+                elif case == 'A30e':
+                    need(all(row['reason'] == 'DUNG_DEN_DO' and float(row['sent_speed_cms']) == 0
+                             for row in stale_rows)
+                         and not any(e[2] == 'MAT_YOLO' for e in r.of('reason', mark)),
+                         'Mất YOLO đổi lý do/mở chốt đỏ', 'light_latch')
+                else:
+                    need(any(row['reason'] == 'MAT_YOLO' and row['planner_state'] == 'BAM_LAN'
+                             and (case == 'A30d' or float(row['det_age_ms']) > age)
+                             and 0 <= float(row['mask_age_ms']) <= 300 + r.slack
+                             and 0 <= float(row['image_age_ms']) <= 500 + r.slack
+                             and 0 < float(row['sent_speed_cms']) <= approach for row in stale_rows),
+                         'CSV thiếu MAT_YOLO khi ảnh/mask tươi và xe vẫn chạy', 'yolo_stale_reason')
+                    if case == 'A30d':
+                        need(not detection_batches(r.events()), 'Lượt chưa có lô nhận detections', 'setup')
+                    if recovery_start is not None:
+                        recovered = [row for row in rows
+                                     if recovery_start <= float(row['t_ms']) < recovery_until
+                                     and 0 <= float(row['mask_age_ms']) <= r.values['mask_max_age_ms'] + r.slack
+                                     and float(row['image_age_ms']) <= 500 + r.slack]
+                        need(len(recovered) >= 3 and all(row['reason'] == row['planner_state'] == 'BAM_LAN'
+                                               and abs(float(row['sent_speed_cms']) - 8) < 1e-6
+                                               for row in recovered),
+                             'Sau lô tươi chưa hết MAT_YOLO/về 8', 'yolo_recovery')
+                        need(not any(e[2] == 'MAT_YOLO' and recovery_start <= e[0] < recovery_until
+                                     for e in r.of('reason')), 'MAT_YOLO còn sau phục hồi', 'yolo_recovery')
+        return
     # A40 — P2/L1: G không đèn giữ0; không đếm lặp cùng lô để đủ xanh.
     if case == 'A40':
         with yolo_running(cfg, root, yolo_schedule=((1, 'empty'), (120, 'green'))) as r:
@@ -1365,7 +1523,26 @@ def test_case(case, cfg, root):
                 no_motion(r, ev[0])
                 r.inject(kind + '_resume')
                 r.frames(8, lambda: no_motion(r, ev[0], 'go_queued'))
-                r.go(); r.finish()
+                if kind == 'road':
+                    for _ in range(5):
+                        r.wait(lambda: 0 <= td.now_ms() - float(str(r.of('mask')[-1][2]).split()[1])
+                               <= r.values['mask_max_age_ms'],
+                               3 + r.slack / 1000.0, 'Chưa có mask tươi trước G', tag='setup')
+                        mark = len(r.events()); r.key('G')
+                        result = r.wait(lambda: next(iter(r.of('go', mark)), None)
+                                        or next((e for e in r.of('motor_speed', mark)
+                                                 if e[2] > 0 and not e[3]), None),
+                                        3 + r.slack / 1000.0, 'G tươi không tạo chuyển động')
+                        if result[1] == 'go':
+                            need(result[2] in ('ignored MAT_NAN_CU', 'ignored MAT_ANH'),
+                                 'G bị bỏ vì lý do khác: ' + str(result[2]), 'go_fresh')
+                        else:
+                            break
+                    else:
+                        raise Failure('go_fresh', 'G vẫn bị bỏ sau 5 lần chờ mask tươi')
+                else:
+                    r.go()
+                r.finish()
         return
     # A33 — bản duyệt: checker chung bắt cả hai trần và không bỏ lệnh fail.
     if case == 'A33':
@@ -1397,7 +1574,7 @@ def test_case(case, cfg, root):
 def selftest():
     import ast
     from types import SimpleNamespace
-    from unittest.mock import patch
+    from unittest.mock import MagicMock, patch
     def fails(call, tag):
         try:
             call()
@@ -1547,6 +1724,60 @@ def selftest():
         assert error.tag == 'light_latch'
     else:
         assert False, 'Bỏ lọt tái chạy sau cặp dừng'
+    # A32: kiểm vòng chờ/bấm lại thật bằng vết tổng hợp, không cần binary hooks.
+    for rejections, expected in (([], None),
+                                 (['ignored MAT_NAN_CU', 'ignored MAT_ANH'], None),
+                                 (['ignored MAT_NAN_CU'] * 4, None),
+                                 (['ignored MAT_NAN_CU'] * 5, 'go_fresh'),
+                                 (['ignored LOI_DIEU_KHIEN'], 'go_fresh')):
+        runs = []
+        @contextmanager
+        def fake_running(cfg, root, **kwargs):
+            run = MagicMock(slack=0, values=kwargs['values'])
+            es = [(0, 'frame', '1 0', False), (0, 'mask', '1 0', False)]
+            attempts = []
+            resumed = []
+            run.events.side_effect = lambda: es
+            run.of.side_effect = lambda kind, mark=0: [e for e in es[mark:] if e[1] == kind]
+            def inject(command):
+                if command.endswith('_resume'):
+                    resumed.append(True)
+            run.inject.side_effect = inject
+            def wait(predicate, *args, **kwargs):
+                result = predicate()
+                if not result and resumed:
+                    es.append((1000, 'mask', '2 1000', False))
+                    result = predicate()
+                assert result, kwargs.get('message', 'Vòng chờ tổng hợp không đạt')
+                return result
+            run.wait.side_effect = wait
+            run.frames.side_effect = lambda count, check: check()
+            def key(value):
+                ev = (1000, 'key', value, False)
+                es.append(ev)
+                if not resumed:
+                    es.append((1000, 'go', 'ignored MAT_NAN_CU', False))
+                else:
+                    assert 0 <= td.now_ms() - float(run.of('mask')[-1][2].split()[1]) <= 100
+                    index = len(attempts)
+                    attempts.append(value)
+                    es.append((1000, 'go', rejections[index], False) if index < len(rejections)
+                              else (1000, 'motor_speed', 8, False))
+                    # Lần sau phải chờ mask tươi lại, không dùng lần chờ trước.
+                    es.append((1000, 'mask', '3 0', False))
+                return ev
+            run.key.side_effect = key
+            runs.append((root.name, run, attempts))
+            yield run
+        with patch('{}.running'.format(__name__), fake_running), patch.object(td, 'now_ms', return_value=1000):
+            call = lambda: test_case('A32', None, Path('synthetic'))
+            if expected:
+                fails(call, expected)
+            else:
+                call()
+        assert runs[0][0] == 'camera' and runs[0][1].go.call_count == 1
+        assert runs[1][0] == 'road' and runs[1][1].go.call_count == 0
+        assert len(runs[1][2]) == (len(rejections) if expected else len(rejections) + 1)
 
 
 def main():
@@ -1558,7 +1789,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: P1/M7, fixture YOLO, CLI/env, lô mới và chốt đèn (vết tổng hợp)')
+        print('PASS selftest: P1/M7, fixture YOLO, CLI/env, lô mới, chốt đèn và A32 bấm lại G (vết tổng hợp)')
         return
     if not cfg.case or not cfg.hooks:
         parser.error('--case và --hooks là bắt buộc nếu không dùng --selftest')
