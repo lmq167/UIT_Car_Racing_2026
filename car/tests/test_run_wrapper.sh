@@ -24,7 +24,7 @@ printf '%s\n' "$$" > "$UCR_TEST_DIR/child"
 printf '%s\n' "$@" > "$UCR_TEST_DIR/main_args"
 case "$1" in
     --mode)
-        [[ $2 == collect ]] || exit 8
+        [[ $2 == calib ]] || exit 8
         IFS= read -r answer
         printf '%s\n' "$answer" > "$UCR_TEST_DIR/answer"
         exit 0 ;;
@@ -102,13 +102,13 @@ run_case normal 0 '' 'cau hinh/tep co dau cach.yaml'
 run_case normal 0 '' "$tmp/noi goi/cau hinh/tuyet doi.yaml"
 run_case normal 0 '' MAC_DINH
 
-# Thu ảnh phải nhận được stdin và vẫn dừng đúng một lần khi con kết thúc.
+# Hiệu chuẩn phải nhận được stdin và vẫn dừng đúng một lần khi con kết thúc.
 : > "$tmp/stops"
-printf '%s\n' 'tên người thu có dấu cách' | bash "$root/scripts/run.sh" --mode collect --config 'cau hinh/thu.yaml'
+printf '%s\n' 'tên người thu có dấu cách' | bash "$root/scripts/run.sh" --mode calib --step 2 --config 'cau hinh/thu.yaml'
 [[ $(cat "$tmp/answer") == 'tên người thu có dấu cách' ]]
-[[ $(cat "$tmp/main_args") == "$(printf '%s\n' --mode collect --config "$PWD/cau hinh/thu.yaml")" ]]
+[[ $(cat "$tmp/main_args") == "$(printf '%s\n' --mode calib --step 2 --config "$PWD/cau hinh/thu.yaml")" ]]
 [[ $(cat "$tmp/stops") == "$(printf '%s\n' --config "$PWD/cau hinh/thu.yaml")" ]]
-printf '%s\n' 'DAT: collect nhận đầu vào và gọi dừng'
+printf '%s\n' 'DAT: calib nhận đầu vào và gọi dừng'
 
 mv "$tmp/main" "$tmp/main.saved"
 run_case normal 127

@@ -11,10 +11,10 @@ check() {
     }
 }
 check 'tham số không biết: --khong-co' --khong-co
-check 'tham số không biết: --khong-co' --mode collect --khong-co
+check 'tham số không biết: --khong-co' --mode manual --khong-co
 check 'thiếu giá trị tham số: --config' --config
 check 'thiếu giá trị tham số: --mode' --mode
-check 'thiếu giá trị tham số: --config' --config --mode collect
+check 'thiếu giá trị tham số: --config' --config --mode manual
 check 'thiếu bước hiệu chuẩn' --mode calib
 check 'Bước hiệu chuẩn không hợp lệ' --mode calib khong-co
 for step in 0 11 -1 1.5 abc; do

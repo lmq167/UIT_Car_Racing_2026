@@ -144,7 +144,7 @@ int main() {
     auto &t=o.tof[c.FrontSlot()]; t.valid=true; t.distanceMm=2000; t.updatedAt=now;
     auto &rear=o.tof[c.RearSlot()]; rear.valid=true; rear.distanceMm=2000; rear.updatedAt=now;
     std::string state;
-    for(const char *mode:{"auto","manual","collect","smoke","calib_servo","calib_motor","calib_position"}) {
+    for(const char *mode:{"auto","manual","smoke","calib_servo","calib_motor","calib_position"}) {
         const bool allowed=std::string(mode)=="calib_position";
         const auto cmd=app::SafeCommand(c,o,{10,5,true,50},now,state,allowed);
         Check(cmd.position_control==allowed && cmd.speedCmPerSec==(allowed ? 10 : 0),

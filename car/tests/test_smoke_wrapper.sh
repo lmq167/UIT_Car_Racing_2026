@@ -38,10 +38,6 @@ for expected in 0 1; do
     [[ $(sed -n '6p' "$folder/stops") =~ ^[0-9]+[.][0-9]+$ ]]
 done
 export UCR_TEST_STOP_RC=0
-output=$(timeout -k 1s 8s bash "$root/scripts/smoke_test.sh" --config "$folder/cau hinh.yaml")
+timeout -k 1s 8s bash "$root/scripts/smoke_test.sh" --config "$folder/cau hinh.yaml"
 grep -Fx -- --smoke-drop-camera "$folder/args" > /dev/null
-command_line=$(printf '%s\n' "$output" | sed -n 's/^Smoke ĐẠT. Lệnh thu dữ liệu: //p')
-[[ $command_line == UCR_BUILD_DIR=* || $command_line == 'sudo env UCR_BUILD_DIR='* ]]
-[[ $command_line == *"--config $(printf '%q' "$folder/cau hinh.yaml") --mode collect" ]]
-bash -n <<< "$command_line"
 echo 'ĐẠT: kill -9 trong run.sh, gọi dừng đúng một lần, mốc trước kill, mã kết quả 0/1'
