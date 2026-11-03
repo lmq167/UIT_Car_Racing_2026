@@ -15,7 +15,7 @@
    Dòng không có mask vẫn xử lý sự kiện G/Space, không gọi thuật toán trên mask giả.
    Kết quả: control_log.csv và overlays/<frame_id>_<số dòng>.png, bảng sai khác lệnh.
    shortcut: replay chỉ tính ở mẫu có mask, D theo t_ms giữa mẫu; cần log mọi mask
-   nếu cần tái hiện chính xác mọi vòng điều khiển. P1 chưa đọc luật phát hiện P2.
+   nếu cần tái hiện chính xác mọi vòng điều khiển. P2 đọc detections.csv theo ID lô ghi trong control_log; thiếu lô phải báo.
 */
 #include "control/Planner.h"
 #include <opencv2/imgcodecs.hpp>
@@ -184,6 +184,42 @@ int main(int argc, char **argv) {
         Require(session.isOpened() && session.root().isMap(),"session.json phải là object JSON");
         const std::string config=options.count("--control") ? options.at("--control") : run+"/control.yaml";
         const auto params=control::ControlParams::Load(config,std::cout);
+        const auto yoloNode=session.root()["yolo_enabled"];
+        Require(yoloNode.empty() || (yoloNode.isInt() && (int(yoloNode)==0 || int(yoloNode)==1)),"session yolo_enabled sai");
+        const bool yoloEnabled=!yoloNode.empty() && int(yoloNode)==1;
+        std::map<uint64_t,control::Detections> batches;
+        std::ifstream detectionLog(run+"/detections.csv");
+        if (yoloEnabled && !detectionLog) std::cerr<<"Thiếu detections.csv: không tái hiện đủ luật đèn\n";
+        if (yoloEnabled && detectionLog) {
+            std::string line;
+            Require(bool(std::getline(detectionLog,line)),"detections.csv rỗng");
+            if (!line.empty() && line.back()=='\r') line.pop_back();
+            Require(line=="frame_id,captured_ms,class,conf,x1,y1,x2,y2","Sai tiêu đề detections.csv");
+            uint64_t last=0; int64_t lastMs=-1;
+            while (std::getline(detectionLog,line)) {
+                if (!line.empty() && line.back()=='\r') line.pop_back();
+                const auto v=Csv(line);
+                Require(v.size()==8,"detections.csv sai số cột");
+                const auto id=uint64_t(Milliseconds(v[0],"frame_id"));
+                const auto ms=Milliseconds(v[1],"captured_ms");
+                Require(id>0 && id>=last && ms>=lastMs,"detections.csv sai thứ tự");
+                auto& batch=batches[id];
+                Require(!batch.frame_id || (batch.captured_ms==ms && !batch.items.empty()),"Lô rỗng/trùng hoặc thời gian lô sai");
+                batch.frame_id=id; batch.captured_ms=ms;
+                if (v[2].empty()) {
+                    Require(batch.items.empty(),"Lô rỗng trộn với detection");
+                    for (size_t i=3;i<v.size();++i) Require(v[i].empty(),"Lô rỗng sai định dạng");
+                } else {
+                    const double conf=Number(v[3],"conf"),x1=Number(v[4],"x1"),y1=Number(v[5],"y1"),
+                        x2=Number(v[6],"x2"),y2=Number(v[7],"y2");
+                    Require(conf>=0 && conf<=1 && x1>=0 && y1>=0 && x2>x1 && y2>y1 && x2<=1280 && y2<=720,
+                            "detections.csv hộp/độ tin cậy sai");
+                    batch.items.push_back({v[2],cv::Rect2f(float(x1),float(y1),float(x2-x1),float(y2-y1)),float(conf),ms});
+                }
+                last=id; lastMs=ms;
+            }
+            Require(detectionLog.eof() && !detectionLog.bad(),"Lỗi đọc detections.csv");
+        }
         const auto hash=control::ControlParams::FileHash(config);
         std::ifstream input(run+"/control_log.csv");
         Require(bool(input),"Không đọc được control_log.csv");
@@ -195,12 +231,15 @@ int main(int argc, char **argv) {
         for(size_t i=0;i<columns.size();++i) Require(indexes.emplace(columns[i],i).second,"CSV trùng cột: "+columns[i]);
         for(const char *key:{"frame_id","t_ms","mask_file","cmd_cms","cmd_deg"}) Require(indexes.count(key)>0,std::string("CSV thiếu cột: ")+key);
         Require(indexes.count("go")==indexes.count("stop"),"CSV phải có cả go và stop");
+        if (yoloEnabled && (!indexes.count("det_frame_id") || !indexes.count("det_captured_ms")))
+            std::cerr<<"Thiếu liên kết lô YOLO trong control_log: không tái hiện đủ luật đèn\n";
         MakeDir(output); MakeDir(output+"/overlays");
         std::ofstream out(output+"/control_log.csv");
         Require(bool(out),"Không ghi được CSV kết quả");
         out << "frame_id,t_ms,mask_ms,mask_file,cmd_cms,cmd_deg,old_cmd_cms,old_cmd_deg,planner_state,state,reason,lane_ref,e,p,d,valid_rows,row_y,row_lines,row_left,row_right,row_center,row_valid,control_hash\n" << std::setprecision(12);
         control::Planner planner;
         bool running=false;
+        size_t missingDetections=0,missingMasks=0;
         bool legacy_start_attempted=false;
         std::string previous_logged_state;
         int64_t previous=-1;
@@ -231,8 +270,9 @@ int main(int argc, char **argv) {
                 else if(go && mask_fresh) running=true;
             } else if(indexes.count("planner_state")) {
                 const auto state=get("planner_state");
-                Require(state=="BAM_LAN" || state=="CHO_SAN_SANG" || state=="DUNG","CSV planner_state không hợp lệ");
-                stop=state!="BAM_LAN";
+                Require(state=="BAM_LAN" || state=="CHO_SAN_SANG" || state=="DUNG" ||
+                        state=="CHO_DEN_XUAT_PHAT" || state=="DUNG_DEN_DO","CSV planner_state không hợp lệ");
+                stop=state=="DUNG" || state=="CHO_SAN_SANG";
                 if(stop) running=false;
                 else if(state!=previous_logged_state && mask_fresh) running=true;
                 previous_logged_state=state;
@@ -241,11 +281,30 @@ int main(int argc, char **argv) {
             }
             if(!image_fresh) running=false;
             control::PlannerInput data;
-            data.stop=stop;
+            data.stop=stop; data.yolo_enabled=yoloEnabled;
+            if (yoloEnabled) {
+                const auto id=uint64_t(Milliseconds(get("det_frame_id","0"),"det_frame_id"));
+                const auto found=batches.find(id);
+                if (id && found!=batches.end()) {
+                    const auto ms=get("det_captured_ms");
+                    Require(!ms.empty() && Milliseconds(ms,"det_captured_ms")==found->second.captured_ms,
+                            "Liên kết thời gian lô YOLO sai");
+                    data.detections=found->second;
+                } else if (id) ++missingDetections;
+            }
             data.image_ms=image_ms;
             // Dừng vẫn đi qua Planner kể cả dòng không lưu mặt nạ.
-            if(stop || !image_fresh) planner.Step(data,now,params);
-            if(mask_file.empty()) continue;
+            if(mask_file.empty()) {
+                if (yoloEnabled) {
+                    Require(!(running && indexes.count("go") && Flag(get("go"),"go")),
+                            "Thiếu mask tại G: không thể tái hiện đoạn chạy; cần log mask tại sự kiện G");
+                    data.mask_ms=mask_ms; data.go=running;
+                    planner.Step(data,now,params); ++missingMasks;
+                    // Không giữ G bị bỏ để thử lại trên một mặt nạ ghi sau đó.
+                    if (data.go && !data.stop) running=false;
+                } else if(stop || !image_fresh) planner.Step(data,now,params);
+                continue;
+            }
             const auto frame=get("frame_id");
             Require(!frame.empty() && frame.find_first_not_of("0123456789")==std::string::npos,"CSV frame_id phải gồm chữ số");
             Require(mask_file=="masks/"+frame+".png","CSV mask_file phải là masks/<frame_id>.png");
@@ -272,6 +331,8 @@ int main(int argc, char **argv) {
         }
         Require(input.eof() && !input.bad(),"Lỗi đọc control_log.csv");
         Require(samples>0,"Run không có mẫu mặt nạ để replay");
+        if (yoloEnabled && (missingDetections || missingMasks)) std::cerr<<"Không tái hiện đủ: thiếu lô YOLO="
+            <<missingDetections<<", dòng thiếu mask="<<missingMasks<<'\n';
         out.close(); Require(bool(out),"Lỗi đóng CSV kết quả");
         std::cout << "So lệnh mới với lệnh đã ghi (trị tuyệt đối)\nMẫu | TB cm/s | Max cm/s | TB độ | Max độ\n"
                   << samples << " | " << sum_speed/samples << " | " << max_speed << " | " << sum_angle/samples << " | " << max_angle << '\n';

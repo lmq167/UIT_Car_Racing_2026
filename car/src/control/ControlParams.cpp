@@ -23,6 +23,19 @@ struct Parameter {
 };
 // Nguồn duy nhất cho mặc định, miền, nạp và in bảng (L2).
 const Parameter table[] = {
+    {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
+    {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
+    {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},
+    {"green_frames",3,&ControlParams::green_frames,1,30,"lô","Số lô xanh liên tiếp"},
+    {"red_conf_min",0.5,&ControlParams::red_conf_min,0,1,"1","Tin cậy đỏ"},
+    {"green_conf_min",0.5,&ControlParams::green_conf_min,0,1,"1","Tin cậy xanh"},
+    {"off_conf_min",0.5,&ControlParams::off_conf_min,0,1,"1","Tin cậy tắt"},
+    {"red_box_min_area_frac",0.0001,&ControlParams::red_box_min_area_frac,0,1,"W*H","Diện tích đỏ tối thiểu"},
+    {"green_box_min_area_frac",0.0001,&ControlParams::green_box_min_area_frac,0,1,"W*H","Diện tích xanh tối thiểu"},
+    {"off_box_min_area_frac",0.0001,&ControlParams::off_box_min_area_frac,0,1,"W*H","Diện tích tắt tối thiểu"},
+    {"approach_cms",5.0,&ControlParams::approach_cms,0,10,"cm/s","Tốc độ tiếp cận đỏ"},
+    {"red_stop_x_frac",0.90,&ControlParams::red_stop_x_frac,0,1,"W","Mép phải hộp đỏ để dừng"},
+
     {"control_period_ms",50,&ControlParams::control_period_ms,20,100,"ms","Chu kỳ điều khiển"},
     {"mask_max_age_ms",300,&ControlParams::mask_max_age_ms,50,1000,"ms","Tuổi mặt nạ tối đa"},
     {"cmd_max_age_ms",200,&ControlParams::cmd_max_age_ms,50,500,"ms","Tuổi lệnh tối đa"},
@@ -100,6 +113,8 @@ void ControlParams::Validate() const {
     Require(min_valid_rows<=int(scan_rows.size()),"min_valid_rows / scan_rows");
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");
     Require(lost_cms<=max_speed_cms,"lost_cms / max_speed_cms");
+    Require(vote_min<=vote_window,"vote_min / vote_window");
+    Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
     Require(right_lost_ms==0 || (right_lost_ms>=200 && right_lost_ms<=2000),"right_lost_ms");
     Require(pair_merge_frac==0 || pair_merge_frac>=0.02,"pair_merge_frac");
