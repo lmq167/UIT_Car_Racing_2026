@@ -38,6 +38,47 @@ struct Rig {
 };
 void Unit() {
     {
+        Rig r; r.p.start_wait_green=0;
+        auto plan=r.go();
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="MAT_YOLO" && plan.debug.reason==plan.reason &&
+              plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms && plan.debug.speed_cms==plan.cmd.cms,
+              "Chưa có lô YOLO phải hạ trần và báo MAT_YOLO khi mask tươi");
+        r.p.lost_cms=r.p.cruise_cms; r.in.mask.setTo(0); ++r.now; plan=r.step();
+        Check(plan.debug.state=="GIU_GOC" && plan.reason=="MAT_LAN_GIU" && plan.debug.reason==plan.reason &&
+              plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms && plan.debug.speed_cms==plan.cmd.cms,
+              "Mất YOLO vẫn kẹp tốc độ khi giữ góc nhưng giữ lý do mất làn");
+    }
+    {
+        Rig r; r.moving();
+        auto plan=r.send({});
+        Check(plan.reason=="BAM_LAN" && plan.cmd.cms==r.p.cruise_cms,"Lô rỗng tươi cho phép tốc độ bám làn");
+        r.now+=r.p.det_max_age_ms;
+        Check(r.step().reason=="BAM_LAN","Lô đúng tuổi tối đa vẫn tươi");
+        ++r.now; plan=r.step();
+        Check(plan.reason=="MAT_YOLO" && plan.debug.reason==plan.reason && plan.cmd.cms>0 &&
+              plan.cmd.cms<=r.p.approach_cms && plan.debug.speed_cms==plan.cmd.cms,
+              "Lô quá tuổi phải hạ trần và báo MAT_YOLO");
+        plan=r.send({});
+        Check(plan.reason=="BAM_LAN" && plan.debug.reason==plan.reason && plan.cmd.cms==r.p.cruise_cms &&
+              plan.debug.speed_cms==plan.cmd.cms,"Lô tươi trở lại không đỏ phải phục hồi tốc độ bám làn");
+    }
+    {
+        Rig r; r.in.yolo_enabled=false;
+        auto plan=r.go();
+        Check(plan.reason=="BAM_LAN" && plan.cmd.cms==r.p.cruise_cms && plan.cmd.cms>r.p.approach_cms,
+              "no-yolo chưa có lô không bị hạ trần");
+        r.send({}); r.now+=r.p.det_max_age_ms+1; plan=r.step();
+        Check(plan.reason=="BAM_LAN" && plan.debug.reason==plan.reason && plan.cmd.cms==r.p.cruise_cms,
+              "no-yolo có lô cũ vẫn giữ tốc độ và lý do bám làn");
+    }
+    {
+        Rig r; r.p.start_wait_green=0;
+        r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=0; r.p.approach_cms=5;
+        const auto plan=r.go();
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="MAT_YOLO" && plan.debug.reason==plan.reason &&
+              plan.cmd.cms==0 && plan.debug.speed_cms==0,"Mất YOLO phải giữ tốc độ 0 khi max_speed_cms=0");
+    }
+    {
         Rig r; Check(r.go().reason=="CHO_DEN_XUAT_PHAT","G phải chờ xanh");
         for(int i=0;i<4;++i) Check(r.send({}).cmd.cms==0,"G không đèn phải đứng");
         Check(r.green().cmd.cms==0,"Xanh 1/3");

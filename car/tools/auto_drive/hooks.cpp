@@ -32,6 +32,8 @@ void pollHooks(int64_t now, const std::function<void(const char*,const std::stri
         else if (cmd=="yolo_stall") hooks.yoloStall=true;
         else if (cmd=="yolo_resume") hooks.yoloStall=false;
         else if (cmd=="yolo_throw") hooks.yoloThrow=true;
+        else if (cmd=="yolo_throw_on") hooks.yoloThrowOn=true;
+        else if (cmd=="yolo_throw_off") hooks.yoloThrowOn=false;
         else if (cmd=="planner_throw") hooks.plannerThrow=true;
         else if (cmd=="controller_stall") hooks.controllerStall=true;
         else if (cmd=="controller_resume") hooks.controllerStall=false;
