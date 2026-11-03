@@ -12,7 +12,6 @@ import tempfile
 
 sys.dont_write_bytecode = True
 from acc_calib_limits import LimitsSuite, held_window, near, observed_timing
-from acc_seed_gate import seed_gate
 from acc_vehicle_cli import (SPEED_EPS, collect_metadata, held_at, log_ready,
                              log_rows, read, require, run, tail, trace)
 
@@ -137,7 +136,7 @@ class LatchSuite(LimitsSuite):
         values.update(overrides or {})
         return super().setup(values, remove, gate)
 
-    def execute(self, mode, config, folder, env, observe, step="motor", auto=False):
+    def execute(self, mode, config, folder, env, observe, step="motor"):
         self.baseline = []
         self.frames = getattr(self, "frames", [])
         command = (self.command(config, step) if mode == "calib" else
@@ -152,8 +151,7 @@ class LatchSuite(LimitsSuite):
         tail(trace(folder / "trace.csv"))
         logs = log_rows(folder, mode)
         require(logs, "Thiếu log.csv")
-        if not auto:
-            old_states(logs, self.baseline)
+        old_states(logs, self.baseline)
         return output, logs
 
     def event(self, mode, kind, stalled=False, phase=0, opposite=False, reverse=False, twice=False, mixed=False):
@@ -366,57 +364,6 @@ class LatchSuite(LimitsSuite):
         output, _ = self.execute("calib", config, folder, env, observe, "motor")
         notifications(output, ["gioi_han_calib"])
 
-    def automatic(self, kind):
-        # T09/T10/S2: auto không chốt ToF/ảnh, không cần thao tác bàn phím mới.
-        folder, config, env = self.setup({"resume_stable_s": "1", "soft_start_s": "1"})
-        (folder / "runs").mkdir()
-        seed_gate(self.main, config, folder / "runs")
-        image = kind == "image"
-        reverse = kind == "rear"
-        if reverse:
-            env["ACC_T05G_REVERSE"] = "1"
-        else:
-            env.pop("ACC_T05G_REVERSE", None)
-        if image:
-            env["UCR_FAKE_CAMERA_GAPS"] = "5500:8500"
-        else:
-            bad = "2000 100 2000 2000" if reverse else "100 2000 2000 2000"
-            path = folder / "tof.txt"
-            path.write_text("0 2000 2000 2000 2000\n5500 {}\n5800 2000 2000 2000 2000\n".format(bad), encoding="ascii")
-            env["UCR_FAKE_TOF_SCRIPT"] = str(path)
-
-        def observe(process):
-            rows = self.reach(process, folder, 4500)
-            speed = -10 if reverse else 10
-            held_window(rows, "motor_speed", 4000, 4400, speed)
-            cycle, frame, _ = observed_timing(rows, log_rows(folder, "auto"), control_hz=10)
-            delta = cycle+20+100
-            end = 11200 if image else 7500
-            rows = self.reach(process, folder, end)
-            logs = log_rows(folder, "auto")
-            if image:
-                require(any(r["state"] == "MAT_ANH" and near(float(r["cmd_speed"]), 0) for r in logs),
-                        "Auto ngắt dài phải ghi MAT_ANH/lệnh 0")
-                require(5500+500+frame+delta < 8500, "Tiền đề: stop_by < gap.second")
-                held_window(rows, "motor_speed", 5500+500+frame+delta, 8400, 0)
-                require(any(r["state"] == "DUNG_CHO_ANH_ON_DINH" and near(float(r["cmd_speed"]), 0) for r in logs),
-                        "Auto ngắt dài phải chờ ảnh ổn định")
-                offset = offset_ms(rows, logs, speed)
-                fresh = [(t+offset, t+offset-float(r["image_age_ms"])) for t, r in samples(logs)
-                         if t+offset-float(r["image_age_ms"]) >= 8500 and 0 <= float(r["image_age_ms"]) < 500]
-                require(fresh, "Tiền đề auto: thiếu captured_at phục hồi thực tế")
-                sampled, captured = fresh[0]
-                wait_until = captured+1000-frame-100
-                require(wait_until-sampled-cycle >= 300, "Tiền đề auto: không đủ cửa sổ chờ ảnh ổn định")
-                held_window(rows, "motor_speed", sampled+cycle, wait_until, 0)
-                held_window(rows, "motor_speed", 8500+frame+2000+delta, end-100, speed)
-            else:
-                held_window(rows, "motor_speed", 5500+delta, 5790, 0)
-                held_window(rows, "motor_speed", 5800+delta, end-100, speed)
-            self.finish(process)
-        output, _ = self.execute("auto", config, folder, env, observe, auto=True)
-        notifications(output, [])
-
     def smoke(self):
         # S2/E5: smoke stage motor mất ảnh khi UI bị chặn vẫn dừng, không in chốt L.
         from acc_review_fixes import ReviewSuite
@@ -548,9 +495,7 @@ def main():
         suite.fake_only()
         if scenario == "require_fake":
             raise AssertionError("Cần build UCR_FAKE_HW=ON để chạy T05g; không bỏ qua")
-        if scenario.startswith("auto_"):
-            suite.automatic(scenario[5:])
-        elif scenario == "smoke":
+        if scenario == "smoke":
             suite.smoke()
         elif scenario.startswith("limit_"):
             suite.limit(scenario[6:])

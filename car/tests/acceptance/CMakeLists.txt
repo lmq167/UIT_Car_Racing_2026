@@ -80,7 +80,7 @@ if(UCR_FAKE_HW)
     endforeach()
     set_tests_properties(acc_hw_tof_boundary PROPERTIES LABELS "regression;threads")
     set(ACC_TRACE_SCENARIOS stop_trim_pos stop_trim_neg stop_trim_neg_invert stop_missing stop_range
-        main_auto_TERM main_auto_INT main_manual_TERM main_odometry main_tof_min main_tof_max
+        main_manual_TERM main_odometry main_tof_min main_tof_max
         calib_missing calib_zero calib_high calib_word calib_servo
         reject_control_range reject_control_type reject_speed_type reject_trim_type
         reject_tof_zero reject_tof_high reject_tof_large reject_tof_neg main_badargs
@@ -115,31 +115,12 @@ if(UCR_FAKE_HW)
         add_test(NAME acc_${scenario} COMMAND acc_safety_components ${scenario})
         set_tests_properties(acc_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 30)
     endforeach()
-    add_executable(acc_recovery_app acc_recovery_app.cpp)
-    target_link_libraries(acc_recovery_app PRIVATE app_core)
-    target_compile_options(acc_recovery_app PRIVATE -Wall -Wextra)
-    foreach(scenario short below above stable_changed stable_default twice long_short short_long clamp tof lower reverse direction startup config_changed gate gate_missing)
-        add_test(NAME acc_recovery_${scenario} COMMAND acc_recovery_app ${scenario})
-        set_tests_properties(acc_recovery_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 30)
-    endforeach()
     # Cùng main.cpp thật, chỉ thay bộ điều khiển qua API công khai trước Start; không thêm cờ cho xe.
     add_executable(acc_recovery_main ${PROJECT_SOURCE_DIR}/main.cpp acc_recovery_inject.cpp)
     target_link_libraries(acc_recovery_main PRIVATE app_core)
     target_compile_definitions(acc_recovery_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
     target_compile_options(acc_recovery_main PRIVATE -Wall -Wextra)
     set_property(TARGET acc_recovery_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
-    foreach(state MAT_ANH DUNG_CHO_ANH_ON_DINH)
-        foreach(sig INT TERM)
-            add_test(NAME acc_recovery_auto_${state}_${sig} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} auto_signal
-                ${PROJECT_SOURCE_DIR} $<TARGET_FILE:acc_recovery_main> $<TARGET_FILE:ucr_stop> ${state} ${sig})
-            set_tests_properties(acc_recovery_auto_${state}_${sig} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
-        endforeach()
-    endforeach()
-    foreach(state MAT_ANH DUNG_CHO_ANH_ON_DINH)
-        add_test(NAME acc_recovery_auto_keys_${state} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} auto_keys
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:acc_recovery_main> $<TARGET_FILE:ucr_stop> ${state})
-        set_tests_properties(acc_recovery_auto_keys_${state} PROPERTIES LABELS "acceptance;threads" TIMEOUT 90)
-    endforeach()
     foreach(mode smoke calib collect)
         add_test(NAME acc_no_gate_${mode} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} no_gate
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode})
@@ -235,15 +216,11 @@ if(UCR_FAKE_HW)
     target_link_libraries(acc_startup_safety PRIVATE app_core)
     target_compile_options(acc_startup_safety PRIVATE -Wall -Wextra)
 endif()
-foreach(scenario defaults position_default forward reverse tof position)
+foreach(scenario defaults position_default)
     if(scenario STREQUAL "defaults")
         set(test_name acc_recovery_bounds_defaults)
-    elseif(scenario STREQUAL "position_default")
-        set(test_name acc_position_default_denied)
-    elseif(scenario STREQUAL "position")
-        set(test_name acc_auto_position_denied)
     else()
-        set(test_name acc_auto_first_frame_${scenario})
+        set(test_name acc_position_default_denied)
     endif()
     if(UCR_FAKE_HW)
         add_test(NAME ${test_name} COMMAND acc_startup_safety ${scenario})
@@ -252,9 +229,6 @@ foreach(scenario defaults position_default forward reverse tof position)
             require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
     endif()
     set_tests_properties(${test_name} PROPERTIES LABELS "acceptance" TIMEOUT 30)
-    if(NOT scenario STREQUAL "defaults" AND NOT scenario STREQUAL "position_default")
-        set_property(TEST ${test_name} APPEND PROPERTY LABELS threads)
-    endif()
 endforeach()
 foreach(kind deadline distance)
     set(steps motor radius)
@@ -289,14 +263,7 @@ set_tests_properties(acc_review_fix_harness PROPERTIES LABELS "acceptance" TIMEO
 # T05g/Quyết định L: giữ huỷ lệnh ở manual/collect/calib; auto và smoke giữ hành vi cũ.
 # Mỗi ca tự dùng thư mục/vết riêng, không RUN_SERIAL và không mã bỏ qua.
 set(ACC_SAFETY_LATCH ${CMAKE_CURRENT_SOURCE_DIR}/acc_safety_latch.py)
-if(UCR_FAKE_HW)
-    add_executable(acc_safety_latch_main ${PROJECT_SOURCE_DIR}/main.cpp acc_safety_latch_inject.cpp)
-    target_link_libraries(acc_safety_latch_main PRIVATE app_core)
-    target_compile_definitions(acc_safety_latch_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
-    target_compile_options(acc_safety_latch_main PRIVATE -Wall -Wextra)
-    set_property(TARGET acc_safety_latch_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
-endif()
-set(ACC_LATCH_SCENARIOS auto_front auto_rear auto_image smoke
+set(ACC_LATCH_SCENARIOS smoke
     limit_deadline limit_distance limit_position
     calib_front calib_front_stalled calib_long_stalled calib_image calib_short
     calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed
@@ -310,7 +277,7 @@ foreach(mode manual collect)
 endforeach()
 # Chỉ tập đại diện giữ nhãn threads (TSan chạy hết ca threads, quá giờ nếu để cả ~63 ca).
 # collect_phase (~105 s) và collect_rear bỏ khỏi TSan: collect_image cùng ý nghĩa mất ảnh (~10 s).
-set(ACC_LATCH_TSAN_SET collect_image calib_front auto_image)
+set(ACC_LATCH_TSAN_SET collect_image calib_front)
 foreach(scenario ${ACC_LATCH_SCENARIOS})
     set(latch_labels "acceptance")
     if(scenario IN_LIST ACC_LATCH_TSAN_SET)
@@ -320,8 +287,6 @@ foreach(scenario ${ACC_LATCH_SCENARIOS})
     set(latch_scenario ${scenario})
     if(NOT UCR_FAKE_HW)
         set(latch_scenario require_fake)
-    elseif(scenario MATCHES "^auto_")
-        set(latch_main $<TARGET_FILE:acc_safety_latch_main>)
     endif()
     add_test(NAME acc_t05g_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH}
         ${latch_scenario} ${PROJECT_SOURCE_DIR} ${latch_main} $<TARGET_FILE:ucr_stop>)

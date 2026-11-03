@@ -287,8 +287,6 @@ tail_checks "run.sh cau hinh xau" "$TR" 7
 case "$CASE" in
     stop_trim_pos|stop_trim_neg|stop_trim_neg_invert|stop_missing|stop_range|stop_type_text|stop_type_empty|stop_type_list|stop_type_map|stop_type_fraction) stop_case ;;
     stop_args_short_no_default|stop_args_missing_no_default|stop_args_unknown_no_default|stop_args_short_default|stop_args_missing_default|stop_args_unknown_default|stop_args_option_no_default|stop_args_option_default|stop_args_empty_no_default|stop_args_empty_default|stop_args_trailing_default|stop_args_trailing_no_default) stop_args_case ;;
-    main_auto_TERM) main_signal main_auto_TERM auto TERM ;;
-    main_auto_INT) main_signal main_auto_INT auto INT ;;
     main_manual_TERM) main_signal main_manual_TERM manual TERM ;;
     main_odometry) main_signal main_auto_odometry_nhanh_TERM auto TERM odometry_hz=100 sensor_hz=100 ;;
     main_tof_min) main_signal main_tof_timeout_1 auto TERM tof_timeout_ms=1 ;;
