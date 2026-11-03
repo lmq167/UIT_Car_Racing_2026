@@ -33,7 +33,7 @@ if os.name == 'posix':
     import fcntl
 
 # Như drive_collect: race giả trong OpenCV/TBB chưa instrument.
-TSAN_SUPP = Path(__file__).resolve().parent.parent / 'drive_collect' / 'tsan.supp'
+TSAN_SUPP = Path(__file__).resolve().parent.parent / 'collect_common' / 'tsan.supp'
 
 
 HEADERS = {
