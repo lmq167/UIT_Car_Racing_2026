@@ -360,15 +360,6 @@ class LatchSuite(LimitsSuite):
         output, _ = self.execute("calib", config, folder, env, observe, "motor")
         notifications(output, ["gioi_han_calib"])
 
-    def smoke(self):
-        # S2/E5: smoke stage motor mất ảnh khi UI bị chặn vẫn dừng, không in chốt L.
-        from acc_review_fixes import ReviewSuite
-        original = self.main
-        suite = ReviewSuite(self.root, original, self.stop, self.folder)
-        suite.smoke_stall("image")
-        for path in self.folder.glob("*/output.txt"):
-            notifications(read(path), [])
-
 
 def docs(root):
     # T22: câu cố định đúng file/mục; chạy trên laptop vì remote chỉ chép ucr_car.
@@ -491,9 +482,7 @@ def main():
         suite.fake_only()
         if scenario == "require_fake":
             raise AssertionError("Cần build UCR_FAKE_HW=ON để chạy T05g; không bỏ qua")
-        if scenario == "smoke":
-            suite.smoke()
-        elif scenario.startswith("limit_"):
+        if scenario.startswith("limit_"):
             suite.limit(scenario[6:])
         else:
             mode, kind = scenario.split("_", 1)

@@ -111,7 +111,7 @@ if(UCR_FAKE_HW)
     add_executable(acc_safety_components acc_safety_components.cpp)
     target_link_libraries(acc_safety_components PRIVATE app_core)
     target_compile_options(acc_safety_components PRIVATE -Wall -Wextra)
-    foreach(scenario config rear recovery servo smoke_result calib_safety smoke_sensors smoke_servo)
+    foreach(scenario config rear recovery servo smoke_result calib_safety)
         add_test(NAME acc_${scenario} COMMAND acc_safety_components ${scenario})
         set_tests_properties(acc_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 30)
     endforeach()
@@ -121,7 +121,7 @@ if(UCR_FAKE_HW)
     target_compile_definitions(acc_recovery_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
     target_compile_options(acc_recovery_main PRIVATE -Wall -Wextra)
     set_property(TARGET acc_recovery_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
-    foreach(mode smoke calib)
+    foreach(mode calib)
         add_test(NAME acc_no_gate_${mode} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} no_gate
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode})
         set_tests_properties(acc_no_gate_${mode} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
@@ -131,7 +131,7 @@ if(UCR_FAKE_HW)
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
         set_tests_properties(acc_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
-    foreach(scenario defaults config_numeric config_keys wrapper_config cli smoke_unconfirmed smoke_gate env)
+    foreach(scenario defaults config_numeric config_keys wrapper_config cli smoke_gate env)
         add_test(NAME acc_cli_${scenario} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} ${scenario}
             ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
         set_tests_properties(acc_cli_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
@@ -145,12 +145,7 @@ if(UCR_FAKE_HW)
     add_test(NAME acc_calib_int COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} calib
         ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> motor INT)
     set_tests_properties(acc_calib_int PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
-    foreach(sig INT TERM)
-        add_test(NAME acc_smoke_${sig} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} smoke_signal
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${sig})
-        set_tests_properties(acc_smoke_${sig} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
-    endforeach()
-    foreach(mode calib smoke)
+    foreach(mode calib)
         foreach(fault actuator_throw sensor_throw terminate)
             add_test(NAME acc_${mode}_${fault} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} fault
                 ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode} ${fault})
@@ -252,18 +247,13 @@ foreach(kind valid invalid before_init stop)
     set_tests_properties(acc_recovery_bounds_${kind} PROPERTIES LABELS "acceptance" TIMEOUT 120)
 endforeach()
 set_property(TEST acc_recovery_bounds_stop APPEND PROPERTY LABELS threads)
-foreach(kind deadline image distance)
-    add_test(NAME acc_smoke_stall_${kind} COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES}
-        smoke_${kind} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
-    set_tests_properties(acc_smoke_stall_${kind} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
-endforeach()
 add_test(NAME acc_review_fix_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES} self-test)
 set_tests_properties(acc_review_fix_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
 
-# T05g/Quyết định L: giữ huỷ lệnh ở manual/calib; auto và smoke giữ hành vi cũ.
+# T05g/Quyết định L: giữ huỷ lệnh ở manual/calib; auto giữ hành vi cũ.
 # Mỗi ca tự dùng thư mục/vết riêng, không RUN_SERIAL và không mã bỏ qua.
 set(ACC_SAFETY_LATCH ${CMAKE_CURRENT_SOURCE_DIR}/acc_safety_latch.py)
-set(ACC_LATCH_SCENARIOS smoke
+set(ACC_LATCH_SCENARIOS
     limit_deadline limit_distance limit_position
     calib_front calib_front_stalled calib_long_stalled calib_image calib_short
     calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed)

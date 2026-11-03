@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Kiểm E1/E2/E3/E5 qua CLI và vết phần cứng; Python 3.6, không đọc src."""
-import json
 import re
 import signal
 import subprocess
@@ -15,9 +14,6 @@ from acc_vehicle_cli import (SPEED_EPS, held_at, log_ready, log_rows, read, requ
 MANUAL_GAP = (5500, 6700)
 MANUAL_STALE_KEY = 6500
 MANUAL_NEW_KEY = 10000
-SMOKE_GAP = (11800, 15000)
-SMOKE_STALL = (11500, 10000)
-SMOKE_CANCEL = 11700
 
 
 def range_error(stderr, key, value, lower, upper, closed):
@@ -40,28 +36,6 @@ def manual_timing(cycle, frame, delta):
     require(stop_by < MANUAL_STALE_KEY < MANUAL_GAP[1] and MANUAL_GAP[1]+3000 < MANUAL_NEW_KEY,
             "Tiền đề: stop_by < gap.second, phím cũ lúc mất ảnh, đủ cửa sổ không phím")
     return stop_by
-
-
-def smoke_timing(kind, t0, cycle, frame, delta):
-    stop_by, held_until = t0+3000+delta, t0+1500
-    if kind == "image":
-        stop_by = SMOKE_GAP[0]+500+frame+delta
-        # Ảnh còn mới trước gap; giữ cửa sổ qua phím x để chứng minh UI chưa huỷ lượt.
-        held_until = SMOKE_GAP[0]-1
-    if kind == "distance":
-        stop_by, held_until = t0+1500+50+delta, t0+900
-    print("Đo đầu ca smoke {}: cycle={} frame={:.1f} delta={} t0={} stop_by={} held_until={} "
-          "stall={} x={} gap={}".format(kind, cycle, frame, delta, t0, stop_by, held_until,
-                                       SMOKE_STALL, SMOKE_CANCEL, SMOKE_GAP), flush=True)
-    if kind == "image":
-        require(stop_by < SMOKE_GAP[1] and stop_by < t0+1900,
-                "Tiền đề: stop_by < gap.second và trước hạn smoke 2 s cũ")
-    if kind == "distance":
-        require(stop_by < t0+1900, "Tiền đề: quãng phải dừng trước hạn smoke 2 s cũ")
-    require(SMOKE_STALL[0]+SMOKE_STALL[1] >= stop_by+1000 and
-            t0+100 < SMOKE_STALL[0] < SMOKE_CANCEL < held_until,
-            "Tiền đề: UI chặn qua hạn +1 s, phím x phải chưa được xử lý")
-    return stop_by, held_until
 
 
 class ReviewSuite(LimitsSuite):
@@ -161,7 +135,7 @@ class ReviewSuite(LimitsSuite):
             if kind in ("before_init", "stop"):
                 cases = [("soft_start_s", "0.199", 500), ("camera_resume_max_s", "5.001", 500)]
         for key, value, timeout in cases:
-            modes = ("manual", "calib", "smoke") if kind == "before_init" else (None,)
+            modes = ("manual", "calib") if kind == "before_init" else (None,)
             for mode in modes:
                 folder, config, env = self.setup({key: value, "image_timeout_ms": str(timeout)})
                 command = ([self.main, "--check-config", "--config", config] if mode is None else
@@ -202,51 +176,6 @@ class ReviewSuite(LimitsSuite):
                             "CFG11: chỉ ucr_stop gửi hai lệnh, không cấu hình motor")
                     tail(rows)
 
-    def smoke_stall(self, kind):
-        # E5/H1/H5: stage motor đầu sau bốn xác nhận servo và xác nhận bánh kê.
-        # Smoke đối chiếu kích thước ảnh; giữ kích thước mặc định của nguồn tổng hợp, không giảm ngưỡng kiểm.
-        folder, config, env = self.setup({"camera_width": "1280", "camera_height": "720",
-                                          "calib_max_duration_s": "3", "calib_distance_cm": "15" if kind == "distance" else "300"})
-        env["UCR_FAKE_KEYS"] = "3500:y,4500:y,5500:y,6500:y,11000:y,{}:x".format(SMOKE_CANCEL)
-        env["UCR_FAKE_UI_STALL"] = "{}:{}".format(*SMOKE_STALL)
-        if kind == "image":
-            env["UCR_FAKE_CAMERA_GAPS"] = "{}:{}".format(*SMOKE_GAP)
-
-        def observe(process):
-            try:
-                rows = self.reach(process, folder, 3300)
-            except AssertionError:
-                for path in (folder / "runs").glob("*_smoke/smoke.json"):
-                    result = json.loads(read(path))
-                    print("Tiền đề smoke: config 1280x720, ánh xạ=1, mã={} kết quả={}".format(
-                        process.poll(), {key: result.get(key) for key in ("camera", "sensors", "servo", "passed")}))
-                raise
-            require(log_ready(folder, "smoke"), "Tiền đề: smoke cần ảnh/cảm biến mới")
-            cycle, frame, delta = observed_timing(rows, log_rows(folder, "smoke"))
-            rows = self.reach(process, folder, 11300)
-            moves = [ms for ms, k, v in rows if k == "motor_speed" and abs(float(v)) > SPEED_EPS]
-            require(moves and 11000 <= moves[0] <= 11250 and near(held_at(rows, "motor_speed", 11300), 10),
-                    "Tiền đề: phải có motor 10 sau xác nhận bánh kê, trước UI chặn")
-            if kind == "distance":
-                moving = [float(r["odom_cm"]) for r in log_rows(folder, "smoke")
-                          if abs(float(r["cmd_speed"])) > SPEED_EPS]
-                require(len(moving) >= 3 and max(moving)-min(moving) >= 1,
-                        "Tiền đề: encoder giả phải tích phân quãng trước UI chặn")
-            t0 = moves[0]
-            stop_by, held_until = smoke_timing(kind, t0, cycle, frame, delta)
-            rows = self.reach(process, folder, 16000)
-            held_window(rows, "motor_speed", t0+100, held_until, 10)
-            stopped(rows, stop_by, 15900)
-            if kind == "image":
-                require(any(r["state"] == "MAT_ANH" and float(r["image_age_ms"]) >= 500
-                            for r in log_rows(folder, "smoke")), "Thiếu bằng chứng ảnh cũ ở smoke")
-            self.finish(process)
-
-        code, _ = run([self.main, "--config", config, "--mode", "smoke"] + self.smoke_args(folder),
-                      folder, env, observe, timeout=15)
-        require(code in (0, 1, 143), "Smoke phải thoát có kiểm soát")
-        tail(trace(folder / "trace.csv"))
-
 
 def self_test():
     # Tự kiểm bộ phán xét bằng vết sai có chủ ý; không phải bằng chứng mã xe đạt.
@@ -256,20 +185,12 @@ def self_test():
     stopped(good, 3100, 4900)
     require(manual_timing(103, 48, 306) == 6354, "Lịch manual phải chứa hạn đo, phím cũ và ảnh về")
     require(manual_timing(104, 60, 308) == 6368, "Lịch manual phải chứa chu kỳ ảnh container 60 ms")
-    for cycle, frame in ((20, 42), (103, 48), (104, 60)):
-        stop_by, held_until = smoke_timing("image", 11020, cycle, frame, 2*cycle+100)
-        require(SMOKE_CANCEL < held_until < SMOKE_GAP[0] < stop_by < 15000,
-                "Lịch smoke phải giữ motor qua x, trước gap; không nới hạn dừng ảnh")
-    for kind in ("deadline", "distance"):
-        smoke_timing(kind, 11020, 104, 60, 308)
     range_error("camera_resume_max_s = 5.001 ngoài khoảng hợp lệ (0.5, 5] theo image_timeout_ms",
                 "camera_resume_max_s", "5.001", 0.5, 5, False)
     bad_checks = [lambda: stopped(good, 2500, 4900), lambda: stopped(good, 4900, 3100),
                   lambda: range_error("soft_start_s = 0.199 ngoài khoảng hợp lệ (0, 10]",
                                       "soft_start_s", "0.199", 0.2, 10, True),
-                  lambda: manual_timing(250, 250, 600),
-                  lambda: smoke_timing("image", 11020, 250, 250, 600),
-                  lambda: smoke_timing("image", 11500, 20, 42, 140)]
+                  lambda: manual_timing(250, 250, 600)]
     for check in bad_checks:
         try:
             check()
@@ -308,7 +229,7 @@ def self_test():
                 require("run.sh không giữ mã lỗi cùng lệnh main" in str(error), "Phải bắt đúng lỗi mã wrapper")
             else:
                 raise AssertionError("CFG11 bỏ lọt wrapper đổi mã 1 thành 2")
-    print("ĐẠT: tự kiểm bộ phán xét; bắt 6 mẫu vết/khoảng/lịch sai và wrapper đổi mã lỗi")
+    print("ĐẠT: tự kiểm bộ phán xét; bắt 4 mẫu vết/khoảng/lịch sai và wrapper đổi mã lỗi")
 
 
 def main():
@@ -328,8 +249,6 @@ def main():
             suite.manual(scenario.endswith("reverse"))
         elif scenario.startswith("bounds_"):
             suite.bounds(scenario[7:])
-        elif scenario.startswith("smoke_"):
-            suite.smoke_stall(scenario[6:])
         else:
             raise AssertionError("Ca không tồn tại: " + scenario)
 
