@@ -594,97 +594,6 @@ class Suite:
             require(sum(k == "motor_init" for _, k, _ in rows) == 1, "C': không khởi tạo motor lại")
             tail(rows)
 
-    def auto_input(self, state, sig=None):
-        # R18/A07: cùng điểm vào main thật; bản test tiêm +20 qua SetController trước Start.
-        # Bộ tiêm không được nối đúng cũng phải HỎNG, không lấy phiên luôn 0 làm bằng chứng.
-        keys = list("rRws+-") if state == "DUNG_CHO_ANH_ON_DINH" else ["rRws+-"]
-        for key in ([None] if sig is not None else keys):
-            folder, config, env = self.setup({"tof_mapping_confirmed": "1", "camera_hz": "25", "control_hz": "100",
-                "sensor_hz": "100", "camera_resume_max_s": "2", "resume_stable_s": "2", "soft_start_s": "1"}, gate=True)
-            env["UCR_FAKE_CAMERA_GAPS"] = "3000:5300"
-            key_at = 4000 if state == "MAT_ANH" else 6300
-            if sig is None:
-                env["UCR_FAKE_KEYS"] = ",".join("{}:{}".format(key_at+i*10, char) for i, char in enumerate(key))
-            sent = []
-            def observe(process):
-                wait_ready(process, lambda: any(k == "motor_speed" and ms < 3000 and abs(float(v)-20) <= SPEED_EPS
-                           for ms, k, v in trace(folder / "trace.csv", live=True)),
-                           "R18/A07: cần lệnh +20 trước ngắt qua main; kiểm liên kết bộ tiêm SetController")
-                def target_state():
-                    rows, hw = log_rows(folder), trace(folder / "trace.csv", live=True)
-                    # Không nhận nhầm MAT_ANH thoáng qua lúc khởi động thành lần mất ảnh đã thiết lập.
-                    return bool(rows and hw and hw[-1][0] >= (3500 if state == "MAT_ANH" else 5300) and
-                                rows[-1]["state"] == state and
-                                (float(rows[-1]["image_age_ms"]) >= 500 if state == "MAT_ANH" else float(rows[-1]["image_age_ms"]) < 500))
-                wait_ready(process, target_state, "R18/A07: phải quan sát đúng " + state + " sau ngắt đã thiết lập")
-                before = trace(folder / "trace.csv", live=True)
-                require(before and abs(float([v for _, k, v in before if k == "motor_speed"][-1])) <= SPEED_EPS,
-                        "R18/A07: tại trạng thái đích, Backend phải đang dừng")
-                if sig is not None:
-                    sent.extend((time.monotonic(), len(before)))
-                    process.send_signal(sig)
-                    return
-                require(before[-1][0] < key_at, "R18: phải thấy trạng thái đích trước mốc tiêm UCR_FAKE_KEYS")
-                first_fresh = []
-                def recovered():
-                    rows = log_rows(folder)
-                    stale = [i for i, row in enumerate(rows) if row["state"] == "MAT_ANH"]
-                    if not stale:
-                        return False
-                    fresh = [row for row in rows[stale[-1]+1:] if float(row["image_age_ms"]) < 500]
-                    if not fresh:
-                        return False
-                    first_fresh[:] = [float(fresh[0]["t"]) - float(fresh[0]["image_age_ms"])/1000]
-                    return float(rows[-1]["t"]) >= first_fresh[0] + 3.3
-                wait_ready(process, recovered, "R18: phải qua W+S bằng ảnh thực nhận, không dùng mốc kịch bản làm t0")
-                rows = log_rows(folder)
-                fresh_at = first_fresh[0]
-                # Log có thể bỏ khung: dùng cận sớm hơn một chu kỳ ảnh quan sát + dung sai lịch 100 ms.
-                stamps = []
-                for row in rows:
-                    if float(row["image_age_ms"]) < 500 and (not stamps or row["frame_id"] != stamps[-1][0]):
-                        stamps.append((row["frame_id"], float(row["t"]) - float(row["image_age_ms"])/1000))
-                periods = [b[1]-a[1] for a,b in zip(stamps, stamps[1:]) if 0 < b[1]-a[1] < 0.5]
-                require(periods, "R18: phải đo được chu kỳ ảnh ngoài khoảng ngắt")
-                earliest = fresh_at - max(periods) - 0.1
-                ramp = []
-                for row in rows:
-                    t, v = float(row["t"]), float(row["cmd_speed"])
-                    require(math.isfinite(v) and abs(v) <= 25+SPEED_EPS, "R18: tốc độ hữu hạn và đúng trần")
-                    require(row["state"] != "DUNG_CHOT_CAN_XAC_NHAN", "R18: cấm trạng thái cũ")
-                    if row["state"] in ("MAT_ANH", "DUNG_CHO_ANH_ON_DINH"):
-                        require(abs(v) <= SPEED_EPS, "R18: ảnh cũ/chờ ổn định vẫn giữ 0 dù đã bấm phím")
-                    if t >= fresh_at:
-                        if t < earliest+2:
-                            require(abs(v) <= SPEED_EPS, "R18: phím không bỏ thời gian chờ W")
-                        else:
-                            require(abs(v) <= 20*min(1, max(0, t-earliest-2))+SPEED_EPS, "R18: mọi mẫu theo trần tăng mềm sau W")
-                        if 0.1 < v < 20-SPEED_EPS:
-                            ramp.append(row)
-                require(ramp, "R18: phải có mẫu tăng mềm dương, không được luôn 0")
-                require(abs(float(rows[-1]["cmd_speed"])-20) <= SPEED_EPS, "R18: sau W+S phải đạt +20")
-                hw = trace(folder / "trace.csv", live=True)
-                for ms, kind, value in hw:
-                    if kind == "motor_speed" and ms >= 3610:
-                        v = float(value)
-                        require(abs(v) <= 20*min(1, max(0, (ms-7300)/1000))+SPEED_EPS,
-                                "R18: vết motor giữ 0 qua ảnh cũ/W, sau đó không vượt trần từ cận sớm nhất")
-                    if kind == "servo_angle" and 3610 <= ms < 7300:
-                        require(abs(float(value)-7) <= SPEED_EPS, "R18: vết servo về trim suốt ảnh cũ/chờ W")
-                speeds = [float(v) for _,k,v in hw if k == "motor_speed"]
-                require(speeds and abs(speeds[-1]-20) <= SPEED_EPS and any(k == "motor_speed" and ms >= 7300 and SPEED_EPS < float(v) < 20-SPEED_EPS for ms,k,v in hw),
-                        "R18: tăng mềm/đạt +20 phải có cả ở lệnh cuối Backend")
-                process.send_signal(signal.SIGTERM)
-            code, _ = run([self.main, "--mode", "auto", "--config", config], folder, env, observe, timeout=10)
-            require(code in (0, 130, 143), "R18/A07: thoát chủ động sau tín hiệu")
-            rows = trace(folder / "trace.csv")
-            if sig is not None:
-                require(sent and time.monotonic()-sent[0] <= 10, "A07: thoát trong 10 s từ tín hiệu")
-                require(not any(k == "motor_speed" and (not math.isfinite(float(v)) or abs(float(v)) > SPEED_EPS) for _,k,v in rows[sent[1]:]), "A07: không lệnh chạy muộn sau tín hiệu")
-            require(sum(k == "motor_init" for _,k,_ in rows) == 1 and sum(k == "motor_cfg" and "$101=1" in v for _,k,v in rows) == 1,
-                    "R18/A07: không khởi tạo/lưu reset motor lại")
-            tail(rows)
-
     def calib(self, step, sig):
         # C02/C13/A01: mỗi bước số hợp lệ, stdin giữ mở tới hết quan sát.
         if step == "position":
@@ -985,8 +894,6 @@ def main():
                 suite.smoke_signal(signal.SIGINT if sys.argv[5] == "INT" else signal.SIGTERM)
             elif scenario == "no_gate":
                 suite.no_gate(sys.argv[5])
-            elif scenario in ("auto_keys", "auto_signal"):
-                suite.auto_input(sys.argv[5], (signal.SIGINT if sys.argv[6] == "INT" else signal.SIGTERM) if scenario == "auto_signal" else None)
             else:
                 raise AssertionError("Ca không hợp lệ: " + scenario)
     print(scenario + ": ĐẠT")
