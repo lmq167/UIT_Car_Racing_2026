@@ -1082,13 +1082,22 @@ def test_case(case, cfg, root):
             with running(cfg, root / str(low), values=values) as r:
                 r.boot(); r.go()
                 for sign in (1, -1):
-                    ev = r.inject('controller_command {} {}'.format(sign * 50, sign * 90))
                     def sent():
                         es = [e for e in r.events() if e[0] >= ev[0] and not e[3]]
                         return (any(e[1] == 'motor_speed' and e[2] == sign * 10 for e in es) and
                                 any(e[1] == 'servo_angle' and e[2] == sign * 40 for e in es))
-                    r.wait(sent, message='Không gửi đúng biên kẹp từ lệnh tiêm', tag='hard_cap')
-                    r.wait(lambda: any(float(row['requested_speed_cms']) == sign * 50 and
+                    # Lệnh tiêm một nhịp có thể bị nhịp thường ghi đè trước vòng an toàn.
+                    for attempt in range(5):
+                        ev = r.inject('controller_command {} {}'.format(sign * 50, sign * 90))
+                        try:
+                            r.wait(sent, 2, message='Không gửi đúng biên kẹp từ lệnh tiêm', tag='hard_cap')
+                        except Failure as error:
+                            if error.tag != 'hard_cap' or r.process.poll() is not None or attempt == 4:
+                                raise
+                        else:
+                            break
+                    r.wait(lambda: any(float(row['t_ms']) >= ev[0] and
+                                       float(row['requested_speed_cms']) == sign * 50 and
                                        float(row['requested_steer_deg']) == sign * 90 and
                                        float(row['sent_speed_cms']) == sign * 10 and
                                        float(row['sent_steer_deg']) == sign * 40 for row in r.rows()),
