@@ -34,3 +34,10 @@ foreach(_auto_preview_case P01 P02)
         --case "${_auto_preview_case}" --hooks "${UCR_AUTO_HOOKS_BINARY}" --slack "${_auto_slack}")
     set_tests_properties(acc_auto_preview_${_auto_preview_case} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
 endforeach()
+
+foreach(_auto_debug_case D01 D02)
+    add_test(NAME acc_auto_debug_${_auto_debug_case}
+        COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_auto_debug.py"
+        --case "${_auto_debug_case}" --hooks "${UCR_AUTO_HOOKS_BINARY}" --slack "${_auto_slack}")
+    set_tests_properties(acc_auto_debug_${_auto_debug_case} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
+endforeach()
