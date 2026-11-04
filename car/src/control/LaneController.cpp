@@ -99,11 +99,25 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         // Hàng trọng số 0 không được tạo lệnh khi các hàng có trọng số đều hỏng.
         if(total<=0) result.debug.valid_rows=0;
     }
-    const bool valid=result.debug.valid_rows>=params.min_valid_rows;
+    bool valid=result.debug.valid_rows>=params.min_valid_rows;
+    if(params.right_lost_ms>0) {
+        bool any=false, all=true;
+        for(const auto &row:result.debug.rows) if(row.valid) {
+            any=true;
+            all=all && row.right/mask.cols>=params.right_clip_frac;
+        }
+        if(any && all) {
+            if(right_clip_since_ms_<0) right_clip_since_ms_=now_ms;
+            if(right_lost_ || now_ms-right_clip_since_ms_>=params.right_lost_ms) {
+                valid=false;
+                right_lost_=true;
+            }
+        } else right_clip_since_ms_=-1;
+    } else { right_clip_since_ms_=-1; right_lost_=false; }
     if(!valid) { lost_=true; regain_=0; regain_mask_ms_=-1; derivative_ready_=false; }
     else if(lost_) {
         if(mask_ms>regain_mask_ms_) { ++regain_; regain_mask_ms_=mask_ms; }
-        if(regain_>=params.regain_frames) { lost_=false; derivative_ready_=false; }
+        if(regain_>=params.regain_frames) { lost_=false; derivative_ready_=false; right_lost_=false; }
     }
     if(lost_) {
         const int64_t age=last_valid_ms_<0 ? params.lost_stop_ms : now_ms-last_valid_ms_;
@@ -113,6 +127,16 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     }
     if(ref!=reference_) derivative_ready_=false;
     result.debug.p=params.kp*result.debug.e;
+    if(params.kh>0 && result.debug.rows.size()>=3) {
+        const auto &near=result.debug.rows.front();
+        const auto &middle=result.debug.rows[result.debug.rows.size()/2];
+        const auto &far=result.debug.rows.back();
+        if(near.valid && middle.valid && far.valid) {
+            const double c_near=near.center/mask.cols, c_middle=middle.center/mask.cols, c_far=far.center/mask.cols;
+            if(std::abs(c_far-c_middle)<=params.kh_gate_frac)
+                result.debug.p+=params.kh*Clamp((c_far-c_near)/0.5,-1,1);
+        }
+    }
     result.debug.d=derivative_ready_ && dt>0 ? params.kd*(result.debug.e-error_)/dt : 0;
     const double desired=Clamp(-(result.debug.p+result.debug.d),-params.steer_max_deg,params.steer_max_deg);
     const double step=params.steer_rate_dps*dt;
