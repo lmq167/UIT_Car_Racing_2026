@@ -17,6 +17,7 @@ struct ControlParams {
     int right_lost_ms;
     int pair_mode;
     double pair_max_shift_frac, pair_merge_frac;
+    int kd_filter_ms;
 
     static ControlParams Load(const std::string &path, std::ostream &report);
     void Validate() const;

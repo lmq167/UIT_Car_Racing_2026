@@ -153,6 +153,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     if(mask_ms<0 || mask_ms>now_ms || now_ms-mask_ms>params.mask_max_age_ms ||
        (last_mask_ms_>=0 && mask_ms<last_mask_ms_)) {
         regain_=0; derivative_ready_=false; right_clip_since_ms_=-1;
+        filtered_derivative_=0; filter_ready_=false;
         have_near_=false;
         return finish(0,0,"MAT_NAN_CU","MAT_NAN_CU");
     }
@@ -205,10 +206,10 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
             }
         } else right_clip_since_ms_=-1;
     } else { right_clip_since_ms_=-1; right_lost_=false; }
-    if(!valid) { lost_=true; regain_=0; regain_mask_ms_=-1; derivative_ready_=false; }
+    if(!valid) { lost_=true; regain_=0; regain_mask_ms_=-1; derivative_ready_=false; filtered_derivative_=0; filter_ready_=false; }
     else if(lost_) {
         if(mask_ms>regain_mask_ms_) { ++regain_; regain_mask_ms_=mask_ms; }
-        if(regain_>=params.regain_frames) { lost_=false; derivative_ready_=false; right_lost_=false; }
+        if(regain_>=params.regain_frames) { lost_=false; derivative_ready_=false; filtered_derivative_=0; filter_ready_=false; right_lost_=false; }
     }
     if(lost_) {
         const int64_t age=last_valid_ms_<0 ? params.lost_stop_ms : now_ms-last_valid_ms_;
@@ -216,9 +217,16 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         if(age>=params.lost_hold_ms) return finish(0,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_DUNG");
         return finish(params.lost_cms,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_GIU");
     }
-    if(ref!=reference_) derivative_ready_=false;
+    if(ref!=reference_) { derivative_ready_=false; filtered_derivative_=0; filter_ready_=false; }
     result.debug.p=params.kp*result.debug.e;
     result.debug.d=derivative_ready_ && dt>0 ? params.kd*(result.debug.e-error_)/dt : 0;
+    if(params.kd_filter_ms>0 && derivative_ready_ && dt>0) {
+        const double raw=(result.debug.e-error_)/dt;
+        const double a=dt/(params.kd_filter_ms/1000.0+dt);
+        if(!filter_ready_) { filtered_derivative_=raw; filter_ready_=true; }
+        else filtered_derivative_+=a*(raw-filtered_derivative_);
+        result.debug.d=params.kd*filtered_derivative_;
+    }
     const double desired=Clamp(-(result.debug.p+result.debug.d),-params.steer_max_deg,params.steer_max_deg);
     const double step=params.steer_rate_dps*dt;
     const double angle=Clamp(Clamp(desired,angle_-step,angle_+step),-params.steer_max_deg,params.steer_max_deg);

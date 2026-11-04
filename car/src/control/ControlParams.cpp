@@ -52,7 +52,8 @@ const Parameter table[] = {
     {"right_lost_ms",500,&ControlParams::right_lost_ms,0,2000,"ms","Hạn mất vạch phải (0 = tắt)"},
     {"pair_mode",0,&ControlParams::pair_mode,0,1,"1","Chọn cặp vạch (0 = như cũ, 1 = bao quanh xe)"},
     {"pair_max_shift_frac",0.25,&ControlParams::pair_max_shift_frac,0.05,0.6,"W","Dịch ngang tối đa của vạch giữa hai hàng"},
-    {"pair_merge_frac",0.08,&ControlParams::pair_merge_frac,0,0.12,"W","Gộp vạch gần nhau trong một hàng (0 = tắt)"}
+    {"pair_merge_frac",0.08,&ControlParams::pair_merge_frac,0,0.12,"W","Gộp vạch gần nhau trong một hàng (0 = tắt)"},
+    {"kd_filter_ms",0,&ControlParams::kd_filter_ms,0,500,"ms","Hằng thời gian lọc đạo hàm sai số (0 = tắt)"}
 };
 void Require(bool ok, const std::string &key) {
     if(!ok) throw std::runtime_error("Tham số điều khiển không hợp lệ: " + key);
