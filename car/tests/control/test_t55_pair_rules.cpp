@@ -474,8 +474,8 @@ void NewParams(const std::string &path, bool order) {
         }
         for(bool header:{false,true}) Check(load("pair_mode: 1\n",header).pair_mode==1,"Thứ tự mặc định phải nhận");
     } else {
-        Near(ControlParams{}.pair_merge_frac,0.06,"Mặc định gộp vạch");
-        for(bool header:{false,true}) Near(load("{}\n",header).pair_merge_frac,0.06,"Mặc định gộp qua Load");
+        Near(ControlParams{}.pair_merge_frac,0.08,"Mặc định gộp vạch");
+        for(bool header:{false,true}) Near(load("{}\n",header).pair_merge_frac,0.08,"Mặc định gộp qua Load");
         for(const auto &v:std::vector<std::string>{"-0.01","0","0.019","0.02","0.12","0.121"}) {
             const bool accept=v=="0" || v=="0.02" || v=="0.12";
             for(int mode:{0,1}) {
@@ -494,16 +494,46 @@ void NewParams(const std::string &path, bool order) {
 // T55d §5 và spec bổ sung: chỉ gộp danh sách ghép cặp, không sửa debug.lines thô.
 void Merge(const std::string &name) {
     auto p=UnitParams();
+    if(name=="merge_near_outer") {
+        LaneController c;
+        AllPairs(Step(c,Uniform(p,{0.25,0.29,0.7,0.75}),p),0.25,0.75,0.5);
+        c.Reset(); p.center_offset_frac=0.15; p.Validate();
+        AllPairs(Step(c,Uniform(p,{0.56,0.6,0.63,0.9}),p),0.56,0.9,0.73);
+        return;
+    }
+    if(name=="merge_upper_roles") {
+        // Cùng cụm [0,45;0,50;0,55]: mép phải chọn 0,55, mép trái chọn 0,45.
+        for(bool rightRole:{true,false}) {
+            LaneController c;
+            const std::vector<double> lower=rightRole ? std::vector<double>{0.2,0.6} :
+                                                       std::vector<double>{0.4,0.8};
+            const auto r=Step(c,Mask(p,{lower,{0.2,0.45,0.5,0.55,0.8},{0.2,0.45,0.5,0.55,0.8}}),p);
+            Pair(r,0,lower[0],lower[1],(lower[0]+lower[1])/2);
+            const double left=rightRole ? 0.2 : 0.45, right=rightRole ? 0.55 : 0.8;
+            for(size_t i=1;i<3;++i) Pair(r,i,left,right,(left+right)/2);
+        }
+        return;
+    }
+    if(name=="merge_7675_930") {
+        ControlParams real; real.pair_mode=1; real.right_lost_ms=0;
+        const auto mask=ReadMask(std::string(T55_FIXTURE_DIR)+"/masks_t55/7675_930.png");
+        Check(mask.cols==160 && mask.rows==96,"Sai kích thước PNG 7675_930");
+        LaneController c;
+        const auto r=Step(c,mask,real);
+        PrintRows(r,mask,real);
+        Pair(r,2,0.64375,0.903125,(0.64375+0.903125)/2,mask.cols,0.005);
+        return;
+    }
     if(name=="merge_noise") {
         p.lane_width_min_ratio=0.75; p.Validate();
         LaneController c;
         const auto r=Step(c,Mask(p,{{0.3,0.7},{0.3,0.58,0.62},{0.3,0.58,0.62}}),p);
         Pair(r,0,0.3,0.7,0.5);
-        for(size_t i=1;i<3;++i) Pair(r,i,0.3,0.6,0.45);
+        for(size_t i=1;i<3;++i) Pair(r,i,0.3,0.62,0.46);
         return;
     }
     const std::vector<double> lines=name=="merge_chain" ? std::vector<double>{0.3,0.65,0.7,0.75} :
-        name=="merge_exact" ? std::vector<double>{0.3,0.67,0.73} : std::vector<double>{0.3,0.68,0.72};
+        name=="merge_exact" ? std::vector<double>{0.3,0.65,0.73} : std::vector<double>{0.3,0.68,0.72};
     const auto mask=Uniform(p,lines);
     if(name=="merge_disabled") p.pair_merge_frac=0;
     if(name=="merge_off") {
@@ -530,7 +560,9 @@ void Merge(const std::string &name) {
         Check(row.lines.size()==lines.size(),"Gộp không được xóa vạch thô");
         for(size_t j=0;j<lines.size();++j) Near(row.lines[j],lines[j]*mask.cols,"Giữ vị trí vạch thô");
     }
-    const double right=name=="merge_exact" ? 0.67 : name=="merge_disabled" ? 0.68 : 0.7;
+    // Giữ tên CTest merge_mean cũ; nay kiểm thành viên ngoài cùng, không lấy trung bình.
+    const double right=name=="merge_exact" ? 0.65 : name=="merge_disabled" ? 0.68 :
+        name=="merge_chain" ? 0.75 : 0.72;
     AllPairs(r,0.3,right,(0.3+right)/2);
 }
 
