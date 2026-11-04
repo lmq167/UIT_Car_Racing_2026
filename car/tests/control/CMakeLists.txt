@@ -42,3 +42,18 @@ endif()
 ")
 add_test(NAME control_replay COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/replay_test_$<CONFIG>.cmake)
 set_tests_properties(control_params control_lane control_replay PROPERTIES LABELS "control" TIMEOUT 60)
+
+# T55a: hợp đồng luật làn; golden chỉ sinh bằng lệnh riêng trên cây khung.
+add_executable(test_t55_lane_rules test_t55_lane_rules.cpp)
+target_link_libraries(test_t55_lane_rules PRIVATE ucr_control)
+target_compile_definitions(test_t55_lane_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+target_compile_options(test_t55_lane_rules PRIVATE -Wall -Wextra)
+add_test(NAME acc_t55_mask COMMAND test_t55_lane_rules --check-mask)
+set_tests_properties(acc_t55_mask PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+foreach(scenario disabled replay_b1 replay_b2 heading threshold below all_valid invalid_rows
+        counter_reset clock_reset recovery disabled_empty)
+    add_test(NAME acc_t55_${scenario} COMMAND test_t55_lane_rules ${scenario})
+    set_tests_properties(acc_t55_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+add_test(NAME acc_t55_params COMMAND test_t55_lane_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_params.yaml)
+set_tests_properties(acc_t55_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
