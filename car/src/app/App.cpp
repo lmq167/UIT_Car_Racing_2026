@@ -27,7 +27,7 @@ App::~App() { RequestStop(); Wait(); }
 void App::CheckAutoSmoke() const {
     if(mode_!="auto") return;
     if(!c_.tof_mapping_confirmed || !common::SmokePassed(c_,config_path_))
-        throw std::runtime_error("Chưa có smoke_gate.json ĐẠT khớp mã nguồn/cấu hình");
+        throw std::runtime_error("main --mode auto bị khóa vì không còn cách mở cổng smoke; chạy tự lái bằng ucr_auto");
 }
 void App::Init() {
 #ifdef UCR_FAKE_HW
@@ -162,11 +162,7 @@ void App::ActuatorThread() {
         const bool calib_limit=(mode_=="calib") && CalibrationLimitReached(c_,s.observation,cmd.calib_limits,now);
         if((held_mode && (!FreshImage(c_,s.observation,now) || image_gap)) || calib_limit) {
             // Giữ yêu cầu huỷ tới khi luồng bàn phím nhận được, kể cả ảnh đã có lại.
-            if(held_mode) cancel_held(calib_limit ? "gioi_han_calib" : "mat_anh");
-            else {
-                std::lock_guard<std::mutex> lock(shared_.mutex);
-                shared_.value.requested={}; cancel_held_command_=true; cmd={};
-            }
+            cancel_held(calib_limit ? "gioi_han_calib" : "mat_anh");
             if(calib_limit) state="DUNG_GIOI_HAN_CALIB";
             else state="MAT_ANH";
         }
