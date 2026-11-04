@@ -15,7 +15,6 @@ struct ControlParams {
     int record_every_n, yolo_every_n;
     double right_clip_frac;
     int right_lost_ms;
-    double kh, kh_gate_frac;
 
     static ControlParams Load(const std::string &path, std::ostream &report);
     void Validate() const;

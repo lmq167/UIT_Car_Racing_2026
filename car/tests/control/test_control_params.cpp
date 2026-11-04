@@ -96,7 +96,6 @@ int main(int argc, char **argv) {
             {"right_lost_ms: 199\n","right_lost_ms"}, {"right_lost_ms: 2001\n","right_lost_ms"},
             {"right_lost_ms: -1\n","right_lost_ms"}, {"right_lost_ms: 500.5\n","right_lost_ms"},
             {"right_clip_frac: 0.89\n","right_clip_frac"}, {"right_clip_frac: 1.01\n","right_clip_frac"},
-            {"kh: 31\n","kh"}, {"kh_gate_frac: 0.09\n","kh_gate_frac"}, {"kh_gate_frac: 1.01\n","kh_gate_frac"}
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");

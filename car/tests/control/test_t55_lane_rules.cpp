@@ -185,7 +185,7 @@ void WriteGolden(const std::vector<Frame> &frames, const std::string &path) {
 
 // T55 §4.1: tắt cả hai luật phải khớp bản fab24d1 tới 1e-9 từng khung.
 void Disabled(const std::vector<Frame> &frames) {
-    ControlParams p; p.right_lost_ms=0; p.kh=0;
+    ControlParams p; p.right_lost_ms=0;
     const auto results=Replay(frames,p);
     std::ifstream in(std::string(T55_FIXTURE_DIR)+"/lane_golden_fab24d1.csv");
     std::string line;
@@ -209,7 +209,7 @@ void Disabled(const std::vector<Frame> &frames) {
 
 // T55 §4.2: đoạn clip trong fixture bắt đầu 37,786 s; B1=500 kích hoạt khoảng 38,29 s.
 void ReplayB1(const std::vector<Frame> &frames) {
-    ControlParams p; p.kh=0; p.right_lost_ms=500;
+    ControlParams p; p.right_lost_ms=500;
     const auto active=Replay(frames,p);
     p.right_lost_ms=0;
     const auto disabled=Replay(frames,p);
@@ -234,40 +234,6 @@ void ReplayB1(const std::vector<Frame> &frames) {
     }
     std::cout << "B1 kích hoạt lần đầu: " << first << " s\n";
     Check(first>=38.2 && first<=38.6,"B1 phải kích hoạt trong 38,2–38,6 s");
-}
-
-// T55 §4.3: cua trái được thêm ≥4 độ; cổng chặn hàng xa sai quanh 36,7 s.
-void ReplayB2(const std::vector<Frame> &frames) {
-    ControlParams p; p.right_lost_ms=0; p.kh=0;
-    const auto baseline=Replay(frames,p);
-    p.kh=12; p.kh_gate_frac=0.35;
-    const auto active=Replay(frames,p);
-    size_t turning=0, gated=0, rejected=0;
-    double minimum=std::numeric_limits<double>::infinity();
-    for(size_t i=0;i<frames.size();++i) {
-        const double t=frames[i].seconds;
-        if(t>=33 && t<=36.4) {
-            // Khung mà hàng xa lệch hàng giữa quá kh_gate_frac (vd. 33,069 s: 0,405) bị cổng loại: h=0.
-            const auto &r=frames[i].rows;
-            const bool pass=r.size()>=3 && r.front().valid && r[r.size()/2].valid && r.back().valid &&
-                            std::abs(r.back().center-r[r.size()/2].center)<=p.kh_gate_frac;
-            if(!pass) {
-                ++rejected;
-                Near(active[i].debug.p-p.kp*active[i].debug.e,0,"Khung bị cổng loại phải có h=0 tại "+std::to_string(t));
-                continue;
-            }
-            ++turning;
-            const double gain=active[i].cmd.deg-baseline[i].cmd.deg;
-            minimum=std::min(minimum,gain);
-            Check(gain>=4-1e-9,"B2 tăng lái dưới 4 độ tại "+std::to_string(t));
-        }
-        if(std::abs(t-36.7)<=0.05) {
-            ++gated;
-            Near(active[i].debug.p-p.kp*active[i].debug.e,0,"Cổng B2 không chặn tại "+std::to_string(t));
-        }
-    }
-    Check(turning>0 && gated>0,"Thiếu cửa sổ replay B2");
-    std::cout << "B2: " << turning << " khung cua; tăng nhỏ nhất " << minimum << " độ; " << rejected << " khung cổng loại trong 33-36,4 s; " << gated << " khung cổng\n";
 }
 
 // Phiên A1 (8218, 10-107,5 s): B1 mặc định không được kích hoạt lần nào; log có nhiều lần nhấc xe nên chỉ khẳng định điều này.
@@ -316,7 +282,7 @@ void ReplayB1Session8218() {
 ControlParams UnitParams() {
     ControlParams p;
     p.scan_rows={0.8,0.5,0.2}; p.row_weights={0.5,0.3,0.2}; p.lane_width_frac={0.4,0.4,0.4};
-    p.min_valid_rows=1; p.kd=0; p.steer_rate_dps=1000; p.right_lost_ms=500; p.kh=0;
+    p.min_valid_rows=1; p.kd=0; p.steer_rate_dps=1000; p.right_lost_ms=500;
     p.Validate();
     return p;
 }
@@ -460,46 +426,6 @@ void DisabledAndEmpty() {
     }
 }
 
-// T55 §3/notes §2–3: suy h qua debug.p, không thêm trường vào ControlDebug.
-void Heading() {
-    auto p=UnitParams(); p.right_lost_ms=0; p.kh=12; p.lane_width_frac={0.1,0.1,0.1};
-    auto run=[&](const std::vector<double> &centers, int missing, double gate) {
-        auto q=p; q.kh_gate_frac=gate;
-        q.scan_rows.resize(centers.size()); q.row_weights.resize(centers.size()); q.lane_width_frac.resize(centers.size());
-        std::vector<double> right; for(double center:centers) right.push_back(center+0.05);
-        auto rows=Edges(q,right);
-        if(missing>=0) rows[static_cast<size_t>(missing)]={q.scan_rows[static_cast<size_t>(missing)],-1,-1,-1,false};
-        q.Validate();
-        const auto mask=Mask(rows,q,1000);
-        LaneController c,baseline;
-        const auto r=Step(c,mask,1000,q);
-        Geometry(r,rows); Tracking(r,"Tiền điều kiện B2");
-        double h=0;
-        const size_t n=r.debug.rows.size();
-        if(n>=3 && missing<0) {
-            const double near=r.debug.rows.front().center/1000;
-            const double middle=r.debug.rows[n/2].center/1000;
-            const double far=r.debug.rows.back().center/1000;
-            if(std::abs(far-middle)<=gate) h=std::clamp((far-near)/0.5,-1.0,1.0);
-        }
-        Near((r.debug.p-q.kp*r.debug.e)/q.kh,h,"Công thức/dấu/cổng h");
-        q.kh=0;
-        const auto b=Step(baseline,mask,1000,q);
-        if(h==0) Near(r.cmd.deg,b.cmd.deg,"h=0 không đổi góc");
-        else Check((r.cmd.deg-b.cmd.deg)*h<0,"Số hạng nhìn trước sai dấu lái");
-        return h;
-    };
-    Near(run({0.5,0.5,0.5},-1,0.35),0,"Làn thẳng");
-    Check(run({0.5,0.425,0.35},-1,0.35)<0,"Làn xa lệch trái phải h âm");
-    Check(run({0.5,0.575,0.65},-1,0.35)>0,"Làn xa lệch phải phải h dương");
-    for(int missing:{0,1,2}) Near(run({0.5,0.575,0.65},missing,0.35),0,"Thiếu gần/giữa/xa");
-    Near(run({0.5},-1,0.35),0,"n=1"); Near(run({0.5,0.65},-1,0.35),0,"n=2");
-    Near(run({0.5,0.5,0.75},-1,0.25),0.5,"Đúng biên cổng được nhận");
-    Near(run({0.5,0.5,0.751},-1,0.25),0,"Vượt cổng một pixel phải chặn");
-    Near(run({0.1,0.5,0.9},-1,1),1,"Kẹp h dương");
-    Near(run({0.9,0.5,0.1},-1,1),-1,"Kẹp h âm");
-}
-
 template<class F> void Reject(F action, const std::string &key) {
     bool rejected=false;
     try { action(); }
@@ -523,11 +449,9 @@ void Params(const std::string &path) {
     const ControlParams defaults;
     defaults.Validate();
     Near(defaults.right_clip_frac,0.99,"Mặc định clip"); Check(defaults.right_lost_ms==500,"Mặc định hạn clip");
-    Near(defaults.kh,0,"Mặc định tắt B2"); Near(defaults.kh_gate_frac,0.35,"Mặc định cổng B2");
     for(bool header:{false,true}) {
         const auto d=load("{}\n",header);
         Near(d.right_clip_frac,0.99,"Thiếu khóa dùng mặc định clip"); Check(d.right_lost_ms==500,"Thiếu khóa dùng mặc định ms");
-        Near(d.kh,0,"Thiếu khóa dùng mặc định kh"); Near(d.kh_gate_frac,0.35,"Thiếu khóa dùng mặc định cổng");
         for(int value:{0,200,500,2000}) {
             const auto q=load("right_lost_ms: "+std::to_string(value)+"\n",header);
             Check(q.right_lost_ms==value,"Nạp sai hạn clip hợp lệ"); q.Validate();
@@ -535,11 +459,9 @@ void Params(const std::string &path) {
         for(const auto &value:{"199","2001","-1","500.5"})
             Reject([&] { load(std::string("right_lost_ms: ")+value+"\n",header); },"right_lost_ms");
         for(double value:{0.90,1.00}) Near(load("right_clip_frac: "+std::to_string(value)+"\n",header).right_clip_frac,value,"Biên clip");
-        for(double value:{0.0,30.0}) Near(load("kh: "+std::to_string(value)+"\n",header).kh,value,"Biên kh");
-        for(double value:{0.1,1.0}) Near(load("kh_gate_frac: "+std::to_string(value)+"\n",header).kh_gate_frac,value,"Biên cổng");
         for(const auto &item:std::vector<std::pair<std::string,std::string>>{
-            {"right_clip_frac","0.899"},{"right_clip_frac","1.001"},{"kh","-0.1"},{"kh","30.1"},
-            {"kh_gate_frac","0.099"},{"kh_gate_frac","1.001"},{"right_lost_ms","\"500\""}})
+            {"right_clip_frac","0.899"},{"right_clip_frac","1.001"},
+            {"right_lost_ms","\"500\""}})
             Reject([&] { load(item.first+": "+item.second+"\n",header); },item.first);
     }
     for(int value:{-1,199,2001}) { auto q=defaults; q.right_lost_ms=value; Reject([&] { q.Validate(); },"right_lost_ms"); }
@@ -559,8 +481,6 @@ int main(int argc, char **argv) {
             if(scenario=="--check-mask") CheckMask(Fixture());
             else if(scenario=="disabled") Disabled(Fixture());
             else if(scenario=="replay_b1") ReplayB1(Fixture());
-            else if(scenario=="replay_b2") ReplayB2(Fixture());
-            else if(scenario=="heading") Heading();
             else if(scenario=="threshold" || scenario=="below" || scenario=="all_valid" || scenario=="invalid_rows") ClipCase(scenario);
             else if(scenario=="counter_reset") CounterReset();
             else if(scenario=="clock_reset") ClockAndReset();

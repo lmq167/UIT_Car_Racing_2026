@@ -127,16 +127,6 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     }
     if(ref!=reference_) derivative_ready_=false;
     result.debug.p=params.kp*result.debug.e;
-    if(params.kh>0 && result.debug.rows.size()>=3) {
-        const auto &near=result.debug.rows.front();
-        const auto &middle=result.debug.rows[result.debug.rows.size()/2];
-        const auto &far=result.debug.rows.back();
-        if(near.valid && middle.valid && far.valid) {
-            const double c_near=near.center/mask.cols, c_middle=middle.center/mask.cols, c_far=far.center/mask.cols;
-            if(std::abs(c_far-c_middle)<=params.kh_gate_frac)
-                result.debug.p+=params.kh*Clamp((c_far-c_near)/0.5,-1,1);
-        }
-    }
     result.debug.d=derivative_ready_ && dt>0 ? params.kd*(result.debug.e-error_)/dt : 0;
     const double desired=Clamp(-(result.debug.p+result.debug.d),-params.steer_max_deg,params.steer_max_deg);
     const double step=params.steer_rate_dps*dt;

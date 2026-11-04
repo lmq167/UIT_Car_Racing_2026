@@ -50,7 +50,7 @@ target_compile_definitions(test_t55_lane_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_
 target_compile_options(test_t55_lane_rules PRIVATE -Wall -Wextra)
 add_test(NAME acc_t55_mask COMMAND test_t55_lane_rules --check-mask)
 set_tests_properties(acc_t55_mask PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-foreach(scenario disabled replay_b1 replay_b2 heading threshold below all_valid invalid_rows
+foreach(scenario disabled replay_b1 threshold below all_valid invalid_rows
         counter_reset clock_reset stale_reset replay_b1_8218 recovery disabled_empty)
     add_test(NAME acc_t55_${scenario} COMMAND test_t55_lane_rules ${scenario})
     set_tests_properties(acc_t55_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
