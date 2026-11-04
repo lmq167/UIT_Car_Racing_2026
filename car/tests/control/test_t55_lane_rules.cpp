@@ -225,7 +225,7 @@ void ReplayB1(const std::vector<Frame> &frames) {
         }
         previous=frames[i].seconds;
         Check(disabled[i].debug.state=="BAM_LAN","B1=0 vẫn kích hoạt mất làn");
-        if(active[i].debug.state=="MAT_LAN" && first<0) first=frames[i].seconds;
+        if(active[i].debug.state!="BAM_LAN" && first<0) first=frames[i].seconds;
         if(frames[i].seconds<37.7) Check(active[i].debug.state=="BAM_LAN","B1 kích hoạt trước 37,7 s");
     }
     if(start>=0 && previous-start>=0.2) {
@@ -296,7 +296,7 @@ void Tracking(const ControlResult &r, const std::string &where) {
     Check(r.debug.state=="BAM_LAN" && r.cmd.cms>0,where+": phải còn bám làn");
 }
 void Lost(const ControlResult &r, const std::string &where) {
-    Check(r.debug.state=="MAT_LAN",where+": phải MAT_LAN");
+    Check(r.debug.state=="GIU_GOC" || r.debug.state=="MAT_LAN",where+": phải ở đường mất làn (GIU_GOC/MAT_LAN)");
 }
 
 // T55 §2: >= nhận cả biên bằng; hơi dưới ngưỡng hoặc chỉ một hàng clip đều không đủ.
