@@ -92,7 +92,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         if(released) reason_="DEN_XANH";
         else if(state_==PlannerState::BAM_LAN && red_fresh && reds>=params.vote_min) reason_="TIEP_CAN_DEN_DO";
-        else if(state_==PlannerState::BAM_LAN) reason_=released ? "DEN_XANH" : "BAM_LAN";
+        else if(state_==PlannerState::BAM_LAN) reason_="BAM_LAN";
     }
     plan.state=state_;
     if(state_!=PlannerState::BAM_LAN) {
