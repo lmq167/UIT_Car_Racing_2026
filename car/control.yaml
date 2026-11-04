@@ -29,4 +29,4 @@ right_clip_frac: 0.99 # Ngưỡng vạch phải sát mép theo chiều rộng m�
 right_lost_ms: 500 # Hạn mất vạch phải, ms; 0 = tắt
 pair_mode: 0 # Chọn cặp vạch: 0 = như cũ, 1 = cặp bao quanh xe giữ liên tục giữa các hàng
 pair_max_shift_frac: 0.25 # Dịch ngang tối đa của một vạch giữa hai hàng liền nhau, theo chiều rộng mặt nạ
-pair_merge_frac: 0.06 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt
+pair_merge_frac: 0.08 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt

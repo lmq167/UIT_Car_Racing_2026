@@ -66,32 +66,39 @@ RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams 
     int begin, end; bool surface;
     auto row=ScanLines(mask,y,begin,end,surface);
     if(!near && !anchor.valid) return row;
-    struct Edge { double x; bool line; };
+    const double car=(0.5+params.center_offset_frac)*mask.cols;
+    struct Edge { double left, right; bool line; };
     std::vector<Edge> edges;
-    if(surface) edges.push_back({double(begin),false});
+    if(surface) edges.push_back({double(begin),double(begin),false});
     for(size_t i=0;i<row.lines.size();) {
-        double sum=row.lines[i];
+        double left=row.lines[i], right=left;
         size_t next=i+1;
         // So với vạch thô liền trước để giữ trọn cụm nối theo chuỗi.
         while(next<row.lines.size() &&
               row.lines[next]-row.lines[next-1]<params.pair_merge_frac*mask.cols) {
-            sum+=row.lines[next]; ++next;
+            const double x=row.lines[next++];
+            if(near) {
+                if(std::abs(x-car)>std::abs(left-car)) left=right=x;
+            } else {
+                // Cùng cụm chọn thành viên riêng theo vai trò mép của từng cặp.
+                if(std::abs(x-anchor.left)<std::abs(left-anchor.left)) left=x;
+                if(std::abs(x-anchor.right)<std::abs(right-anchor.right)) right=x;
+            }
         }
-        edges.push_back({sum/(next-i),true});
+        edges.push_back({left,right,true});
         i=next;
     }
-    if(surface) edges.push_back({double(end),false});
-    const double car=(0.5+params.center_offset_frac)*mask.cols;
+    if(surface) edges.push_back({double(end),double(end),false});
     int close=-1;
     double distance=0.03*mask.cols;
     if(near) for(size_t i=0;i<edges.size();++i) {
-        const double delta=std::abs(edges[i].x-car);
+        const double delta=std::abs(edges[i].left-car);
         if(edges[i].line && delta<distance) { close=int(i); distance=delta; }
     }
     bool best_match=false;
     double best=std::numeric_limits<double>::infinity();
     for(size_t i=1;i<edges.size();++i) {
-        const double left=edges[i-1].x, right=edges[i].x, gap=right-left;
+        const double left=edges[i-1].left, right=edges[i].right, gap=right-left;
         if(edges[i-1].line && edges[i].line &&
            (gap<width*params.lane_width_min_ratio || gap>width*params.lane_width_max_ratio)) continue;
         bool match=false;
