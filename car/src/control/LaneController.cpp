@@ -69,7 +69,17 @@ RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams 
     struct Edge { double x; bool line; };
     std::vector<Edge> edges;
     if(surface) edges.push_back({double(begin),false});
-    for(double x:row.lines) edges.push_back({x,true});
+    for(size_t i=0;i<row.lines.size();) {
+        double sum=row.lines[i];
+        size_t next=i+1;
+        // So với vạch thô liền trước để giữ trọn cụm nối theo chuỗi.
+        while(next<row.lines.size() &&
+              row.lines[next]-row.lines[next-1]<params.pair_merge_frac*mask.cols) {
+            sum+=row.lines[next]; ++next;
+        }
+        edges.push_back({sum/(next-i),true});
+        i=next;
+    }
     if(surface) edges.push_back({double(end),false});
     const double car=(0.5+params.center_offset_frac)*mask.cols;
     int close=-1;
