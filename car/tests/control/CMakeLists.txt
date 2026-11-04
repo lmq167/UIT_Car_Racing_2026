@@ -57,3 +57,16 @@ foreach(scenario disabled replay_b1 threshold below all_valid invalid_rows
 endforeach()
 add_test(NAME acc_t55_params COMMAND test_t55_lane_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_params.yaml)
 set_tests_properties(acc_t55_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+
+# T55c: B3 theo hợp đồng; khung 6100 chỉ chạy tay, chưa được xác nhận.
+add_executable(test_t55_pair_rules test_t55_pair_rules.cpp)
+target_link_libraries(test_t55_pair_rules PRIVATE ucr_control opencv_imgcodecs)
+target_compile_definitions(test_t55_pair_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+target_compile_options(test_t55_pair_rules PRIVATE -Wall -Wextra)
+foreach(scenario off 6010 single_right single_left empty exact near_previous near_other near_none
+        near_tie outside upper_gap upper_tie shift_limit near_invalid reset stale invalid_reset width offset)
+    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
+    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+add_test(NAME acc_t55_pair_params COMMAND test_t55_pair_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_params.yaml)
+set_tests_properties(acc_t55_pair_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
