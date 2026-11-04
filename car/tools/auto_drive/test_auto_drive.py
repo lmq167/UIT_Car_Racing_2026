@@ -1823,11 +1823,17 @@ def test_case(case, cfg, root):
     # A60 — T47m LOW-4: lỗi sha256sum vẫn đủ log như A21 và cảnh báo trên stderr.
     if case == 'A60':
         from unittest.mock import patch
+        real_sha256 = shutil.which('sha256sum')
+        need(real_sha256, 'Không tìm thấy sha256sum thật', 'setup')
         fake_bin = root / 'fake_bin'
         fake_bin.mkdir(parents=True)
         sha256 = fake_bin / 'sha256sum'
-        sha256.write_text('#!' + sys.executable + '\nfrom pathlib import Path\n'
-                          'Path(__file__).with_name("called").touch()\nraise SystemExit(1)\n', encoding='utf-8')
+        # Chỉ gây lỗi băm bản chép trong phiên; P2 phải băm model thành công trước khởi động.
+        sha256.write_text('#!' + sys.executable + '\nimport os, sys\nfrom pathlib import Path\n'
+                          'log_root = Path({!r}).resolve()\n'.format(str(root / 'run' / 'out')) +
+                          'if any(log_root in Path(arg).resolve().parents for arg in sys.argv[1:] if arg != "--"):\n'
+                          ' Path(__file__).with_name("called").touch()\n raise SystemExit(1)\n'
+                          'os.execv({0!r}, [{0!r}] + sys.argv[1:])\n'.format(real_sha256), encoding='utf-8')
         sha256.chmod(0o755)
         child_path = str(fake_bin) + os.pathsep + os.environ.get('PATH', '')
         with patch.dict(os.environ, {'PATH': child_path}), tempfile.TemporaryFile() as error_log:
