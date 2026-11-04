@@ -86,3 +86,20 @@ foreach(scenario params_order params_merge)
         ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_${scenario}.yaml)
     set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
+
+# T56f: đạo hàm lọc theo đặc tả, dùng trường/khóa sẽ được DEV bổ sung.
+add_executable(test_t56_kd_filter test_t56_kd_filter.cpp)
+target_link_libraries(test_t56_kd_filter PRIVATE ucr_control)
+target_compile_definitions(test_t56_kd_filter PRIVATE
+    T56_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
+    T56_CONTROL_YAML="${CMAKE_CURRENT_SOURCE_DIR}/../../control.yaml")
+target_compile_options(test_t56_kd_filter PRIVATE -Wall -Wextra)
+foreach(scenario yaml_default step_noise off_exact lost stale reset ref recovery)
+    add_test(NAME acc_t56_kd_${scenario} COMMAND test_t56_kd_filter ${scenario})
+    set_tests_properties(acc_t56_kd_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+foreach(scenario golden params)
+    add_test(NAME acc_t56_kd_${scenario} COMMAND test_t56_kd_filter ${scenario}
+        ${CMAKE_CURRENT_BINARY_DIR}/t56_kd_${scenario}.yaml)
+    set_tests_properties(acc_t56_kd_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
