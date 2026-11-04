@@ -70,3 +70,17 @@ foreach(scenario off 6010 single_right single_left empty exact near_previous nea
 endforeach()
 add_test(NAME acc_t55_pair_params COMMAND test_t55_pair_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_params.yaml)
 set_tests_properties(acc_t55_pair_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+
+# T55d: chỉ thêm ca theo đặc tả; nhóm D chạy tay, chờ Quân.
+foreach(scenario near_boundary_left near_boundary_right match_boundary_left match_boundary_right
+        replay_b1_pair empty_mat_commands single_commands near_invalid_commands
+        merge_mean merge_exact merge_chain merge_disabled merge_noise merge_off
+        regress_A regress_B regress_C regress_total)
+    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
+    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+foreach(scenario params_order params_merge)
+    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario}
+        ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_${scenario}.yaml)
+    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()

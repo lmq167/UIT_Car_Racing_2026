@@ -1,4 +1,5 @@
 #include "control/LaneController.h"
+#include "control/Planner.h"
 #include <opencv2/imgcodecs.hpp>
 #include <algorithm>
 #include <cmath>
@@ -363,6 +364,380 @@ int Compare(const std::string &dir, double from, double to) {
               << '/' << rows << " = " << 100.0*sameRows/rows << "%\n";
     return sameRows*100>=rows*95 ? 0 : 1;
 }
+
+// T55d §1: tọa độ nguyên trên 1000 cột, kiểm riêng hai phía của xe.
+void NearBoundary(bool leftSide) {
+    auto p=UnitParams();
+    for(int distance:{29,30,31}) {
+        const int middle=500+(leftSide ? -distance : distance);
+        const double x=middle/1000.0;
+        const std::vector<double> lines=leftSide ? std::vector<double>{x-0.2,x,0.95} :
+                                                       std::vector<double>{0.05,x,x+0.2};
+        LaneController c;
+        const auto r=Step(c,Uniform(p,lines),p);
+        const bool near=distance<30;
+        const double l=leftSide ? (near ? x-0.2 : x) : (near ? x : 0.05);
+        const double right=leftSide ? (near ? x : 0.95) : (near ? x+0.2 : x);
+        std::cout << "sat_vach phia=" << (leftSide ? "trai" : "phai") << ", px=" << distance << '\n';
+        AllPairs(r,l,right,(l+right)/2);
+    }
+}
+
+// T55d §1: chỉ một mép ở biên khớp 0,15; mép kia lệch 0,05.
+void MatchBoundary(bool leftEdge) {
+    auto p=UnitParams();
+    for(int distance:{149,150,151}) {
+        LaneController c;
+        const double l=leftEdge ? (100+distance)/1000.0 : 0.46;
+        const double right=leftEdge ? 0.54 : (900-distance)/1000.0;
+        AllPairs(Step(c,Uniform(p,{l,right}),p),l,right,(l+right)/2);
+        const auto r=Step(c,Uniform(p,leftEdge ? std::vector<double>{0.1,0.49,0.85} :
+                                                            std::vector<double>{0.15,0.51,0.9}),p,1050);
+        const bool match=distance<=150;
+        const double a=leftEdge ? (match ? 0.1 : 0.49) : (match ? 0.51 : 0.15);
+        const double b=leftEdge ? (match ? 0.49 : 0.85) : (match ? 0.9 : 0.51);
+        std::cout << "khop_mep=" << (leftEdge ? "trai" : "phai") << ", px=" << distance << '\n';
+        AllPairs(r,a,b,(a+b)/2);
+    }
+}
+
+// T55d §3, spec B3: một vạch vẫn ghép được với mép ảnh; chưa có làn thì không chạy mò.
+void LostCommands(const std::string &name) {
+    auto p=UnitParams();
+    cv::Mat mask;
+    if(name=="single_commands") mask=Uniform(p,{0.55});
+    else if(name=="near_invalid_commands") mask=Mask(p,{{0.45,0.55},{0.3,0.7},{0.3,0.7}});
+    else Check(name=="empty_mat_commands","Sai ca mất làn");
+    LaneController c;
+    const auto r=Step(c,mask,p);
+    control::Planner planner;
+    control::PlannerInput input;
+    input.mask=mask; input.mask_ms=1000; input.image_ms=1000; input.go=true;
+    const auto plan=planner.Step(input,1000,p);
+    std::cout << "Lane state=" << r.debug.state << ", reason=" << r.debug.reason << ", cms=" << r.cmd.cms
+              << "; Planner state=" << control::StateName(plan.state) << ", reason=" << plan.reason
+              << ", debug.state=" << plan.debug.state << ", rows=" << plan.debug.valid_rows << '\n';
+    if(name=="single_commands") {
+        AllPairs(r,0,0.55,0.275);
+        Check(r.debug.valid_rows==3 && r.debug.state=="BAM_LAN" && r.cmd.cms>0,
+              "Một vạch + mép ảnh đủ ba hàng: phải bám làn");
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"G với một vạch hợp lệ phải bám làn");
+    } else {
+        Check(r.debug.valid_rows==0,"Khung đầu không có hàng hợp lệ");
+        for(const auto &row:r.debug.rows) Check(!row.valid,"Không được bịa hàng hợp lệ");
+        Check(r.debug.state=="MAT_LAN","Khung đầu không có làn phải MAT_LAN");
+        Near(r.cmd.cms,0,"Chưa từng có làn: tốc độ 0"); Near(r.cmd.deg,0,"Chưa từng có làn: góc 0");
+        if(mask.empty()) {
+            control::Planner old;
+            auto legacy=p; legacy.pair_mode=0;
+            const auto before=old.Step(input,1000,legacy);
+            Check(plan.state==before.state && plan.reason==before.reason && plan.debug.state==before.debug.state &&
+                  plan.debug.valid_rows==before.debug.valid_rows,"Mat rỗng phải giữ đường xử lý trước B3");
+        } else Check(plan.debug.valid_rows==0 && plan.debug.state=="MAT_LAN","G không được bỏ qua đường mất làn");
+        Near(plan.cmd.cms,0,"G không có làn: tốc độ 0"); Near(plan.cmd.deg,0,"G không có làn: góc 0");
+        if(name=="near_invalid_commands") for(size_t i=0;i<3;++i) Invalid(r,i);
+    }
+}
+
+// T55d §4: kiểm độc lập Validate và Load, cả YAML thường lẫn OpenCV.
+void NewParams(const std::string &path, bool order) {
+    struct Cleanup { std::string path; ~Cleanup() { std::remove(path.c_str()); } } cleanup{path};
+    auto reject=[&](const auto &action, const std::string &key) {
+        bool rejected=false;
+        try { action(); }
+        catch(const std::exception &e) {
+            rejected=true;
+            Check(std::string(e.what()).find(key)!=std::string::npos,"Lỗi phải nêu "+key+": "+e.what());
+        }
+        Check(rejected,"Phải từ chối "+key);
+    };
+    auto load=[&](const std::string &body, bool header) {
+        std::ofstream out(path);
+        Check(bool(out),"Không mở được YAML tạm");
+        if(header) out << "%YAML:1.0\n---\n";
+        out << body; out.close(); Check(bool(out),"Không ghi được YAML tạm");
+        std::ostringstream report;
+        return ControlParams::Load(path,report);
+    };
+    if(order) {
+        for(const auto &rows:std::vector<std::vector<double>>{{0.45,0.65,0.85},{0.85,0.85,0.45}}) {
+            for(int mode:{0,1}) {
+                ControlParams p; p.pair_mode=mode; p.scan_rows=rows;
+                if(mode) reject([&] { p.Validate(); },"scan_rows"); else p.Validate();
+                std::ostringstream body;
+                body << "pair_mode: " << mode << "\nscan_rows: [" << rows[0] << ',' << rows[1] << ',' << rows[2] << "]\n";
+                for(bool header:{false,true}) {
+                    if(mode) reject([&] { load(body.str(),header); },"scan_rows");
+                    else Check(load(body.str(),header).scan_rows==rows,"pair_mode=0 phải nhận thứ tự cũ");
+                }
+            }
+        }
+        for(bool header:{false,true}) Check(load("pair_mode: 1\n",header).pair_mode==1,"Thứ tự mặc định phải nhận");
+    } else {
+        Near(ControlParams{}.pair_merge_frac,0.06,"Mặc định gộp vạch");
+        for(bool header:{false,true}) Near(load("{}\n",header).pair_merge_frac,0.06,"Mặc định gộp qua Load");
+        for(const auto &v:std::vector<std::string>{"-0.01","0","0.019","0.02","0.12","0.121"}) {
+            const bool accept=v=="0" || v=="0.02" || v=="0.12";
+            for(int mode:{0,1}) {
+                ControlParams p; p.pair_mode=mode; p.pair_merge_frac=Number(v);
+                if(accept) p.Validate(); else reject([&] { p.Validate(); },"pair_merge_frac");
+                for(bool header:{false,true}) {
+                    const auto body="pair_mode: "+std::to_string(mode)+"\npair_merge_frac: "+v+"\n";
+                    if(accept) Near(load(body,header).pair_merge_frac,Number(v),"Giá trị gộp qua Load");
+                    else reject([&] { load(body,header); },"pair_merge_frac");
+                }
+            }
+        }
+    }
+}
+
+// T55d §5 và spec bổ sung: chỉ gộp danh sách ghép cặp, không sửa debug.lines thô.
+void Merge(const std::string &name) {
+    auto p=UnitParams();
+    if(name=="merge_noise") {
+        p.lane_width_min_ratio=0.75; p.Validate();
+        LaneController c;
+        const auto r=Step(c,Mask(p,{{0.3,0.7},{0.3,0.58,0.62},{0.3,0.58,0.62}}),p);
+        Pair(r,0,0.3,0.7,0.5);
+        for(size_t i=1;i<3;++i) Pair(r,i,0.3,0.6,0.45);
+        return;
+    }
+    const std::vector<double> lines=name=="merge_chain" ? std::vector<double>{0.3,0.65,0.7,0.75} :
+        name=="merge_exact" ? std::vector<double>{0.3,0.67,0.73} : std::vector<double>{0.3,0.68,0.72};
+    const auto mask=Uniform(p,lines);
+    if(name=="merge_disabled") p.pair_merge_frac=0;
+    if(name=="merge_off") {
+        p.pair_mode=0;
+        LaneController a,b;
+        const auto enabled=Step(a,mask,p);
+        p.pair_merge_frac=0;
+        const auto disabled=Step(b,mask,p);
+        Near(enabled.cmd.cms,disabled.cmd.cms,"mode=0: tốc độ không đổi");
+        Near(enabled.cmd.deg,disabled.cmd.deg,"mode=0: góc không đổi");
+        Near(enabled.debug.e,disabled.debug.e,"mode=0: e không đổi");
+        Check(enabled.debug.state==disabled.debug.state && enabled.debug.reason==disabled.debug.reason &&
+              enabled.debug.valid_rows==disabled.debug.valid_rows,"mode=0: trạng thái không đổi");
+        for(size_t i=0;i<3;++i) {
+            const auto &x=enabled.debug.rows[i], &y=disabled.debug.rows[i];
+            Check(x.valid==y.valid && x.lines==y.lines,"mode=0: valid/lines không đổi");
+            Near(x.left,y.left,"mode=0: trái"); Near(x.right,y.right,"mode=0: phải"); Near(x.center,y.center,"mode=0: tâm");
+        }
+        return;
+    }
+    LaneController c;
+    const auto r=Step(c,mask,p);
+    for(const auto &row:r.debug.rows) {
+        Check(row.lines.size()==lines.size(),"Gộp không được xóa vạch thô");
+        for(size_t j=0;j<lines.size();++j) Near(row.lines[j],lines[j]*mask.cols,"Giữ vị trí vạch thô");
+    }
+    const double right=name=="merge_exact" ? 0.67 : name=="merge_disabled" ? 0.68 : 0.7;
+    AllPairs(r,0.3,right,(0.3+right)/2);
+}
+
+// T55d §2: dựng cùng đoạn đường/vạch như test B1 cũ; không suy ra vạch không có trong log.
+void PairReplayB1() {
+    std::ifstream in(std::string(T55_FIXTURE_DIR)+"/lane_run_7675_31p5_39p9.csv");
+    std::string line;
+    Check(bool(std::getline(in,line)) && Csv(line)==std::vector<std::string>{
+        "t_s","t_ms","scan_rows","e","p","sent_steer_deg","go"},"Sai đầu đề fixture B1");
+    const std::regex object(R"(\{[^{}]*\})");
+    const std::regex field(R"re("([a-z_]+)"\s*:\s*(null|true|false|[-+0-9.eE]+))re");
+    ControlParams p; p.pair_mode=1; p.right_lost_ms=500;
+    LaneController a,b;
+    double first=-1;
+    size_t frames=0,different=0;
+    int64_t previous=-1;
+    while(std::getline(in,line)) {
+        const auto f=Csv(line); Check(f.size()==7,"Sai số cột B1");
+        cv::Mat mask(200,320,CV_8UC1,cv::Scalar(0));
+        std::vector<std::pair<double,double>> edges;
+        size_t i=0;
+        for(std::sregex_iterator it(f[2].begin(),f[2].end(),object),end;it!=end;++it,++i) {
+            std::vector<std::pair<std::string,std::string>> v;
+            const auto body=it->str();
+            for(std::sregex_iterator j(body.begin(),body.end(),field);j!=end;++j) v.emplace_back((*j)[1].str(),(*j)[2].str());
+            const std::vector<std::string> keys={"y_frac","left_frac","right_frac","center_frac","valid"};
+            Check(i<3 && v.size()==5,"Sai hàng fixture B1");
+            for(size_t k=0;k<5;++k) Check(v[k].first==keys[k],"Sai khóa fixture B1");
+            Near(Number(v[0].second),p.scan_rows[i],"Hàng B1",1e-6);
+            Check(v[4].second=="true","Fixture B1 cần hàng hợp lệ");
+            const int y=static_cast<int>(p.scan_rows[i]*mask.rows);
+            const int right=static_cast<int>(std::lround(Number(v[2].second)*mask.cols));
+            const int left=v[1].second=="null" ? -1 : static_cast<int>(std::lround(Number(v[1].second)*mask.cols));
+            Check(right>0 && right<=mask.cols && left<right && left>=-1,"Mép fixture B1 ngoài ảnh");
+            if(left>=0) {
+                for(int x=left;x<right;++x) mask.at<unsigned char>(y,x)=1;
+                if(left>0) mask.at<unsigned char>(y,left)=2;
+            } else {
+                // B3 cần đoạn mặt đường để có mép bị cắt khi fixture ghi left=null.
+                for(int x=0;x<right;++x) mask.at<unsigned char>(y,x)=1;
+            }
+            if(right<mask.cols) mask.at<unsigned char>(y,right)=2;
+            edges.emplace_back(left,right);
+        }
+        Check(i==3,"Thiếu hàng B1");
+        const double ms=Number(f[1]), seconds=Number(f[0]);
+        Check(ms>=0 && ms<1e12 && std::floor(ms)==ms && ms>previous,"Thời gian B1 không tăng");
+        previous=static_cast<int64_t>(ms);
+        const auto active=Step(a,mask,p,previous);
+        auto off=p; off.right_lost_ms=0;
+        const auto disabled=Step(b,mask,off,previous);
+        Check(disabled.debug.state=="BAM_LAN","B3+B1=0 không được mất làn tại "+f[0]);
+        bool differs=false;
+        for(size_t j=0;j<3;++j) {
+            const auto &row=disabled.debug.rows.at(j);
+            differs=differs || !row.valid || std::abs(row.left-edges[j].first)>0.015*mask.cols ||
+                std::abs(row.right-edges[j].second)>0.015*mask.cols;
+        }
+        if(differs) { ++different; std::cout << "B1 cap khac fixture t_s=" << seconds << '\n'; }
+        if(active.debug.state!="BAM_LAN" && first<0) first=seconds;
+        if(seconds<37.7) Check(active.debug.state=="BAM_LAN","B1+B3 kích hoạt trước 37,7 s");
+        ++frames;
+    }
+    Check(in.eof() && frames==164,"Thiếu/thừa fixture B1");
+    std::cout << "B1+B3: frames=" << frames << ", cap_khac_fixture=" << different << ", first_s=" << first << '\n';
+    Check(first>=38.2 && first<=38.6,"B1+B3 phải kích hoạt trong 38,2–38,6 s");
+}
+
+// T55d §6: mỗi khung controller mới; D chỉ in số liệu, không tham gia tiêu chí đạt/hỏng.
+void Regression(const std::string &category) {
+    std::ifstream in(std::string(T55_FIXTURE_DIR)+"/labels_b3.csv");
+    std::string line;
+    Check(bool(std::getline(in,line)) && Csv(line)==std::vector<std::string>{"run","frame","row","category","status",
+        "old_left","old_right","old_valid","b3_left","b3_right","b3_valid","e_old","e_b3"},"Sai đầu đề nhãn B3");
+    size_t frames=0,failures=0,less=0,selected=0;
+    auto expect=[&](bool ok, const std::string &why) { if(!ok) { ++failures; std::cout << "LOI: " << why << '\n'; } };
+    while(std::getline(in,line)) {
+        std::vector<std::vector<std::string>> f{Csv(line)};
+        for(int j=1;j<3;++j) { Check(bool(std::getline(in,line)),"Nhãn thiếu hàng"); f.push_back(Csv(line)); }
+        for(size_t j=0;j<3;++j) Check(f[j].size()==13 && f[j][0]==f[0][0] && f[j][1]==f[0][1] &&
+            f[j][2]==std::to_string(j) && f[j][3]==f[0][3] && f[j][4]==f[0][4],"Nhãn khung sai lược đồ");
+        Check((f[0][3]=="D" && f[0][4]=="cho_Quan") ||
+              ((f[0][3]=="A" || f[0][3]=="B" || f[0][3]=="C") && f[0][4]=="xet"),"Sai hạng mục/trạng thái nhãn");
+        ++frames;
+        if(category!="total" && f[0][3]!=category) continue;
+        if(category=="total" && f[0][4]=="cho_Quan") continue;
+        ++selected;
+        ControlParams p; p.pair_mode=1; p.right_lost_ms=0;
+        const auto mask=ReadMask(std::string(T55_FIXTURE_DIR)+"/masks_t55/"+f[0][0]+"_"+f[0][1]+".png");
+        Check(mask.cols==160 && mask.rows==96,"Sai kích thước mặt nạ hồi quy");
+        LaneController c;
+        const auto r=Step(c,mask,p);
+        Check(r.debug.rows.size()==3,"Thiếu hàng hồi quy");
+        int oldValid=0;
+        for(size_t j=0;j<3;++j) {
+            const auto &v=f[j]; const auto &row=r.debug.rows[j];
+            Check((v[7]=="0" || v[7]=="1") && (v[10]=="0" || v[10]=="1"),"valid nhãn phải 0/1");
+            oldValid+=v[7]=="1";
+            const std::string at=v[0]+"_"+v[1]+" row="+std::to_string(j);
+            auto same=[&](size_t left, size_t right) {
+                return std::abs(row.left/mask.cols-Number(v[left]))<=0.03 &&
+                       std::abs(row.right/mask.cols-Number(v[right]))<=0.03;
+            };
+            if(category=="D") {
+                std::cout << "CHO " << at << " old=(" << v[5] << ',' << v[6] << ',' << v[7]
+                          << ") b3_truoc=(" << v[8] << ',' << v[9] << ',' << v[10] << ") moi=("
+                          << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid
+                          << ") e_old=" << v[11] << " e_b3=" << v[12] << " e_moi=" << r.debug.e << '\n';
+            } else if(category!="total") {
+                const bool ok=j<2 || category=="A" ? row.valid==(v[10]=="1") && same(8,9) :
+                    category=="B" ? row.valid && same(5,6) : !row.valid || !same(5,6);
+                std::cout << at << " moi=(" << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid << ")\n";
+                expect(ok,category+" "+at);
+            }
+        }
+        if(category=="A") expect(std::isfinite(r.debug.e) && r.debug.e*Number(f[0][12])>0,"A: dấu e "+f[0][0]+"_"+f[0][1]);
+        if(r.debug.valid_rows<oldValid && f[0][3]!="C") {
+            ++less; std::cout << "IT_HANG " << f[0][0] << '_' << f[0][1] << " old=" << oldValid << " moi=" << r.debug.valid_rows << '\n';
+        }
+    }
+    Check(in.eof() && frames==27 && selected>0,"Nhãn thiếu/thừa khung hoặc không có hạng mục");
+    if(category=="D") std::cout << "CHO_QUAN: " << selected << " khung, không tính đạt/hỏng\n";
+    else std::cout << "Hoi_quy " << category << ": selected=" << selected << ", loi=" << failures << ", it_hang_ngoai_C=" << less << '\n';
+    Check(failures==0 && (category!="total" || less==0),"Hồi quy "+category+" chưa đạt; không nới sai số");
+}
+
+// T55d §7: nội suy tuyến tính trên mẫu đã sắp; gộp dịch trái/phải vào cùng phân bố.
+double Percentile(const std::vector<double> &sorted, double q) {
+    Check(!sorted.empty() && q>=0 && q<=1,"Mẫu percentile rỗng hoặc q ngoài miền");
+    const double index=q*(sorted.size()-1);
+    const auto low=static_cast<size_t>(std::floor(index)), high=static_cast<size_t>(std::ceil(index));
+    return sorted[low]+(sorted[high]-sorted[low])*(index-low);
+}
+// Spec "từ cặp ra hàng": left=-1 che mép đối diện; khôi phục qua tính kề nhau, không dùng tâm chiếu.
+std::pair<double,double> SelectedPair(const cv::Mat &mask, const control::RowDebug &row, const ControlParams &p) {
+    Check(row.valid && row.right>=0 && row.right<=mask.cols && row.y>=0 && row.y<mask.rows,"Hàng đo dịch thiếu mép phải/y");
+    if(row.left>=0) return {row.left,row.right};
+    double left=-1;
+    for(size_t i=0;i<row.lines.size();) {
+        size_t end=i+1;
+        double sum=row.lines[i];
+        while(end<row.lines.size() && row.lines[end]-row.lines[end-1]<p.pair_merge_frac*mask.cols)
+            sum+=row.lines[end++];
+        const double edge=sum/(end-i);
+        if(edge<row.right-1e-9) left=edge;
+        i=end;
+    }
+    if(left<0) {
+        int x=std::min(mask.cols-1,static_cast<int>(std::floor(row.right)));
+        if(mask.at<unsigned char>(row.y,x)==0) --x;
+        while(x>=0 && mask.at<unsigned char>(row.y,x)!=0) --x;
+        left=x+1;
+    }
+    Check(left>=0 && left<row.right,"Không khôi phục được cặp kề từ debug/mặt nạ");
+    return {left,row.right};
+}
+void ShiftStats(const std::string &dir, double merge) {
+    Near(Percentile({0,0.1,0.2,0.3},0.5),0.15,"Tự kiểm p50");
+    Near(Percentile({0,0.1,0.2,0.3},0.9),0.27,"Tự kiểm p90");
+    Near(Percentile({0,0.1,0.2,0.3},0.99),0.297,"Tự kiểm p99");
+    Near(Percentile({0.2},0.99),0.2,"Tự kiểm một mẫu");
+    auto checkParams=UnitParams();
+    const auto checkMask=Uniform(checkParams,{0.3,0.65,0.7,0.75});
+    control::RowDebug hidden;
+    hidden.y=static_cast<int>(checkParams.scan_rows[0]*checkMask.rows); hidden.valid=true;
+    hidden.right=1000; hidden.lines={300,650,700,750};
+    Near(SelectedPair(checkMask,hidden,checkParams).first,700,"Tự kiểm mép bị che: cụm cuối");
+    checkParams.pair_merge_frac=0;
+    Near(SelectedPair(checkMask,hidden,checkParams).first,750,"Tự kiểm mép bị che: không gộp");
+    hidden.right=300;
+    Near(SelectedPair(checkMask,hidden,checkParams).first,0,"Tự kiểm mép bị cắt");
+    ControlParams p; p.pair_mode=1; p.right_lost_ms=0; p.pair_max_shift_frac=0.6; p.pair_merge_frac=merge; p.Validate();
+    std::ifstream in(dir+"/control_log.csv"); std::string line;
+    Check(bool(std::getline(in,line)),"Không đọc được control_log.csv");
+    const auto header=Csv(line);
+    auto column=[&](const std::string &key) {
+        const auto it=std::find(header.begin(),header.end(),key);
+        Check(it!=header.end() && std::count(header.begin(),header.end(),key)==1,"Thiếu/trùng cột "+key);
+        return static_cast<size_t>(it-header.begin());
+    };
+    const auto time=column("t_ms"), file=column("mask_file");
+    LaneController c; size_t frames=0,pairs=0; double previous=-1;
+    std::vector<double> shifts;
+    while(std::getline(in,line)) {
+        const auto f=Csv(line); Check(f.size()==header.size(),"Log sai số cột");
+        const double ms=Number(f[time]);
+        Check(ms>=0 && ms<1e12 && std::floor(ms)==ms && ms>=previous,"t_ms sai/đi lùi"); previous=ms;
+        if(f[file].empty()) continue;
+        const auto mask=ReadMask(dir+"/"+f[file]);
+        const auto r=Step(c,mask,p,static_cast<int64_t>(ms)); ++frames;
+        Check(r.debug.rows.size()==p.scan_rows.size(),"Thiếu hàng khi đo dịch");
+        for(size_t j=1;j<r.debug.rows.size();++j) {
+            const auto &a=r.debug.rows[j-1], &b=r.debug.rows[j];
+            if(!a.valid || !b.valid) continue;
+            const auto x=SelectedPair(mask,a,p), y=SelectedPair(mask,b,p);
+            shifts.push_back(std::abs(x.first-y.first)/mask.cols);
+            shifts.push_back(std::abs(x.second-y.second)/mask.cols); ++pairs;
+        }
+    }
+    Check(in.eof() && frames>0,"Không có mặt nạ hoặc lỗi đọc log");
+    std::cout << "frames=" << frames << ", adjacent_pairs=" << pairs << ", samples=" << shifts.size()
+              << ", pair_merge_frac=" << merge << ", pair_max_shift_frac=0.6\n";
+    Check(!shifts.empty(),"Không có hai hàng liền nhau đủ mép để đo");
+    std::sort(shifts.begin(),shifts.end());
+    std::cout << "p50=" << Percentile(shifts,0.5) << ", p90=" << Percentile(shifts,0.9)
+              << ", p99=" << Percentile(shifts,0.99) << ", max=" << shifts.back() << '\n';
+}
 }
 
 int main(int argc, char **argv) {
@@ -371,7 +746,13 @@ int main(int argc, char **argv) {
         std::cout << std::setprecision(12);
         Check(argc>=2,"Cần tên ca, --print-pairs <mask.png> [pair_mode] hoặc --compare-sessions <run_dir> <từ_s> <đến_s>");
         const std::string name=argv[1];
-        if(name=="--print-pairs") {
+        if(name=="--shift-stats") {
+            Check(argc==3 || argc==4,"Cần --shift-stats <run_dir> [pair_merge_frac]");
+            ShiftStats(argv[2],argc==4 ? Number(argv[3]) : ControlParams{}.pair_merge_frac);
+        } else if(name=="params_order" || name=="params_merge") {
+            Check(argc==3,"Cần đường dẫn YAML tạm riêng");
+            NewParams(argv[2],name=="params_order");
+        } else if(name=="--print-pairs") {
             Check(argc==3 || argc==4,"Cần mask.png và tùy chọn pair_mode");
             ControlParams p; p.right_lost_ms=0;
             const double mode=argc==4 ? Number(argv[3]) : 1;
@@ -394,6 +775,15 @@ int main(int argc, char **argv) {
             Check(argc==2,"Thừa tham số");
             if(name=="off") Off();
             else if(name=="6010") Frame6010();
+            else if(name=="near_boundary_left" || name=="near_boundary_right") NearBoundary(name=="near_boundary_left");
+            else if(name=="match_boundary_left" || name=="match_boundary_right") MatchBoundary(name=="match_boundary_left");
+            else if(name=="empty_mat_commands" || name=="single_commands" || name=="near_invalid_commands") LostCommands(name);
+            else if(name=="replay_b1_pair") PairReplayB1();
+            else if(name.compare(0,6,"merge_")==0) Merge(name);
+            else if(name.compare(0,8,"regress_")==0) {
+                Regression(name.substr(8));
+                if(name=="regress_D") return 0;
+            }
             else if(name=="pair_6100") {
                 // T55c-test §3: khung 6100 CHƯA được người dùng xác nhận, chỉ in, không ctest.
                 const auto mask=ReadMask(std::string(T55_FIXTURE_DIR)+"/mask_8218_6100.png");
