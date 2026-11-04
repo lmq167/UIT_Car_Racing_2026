@@ -68,7 +68,7 @@ struct Failure : std::runtime_error {
     Failure(int c, const std::string& message) : std::runtime_error(message), code(c) {}
 };
 struct SignalStop {}; // Tín hiệu tới trong lúc Init: thoát mã 0 qua đường dừng chung.
-// Chép từ drive_collect: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
+// Chép từ công cụ thu cũ: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
 // Tạo trước luồng watchdog để luồng đó thừa hưởng mặt nạ; tín hiệu chờ sẽ tới luồng chính sau restore().
 class InitSignalMask {
     sigset_t original_{};
@@ -322,7 +322,7 @@ class Watchdog {
             }).detach();
         } catch (...) { motor_.EmergencyStop(); _exit(code); }
         motor_.EmergencyStop();
-        // Như drive_collect: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
+        // Như công cụ thu cũ: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
         for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); motor_.EmergencyStop(); }
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }

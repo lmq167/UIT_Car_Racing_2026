@@ -24,7 +24,7 @@ execute_process(COMMAND git rev-parse --short HEAD
 if(NOT _collect_revision)
     set(_collect_revision "unknown")
 endif()
-# Như drive_collect: +300 ms chỉ với sanitizer cho hạn dừng mất ảnh; Release giữ trần gốc.
+# Như công cụ thu cũ: +300 ms chỉ với sanitizer cho hạn dừng mất ảnh; Release giữ trần gốc.
 set(_collect_slack 0)
 set(_collect_flags "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_DEBUG} ${CMAKE_CXX_FLAGS_RELWITHDEBINFO} ${CMAKE_CXX_FLAGS_RELEASE}")
 if(_collect_flags MATCHES "sanitize" OR UCR_ENABLE_ASAN OR UCR_ENABLE_TSAN)
