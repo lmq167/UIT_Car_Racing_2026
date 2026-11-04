@@ -75,7 +75,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     };
     if(mask_ms<0 || mask_ms>now_ms || now_ms-mask_ms>params.mask_max_age_ms ||
        (last_mask_ms_>=0 && mask_ms<last_mask_ms_)) {
-        regain_=0; derivative_ready_=false;
+        regain_=0; derivative_ready_=false; right_clip_since_ms_=-1;
         return finish(0,0,"MAT_NAN_CU","MAT_NAN_CU");
     }
     last_mask_ms_=mask_ms;
