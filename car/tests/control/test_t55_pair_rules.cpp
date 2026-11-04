@@ -605,7 +605,7 @@ void Regression(const std::string &category) {
     std::string line;
     Check(bool(std::getline(in,line)) && Csv(line)==std::vector<std::string>{"run","frame","row","category","status",
         "old_left","old_right","old_valid","b3_left","b3_right","b3_valid","e_old","e_b3"},"Sai đầu đề nhãn B3");
-    size_t frames=0,failures=0,less=0,selected=0;
+    size_t frames=0,failures=0,less=0,selected=0,carpets=0;
     auto expect=[&](bool ok, const std::string &why) { if(!ok) { ++failures; std::cout << "LOI: " << why << '\n'; } };
     while(std::getline(in,line)) {
         std::vector<std::vector<std::string>> f{Csv(line)};
@@ -639,9 +639,21 @@ void Regression(const std::string &category) {
                           << ") b3_truoc=(" << v[8] << ',' << v[9] << ',' << v[10] << ") moi=("
                           << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid
                           << ") e_old=" << v[11] << " e_b3=" << v[12] << " e_moi=" << r.debug.e << '\n';
+            } else if(v[3]=="C" && j==2) {
+                const double expectedCarpet=v[1]=="1520" ? 0.9625 : v[1]=="1530" ? 0.95625 :
+                    v[1]=="1540" ? 0.94375 : v[1]=="1580" ? 0.921875 : -1;
+                const double carpet=Number(v[6]);
+                Check(v[0]=="7675" && expectedCarpet>=0,"Khung C không có nhãn biên thảm đã xác nhận");
+                Near(carpet,expectedCarpet,"Biên thảm "+at,1e-6); ++carpets;
+                const double leftDistance=row.left<0 ? -1 : std::abs(row.left/mask.cols-carpet);
+                const double rightDistance=std::abs(row.right/mask.cols-carpet);
+                std::cout << at << " moi=(" << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid
+                          << ") carpet=" << carpet << ", distance_left=" << leftDistance
+                          << ", distance_right=" << rightDistance << '\n';
+                expect(!row.valid || ((row.left<0 || leftDistance>=0.03) && rightDistance>=0.03),"C "+at);
             } else if(category!="total") {
                 const bool ok=j<2 || category=="A" ? row.valid==(v[10]=="1") && same(8,9) :
-                    category=="B" ? row.valid && same(5,6) : !row.valid || !same(5,6);
+                    row.valid && same(5,6);
                 std::cout << at << " moi=(" << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid << ")\n";
                 expect(ok,category+" "+at);
             }
@@ -652,6 +664,7 @@ void Regression(const std::string &category) {
         }
     }
     Check(in.eof() && frames==27 && selected>0,"Nhãn thiếu/thừa khung hoặc không có hạng mục");
+    if(category=="C" || category=="total") Check(carpets==4,"Phải kiểm đủ bốn nhãn biên thảm C");
     if(category=="D") std::cout << "CHO_QUAN: " << selected << " khung, không tính đạt/hỏng\n";
     else std::cout << "Hoi_quy " << category << ": selected=" << selected << ", loi=" << failures << ", it_hang_ngoai_C=" << less << '\n';
     Check(failures==0 && (category!="total" || less==0),"Hồi quy "+category+" chưa đạt; không nới sai số");
@@ -665,17 +678,22 @@ double Percentile(const std::vector<double> &sorted, double q) {
     return sorted[low]+(sorted[high]-sorted[low])*(index-low);
 }
 // Spec "từ cặp ra hàng": left=-1 che mép đối diện; khôi phục qua tính kề nhau, không dùng tâm chiếu.
-std::pair<double,double> SelectedPair(const cv::Mat &mask, const control::RowDebug &row, const ControlParams &p) {
+std::pair<double,double> SelectedPair(const cv::Mat &mask, const control::RowDebug &row, const ControlParams &p,
+                                     size_t j, double lowerLeft) {
     Check(row.valid && row.right>=0 && row.right<=mask.cols && row.y>=0 && row.y<mask.rows,"Hàng đo dịch thiếu mép phải/y");
     if(row.left>=0) return {row.left,row.right};
     double left=-1;
     for(size_t i=0;i<row.lines.size();) {
         size_t end=i+1;
-        double sum=row.lines[i];
         while(end<row.lines.size() && row.lines[end]-row.lines[end-1]<p.pair_merge_frac*mask.cols)
-            sum+=row.lines[end++];
-        const double edge=sum/(end-i);
-        if(edge<row.right-1e-9) left=edge;
+            ++end;
+        double edge=row.lines[i];
+        const double anchor=j==0 ? (0.5+p.center_offset_frac)*mask.cols : lowerLeft;
+        for(size_t k=i+1;k<end;++k)
+            if(j==0 ? std::abs(row.lines[k]-anchor)>std::abs(edge-anchor) :
+                      std::abs(row.lines[k]-anchor)<std::abs(edge-anchor)) edge=row.lines[k];
+        // Bỏ cả cụm chứa mép phải, kể cả khi mép phải không phải thành viên đầu cụm.
+        if(row.lines[end-1]<row.right-1e-9) left=edge;
         i=end;
     }
     if(left<0) {
@@ -687,7 +705,7 @@ std::pair<double,double> SelectedPair(const cv::Mat &mask, const control::RowDeb
     Check(left>=0 && left<row.right,"Không khôi phục được cặp kề từ debug/mặt nạ");
     return {left,row.right};
 }
-void ShiftStats(const std::string &dir, double merge) {
+void ShiftStats(const std::string &dir, double merge, double maxShift) {
     Near(Percentile({0,0.1,0.2,0.3},0.5),0.15,"Tự kiểm p50");
     Near(Percentile({0,0.1,0.2,0.3},0.9),0.27,"Tự kiểm p90");
     Near(Percentile({0,0.1,0.2,0.3},0.99),0.297,"Tự kiểm p99");
@@ -697,12 +715,20 @@ void ShiftStats(const std::string &dir, double merge) {
     control::RowDebug hidden;
     hidden.y=static_cast<int>(checkParams.scan_rows[0]*checkMask.rows); hidden.valid=true;
     hidden.right=1000; hidden.lines={300,650,700,750};
-    Near(SelectedPair(checkMask,hidden,checkParams).first,700,"Tự kiểm mép bị che: cụm cuối");
+    Near(SelectedPair(checkMask,hidden,checkParams,0,0).first,750,"Tự kiểm mép bị che: ngoài cùng");
+    checkParams.center_offset_frac=0.4;
+    Near(SelectedPair(checkMask,hidden,checkParams,0,0).first,650,"Tự kiểm mép bị che: vị trí xe lệch");
+    checkParams.center_offset_frac=0;
+    hidden.y=static_cast<int>(checkParams.scan_rows[1]*checkMask.rows);
+    Near(SelectedPair(checkMask,hidden,checkParams,1,680).first,700,"Tự kiểm mép bị che: gần mép hàng dưới");
+    hidden.right=750;
+    Near(SelectedPair(checkMask,hidden,checkParams,1,680).first,300,"Tự kiểm bỏ cụm chứa mép phải");
+    hidden.right=1000;
     checkParams.pair_merge_frac=0;
-    Near(SelectedPair(checkMask,hidden,checkParams).first,750,"Tự kiểm mép bị che: không gộp");
+    Near(SelectedPair(checkMask,hidden,checkParams,1,680).first,750,"Tự kiểm mép bị che: không gộp");
     hidden.right=300;
-    Near(SelectedPair(checkMask,hidden,checkParams).first,0,"Tự kiểm mép bị cắt");
-    ControlParams p; p.pair_mode=1; p.right_lost_ms=0; p.pair_max_shift_frac=0.6; p.pair_merge_frac=merge; p.Validate();
+    Near(SelectedPair(checkMask,hidden,checkParams,1,680).first,0,"Tự kiểm mép bị cắt");
+    ControlParams p; p.pair_mode=1; p.right_lost_ms=0; p.pair_max_shift_frac=maxShift; p.pair_merge_frac=merge; p.Validate();
     std::ifstream in(dir+"/control_log.csv"); std::string line;
     Check(bool(std::getline(in,line)),"Không đọc được control_log.csv");
     const auto header=Csv(line);
@@ -713,6 +739,7 @@ void ShiftStats(const std::string &dir, double merge) {
     };
     const auto time=column("t_ms"), file=column("mask_file");
     LaneController c; size_t frames=0,pairs=0; double previous=-1;
+    size_t samples25=0,samples35=0,pairs25=0,pairs35=0;
     std::vector<double> shifts;
     while(std::getline(in,line)) {
         const auto f=Csv(line); Check(f.size()==header.size(),"Log sai số cột");
@@ -722,21 +749,30 @@ void ShiftStats(const std::string &dir, double merge) {
         const auto mask=ReadMask(dir+"/"+f[file]);
         const auto r=Step(c,mask,p,static_cast<int64_t>(ms)); ++frames;
         Check(r.debug.rows.size()==p.scan_rows.size(),"Thiếu hàng khi đo dịch");
-        for(size_t j=1;j<r.debug.rows.size();++j) {
-            const auto &a=r.debug.rows[j-1], &b=r.debug.rows[j];
-            if(!a.valid || !b.valid) continue;
-            const auto x=SelectedPair(mask,a,p), y=SelectedPair(mask,b,p);
-            shifts.push_back(std::abs(x.first-y.first)/mask.cols);
-            shifts.push_back(std::abs(x.second-y.second)/mask.cols); ++pairs;
+        std::pair<double,double> lower{};
+        for(size_t j=0;j<r.debug.rows.size();++j) {
+            const auto &row=r.debug.rows[j];
+            if(!row.valid) continue;
+            const auto current=SelectedPair(mask,row,p,j,lower.first);
+            if(j>0 && r.debug.rows[j-1].valid) {
+                const double left=std::abs(lower.first-current.first)/mask.cols;
+                const double right=std::abs(lower.second-current.second)/mask.cols;
+                shifts.push_back(left); shifts.push_back(right); ++pairs;
+                samples25+=(left>0.25)+(right>0.25); samples35+=(left>0.35)+(right>0.35);
+                pairs25+=std::max(left,right)>0.25; pairs35+=std::max(left,right)>0.35;
+            }
+            lower=current;
         }
     }
     Check(in.eof() && frames>0,"Không có mặt nạ hoặc lỗi đọc log");
     std::cout << "frames=" << frames << ", adjacent_pairs=" << pairs << ", samples=" << shifts.size()
-              << ", pair_merge_frac=" << merge << ", pair_max_shift_frac=0.6\n";
+              << ", pair_merge_frac=" << merge << ", pair_max_shift_frac=" << maxShift << '\n';
     Check(!shifts.empty(),"Không có hai hàng liền nhau đủ mép để đo");
     std::sort(shifts.begin(),shifts.end());
     std::cout << "p50=" << Percentile(shifts,0.5) << ", p90=" << Percentile(shifts,0.9)
               << ", p99=" << Percentile(shifts,0.99) << ", max=" << shifts.back() << '\n';
+    std::cout << "samples_gt_0.25=" << samples25 << ", samples_gt_0.35=" << samples35
+              << ", adjacent_pairs_gt_0.25=" << pairs25 << ", adjacent_pairs_gt_0.35=" << pairs35 << '\n';
 }
 }
 
@@ -747,8 +783,9 @@ int main(int argc, char **argv) {
         Check(argc>=2,"Cần tên ca, --print-pairs <mask.png> [pair_mode] hoặc --compare-sessions <run_dir> <từ_s> <đến_s>");
         const std::string name=argv[1];
         if(name=="--shift-stats") {
-            Check(argc==3 || argc==4,"Cần --shift-stats <run_dir> [pair_merge_frac]");
-            ShiftStats(argv[2],argc==4 ? Number(argv[3]) : ControlParams{}.pair_merge_frac);
+            Check(argc>=3 && argc<=5,"Cần --shift-stats <run_dir> [pair_merge_frac] [pair_max_shift_frac]");
+            ShiftStats(argv[2],argc>=4 ? Number(argv[3]) : ControlParams{}.pair_merge_frac,
+                       argc==5 ? Number(argv[4]) : 0.6);
         } else if(name=="params_order" || name=="params_merge") {
             Check(argc==3,"Cần đường dẫn YAML tạm riêng");
             NewParams(argv[2],name=="params_order");
