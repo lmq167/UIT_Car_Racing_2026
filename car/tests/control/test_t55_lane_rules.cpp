@@ -270,6 +270,49 @@ void ReplayB2(const std::vector<Frame> &frames) {
     std::cout << "B2: " << turning << " khung cua; tăng nhỏ nhất " << minimum << " độ; " << rejected << " khung cổng loại trong 33-36,4 s; " << gated << " khung cổng\n";
 }
 
+// Phiên A1 (8218, 10-107,5 s): B1 mặc định không được kích hoạt lần nào; log có nhiều lần nhấc xe nên chỉ khẳng định điều này.
+std::vector<Frame> Fixture8218() {
+    std::ifstream in(std::string(T55_FIXTURE_DIR)+"/lane_run_8218_10_107p5.csv");
+    std::string line;
+    Check(bool(std::getline(in,line)) && Csv(line)==std::vector<std::string>{
+        "t_ms","v0","l0","r0","v1","l1","r1","v2","l2","r2"},"Thiếu/sai đầu đề fixture 8218");
+    const ControlParams defaults;
+    std::vector<Frame> frames;
+    while(std::getline(in,line)) {
+        const auto f=Csv(line);
+        Check(f.size()==10,"Fixture 8218 phải có 10 cột");
+        std::vector<Row> rows;
+        for(size_t i=0;i<3;++i) {
+            const double left=Number(f[2+3*i])/1000, right=Number(f[3+3*i])/1000;
+            rows.push_back({defaults.scan_rows[i],left,right,0,f[1+3*i]=="1"});
+        }
+        const double ms=Number(f[0]);
+        frames.push_back({ms/1000,static_cast<int64_t>(ms),rows,0});
+        if(frames.size()>1) Check(frames.back().ms>frames[frames.size()-2].ms,"Fixture 8218 không tăng thời gian");
+    }
+    Check(in.eof() && frames.size()==1893,"Fixture 8218 thiếu dòng (cần 1893)");
+    return frames;
+}
+void ReplayB1Session8218() {
+    const auto frames=Fixture8218();
+    ControlParams p; p.right_lost_ms=500;
+    const auto active=Replay(frames,p);
+    p.right_lost_ms=0;
+    const auto disabled=Replay(frames,p);
+    double start=-1, longest=0;
+    for(size_t i=0;i<frames.size();++i) {
+        bool any=false, all=true;
+        for(const auto &row:frames[i].rows) if(row.valid) { any=true; all=all && row.right>=p.right_clip_frac; }
+        if(any && all) { if(start<0) start=frames[i].seconds; longest=std::max(longest,frames[i].seconds-start); }
+        else start=-1;
+        Check(active[i].debug.state==disabled[i].debug.state && active[i].debug.reason==disabled[i].debug.reason &&
+              active[i].cmd.cms==disabled[i].cmd.cms && active[i].cmd.deg==disabled[i].cmd.deg,
+              "B1 đổi lệnh/trạng thái ở "+std::to_string(frames[i].seconds)+" s");
+    }
+    std::cout << "8218: " << frames.size() << " khung, đoạn mọi R clip dài nhất " << longest << " s, B1 không kích hoạt\n";
+    Check(longest<0.5,"Đoạn clip >= 500 ms: B1 lẽ ra kích hoạt, báo leader");
+}
+
 ControlParams UnitParams() {
     ControlParams p;
     p.scan_rows={0.8,0.5,0.2}; p.row_weights={0.5,0.3,0.2}; p.lane_width_frac={0.4,0.4,0.4};
@@ -338,6 +381,20 @@ void CounterReset() {
 }
 
 // Notes §1: bộ đếm theo now_ms; mask_ms khác now_ms nhưng vẫn trong tuổi cho phép.
+// Mặt nạ cũ là thiếu quan sát: bộ đếm B1 phải về 0 (clip 1000 ms, mặt nạ cũ 1100-1499 ms, clip lại 1500 ms).
+void StaleMaskReset() {
+    auto p=UnitParams(); p.mask_max_age_ms=50;
+    const auto mask=Mask(Edges(p,{0.99,0.99,0.99}),p,1000);
+    LaneController c;
+    Tracking(Step(c,mask,1000,p),"Khung clip đầu");
+    for(int64_t now:{1100,1200,1300,1400,1499}) {
+        const auto r=c.Step(mask,1000,now,p);
+        Check(r.debug.reason=="MAT_NAN_CU" && r.cmd.cms==0,"Mặt nạ cũ phải dừng bằng MAT_NAN_CU");
+    }
+    Tracking(Step(c,mask,1500,p),"Clip lại sau mặt nạ cũ không được kế thừa 500 ms");
+    Tracking(Step(c,mask,1999,p),"499 ms sau khi đếm lại");
+    Lost(Step(c,mask,2000,p),"500 ms sau khi đếm lại");
+}
 void ClockAndReset() {
     auto p=UnitParams(); const auto rows=Edges(p,{0.99,0.99,0.99}); const auto mask=Mask(rows,p,1000);
     LaneController c;
@@ -507,6 +564,8 @@ int main(int argc, char **argv) {
             else if(scenario=="threshold" || scenario=="below" || scenario=="all_valid" || scenario=="invalid_rows") ClipCase(scenario);
             else if(scenario=="counter_reset") CounterReset();
             else if(scenario=="clock_reset") ClockAndReset();
+            else if(scenario=="stale_reset") StaleMaskReset();
+            else if(scenario=="replay_b1_8218") ReplayB1Session8218();
             else if(scenario=="recovery") Recovery();
             else if(scenario=="disabled_empty") DisabledAndEmpty();
             else Check(false,"Ca không biết: "+scenario);
