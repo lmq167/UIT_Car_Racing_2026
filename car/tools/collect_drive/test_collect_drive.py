@@ -32,7 +32,7 @@ for _name in ('stdout', 'stderr'):
 if os.name == 'posix':
     import fcntl
 
-# Như drive_collect: race giả trong OpenCV/TBB chưa instrument.
+# Như công cụ thu cũ: race giả trong OpenCV/TBB chưa instrument.
 TSAN_SUPP = Path(__file__).resolve().parent.parent / 'collect_common' / 'tsan.supp'
 
 
@@ -440,7 +440,7 @@ def closed_data(run, tag='record_close'):
 
 
 def failed_motor_stop(events):
-    """E07: motor giả lỗi (vết đuôi 'fail', như mẫu drive_collect) — chấp nhận lệnh dừng bị lỗi,
+    """E07: motor giả lỗi (vết đuôi 'fail', như mẫu công cụ thu cũ) — chấp nhận lệnh dừng bị lỗi,
     nhưng phải CÓ thử dừng, không có lệnh tiến, servo cuối (nếu có) là 0 và sau lần thử dừng đầu."""
     need(not any(e[1] == 'motor_speed' and e[2] != 0 for e in events), 'Lệnh tiến khi motor hỏng', 'motor_fail')
     attempts = [i for i, e in enumerate(events)
@@ -609,7 +609,7 @@ def test_case(case, cfg, root):
                 run.wait(lambda: len(run.rows()) >= 2, message='Chưa có ảnh trước khoảng mất')
             mark = len(run.events())
             stamp = run.inject('camera_pause_600ms')
-            # Cận trên như stop_by của drive_collect: 500 ms + 200 ms (chu kỳ + dung sai) + slack.
+            # Cận trên như stop_by của công cụ thu cũ: 500 ms + 200 ms (chu kỳ + dung sai) + slack.
             stop_within(run, mark, stamp, 500 + 200, 'stale_frame')
             run.wait(lambda: last_commands(run.events()) == (0, 0), 1, 'Góc chưa về 0 sau mất ảnh',
                      tag='stale_frame')
@@ -648,7 +648,7 @@ def test_case(case, cfg, root):
                     no_forward(run.events(), 'window_dead')
         return
     if case in ('E05', 'E09'):
-        # E09: mẫu drive_collect coi jpeg_hang và camera_stall là "treo" (mã 4 theo HĐ §2).
+        # E09: mẫu công cụ thu cũ coi jpeg_hang và camera_stall là "treo" (mã 4 theo HĐ §2).
         for fault in (['free_mb 0', 'jpeg_fail', 'csv_fail'] if case == 'E05' else ['jpeg_hang', 'camera_stall']):
             with running(cfg, root / fault.replace(' ', '_'), args=['--interval-ms', '100']) as run:
                 moving(run)
@@ -1204,7 +1204,7 @@ def main():
     parser.add_argument('--case', required=True, choices=CASES)
     for name in ('hooks', 'real', 'limits', 'source', 'cmake', 'cxx', 'nm', 'revision'):
         parser.add_argument('--' + name)
-    # Như drive_collect: +300 ms chỉ khi build sanitizer; không cộng vào phép kiểm "qua 0 không nghỉ".
+    # Như công cụ thu cũ: +300 ms chỉ khi build sanitizer; không cộng vào phép kiểm "qua 0 không nghỉ".
     parser.add_argument('--slack', type=int, choices=(0, 300), default=0)
     cfg = parser.parse_args()
     if cfg.case == 'SC':

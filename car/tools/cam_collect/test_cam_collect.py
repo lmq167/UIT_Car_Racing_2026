@@ -33,7 +33,7 @@ if sys.getfilesystemencoding().lower().replace('-', '') != 'utf8':
 # Các trường CaptureColumns và filename/ts_ms được công bố ở pass_store.h.
 # Mẫu cố định: pass_tools.py PASS_COLUMNS; data_audit.py dùng pass/file/state/
 # cmd_speed/cmd_steer. Hai consumer không công bố đủ header; phần còn lại chốt từ
-# drive_collect/pass_store.cpp:24-26 và test_pass_store.cpp:79,115 trước khi chuyển.
+# công cụ thu cũ/pass_store.cpp:24-26 và test_pass_store.cpp:79,115 trước khi chuyển.
 COLUMNS = ['frame', 'monotonic_ns', 'wall_time_unix_ms', 'filename', 'width',
            'height', 'mean_luma', 'lap_var', 'dropped_since_last']
 CSV_HEADERS = {
