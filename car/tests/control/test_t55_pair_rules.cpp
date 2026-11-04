@@ -524,6 +524,15 @@ void Merge(const std::string &name) {
         Pair(r,2,0.64375,0.903125,(0.64375+0.903125)/2,mask.cols,0.005);
         return;
     }
+    if(name=="merge_upper_anchor_row1") {
+        LaneController c;
+        const auto r=Step(c,Mask(p,{{0.2,0.6},{0.2,0.45,0.5,0.55,0.8},
+                                  {0.2,0.45,0.5,0.55,0.6,0.65,0.8}}),p);
+        Pair(r,0,0.2,0.6,0.4);
+        Pair(r,1,0.2,0.55,0.375);
+        Pair(r,2,0.2,0.55,0.375);
+        return;
+    }
     if(name=="merge_noise") {
         p.lane_width_min_ratio=0.75; p.Validate();
         LaneController c;
@@ -533,6 +542,7 @@ void Merge(const std::string &name) {
         return;
     }
     const std::vector<double> lines=name=="merge_chain" ? std::vector<double>{0.3,0.65,0.7,0.75} :
+        name=="merge_default_gap_0p07" ? std::vector<double>{0.3,0.65,0.72} :
         name=="merge_exact" ? std::vector<double>{0.3,0.65,0.73} : std::vector<double>{0.3,0.68,0.72};
     const auto mask=Uniform(p,lines);
     if(name=="merge_disabled") p.pair_merge_frac=0;
@@ -631,6 +641,20 @@ void PairReplayB1() {
     Check(first>=38.2 && first<=38.6,"B1+B3 phải kích hoạt trong 38,2–38,6 s");
 }
 
+std::pair<double,double> SelectedPair(const cv::Mat &mask, const control::RowDebug &row, const ControlParams &p,
+                                     size_t j, double lowerLeft);
+bool CarpetClear(const cv::Mat &mask, const ControlResult &r, const ControlParams &p, double carpet) {
+    if(!r.debug.rows.at(2).valid) return true;
+    std::pair<double,double> pair{};
+    for(size_t j=0;j<3;++j)
+        if(r.debug.rows[j].valid) pair=SelectedPair(mask,r.debug.rows[j],p,j,pair.first);
+    const double leftDistance=std::abs(pair.first/mask.cols-carpet);
+    const double rightDistance=std::abs(pair.second/mask.cols-carpet);
+    std::cout << " cap_thuc=(" << pair.first/mask.cols << ',' << pair.second/mask.cols
+              << "), distance_left=" << leftDistance << ", distance_right=" << rightDistance << '\n';
+    return leftDistance>=0.03 && rightDistance>=0.03;
+}
+
 // T55d §6: mỗi khung controller mới; D chỉ in số liệu, không tham gia tiêu chí đạt/hỏng.
 void Regression(const std::string &category) {
     std::ifstream in(std::string(T55_FIXTURE_DIR)+"/labels_b3.csv");
@@ -677,12 +701,9 @@ void Regression(const std::string &category) {
                 const double carpet=Number(v[6]);
                 Check(v[0]=="7675" && expectedCarpet>=0,"Khung C không có nhãn biên thảm đã xác nhận");
                 Near(carpet,expectedCarpet,"Biên thảm "+at,1e-6); ++carpets;
-                const double leftDistance=row.left<0 ? -1 : std::abs(row.left/mask.cols-carpet);
-                const double rightDistance=std::abs(row.right/mask.cols-carpet);
                 std::cout << at << " moi=(" << row.left/mask.cols << ',' << row.right/mask.cols << ',' << row.valid
-                          << ") carpet=" << carpet << ", distance_left=" << leftDistance
-                          << ", distance_right=" << rightDistance << '\n';
-                expect(!row.valid || ((row.left<0 || leftDistance>=0.03) && rightDistance>=0.03),"C "+at);
+                          << ") carpet=" << carpet << '\n';
+                expect(CarpetClear(mask,r,p,carpet),"C "+at);
             } else if(category!="total") {
                 const bool ok=j<2 || category=="A" ? row.valid==(v[10]=="1") && same(8,9) :
                     row.valid && same(5,6);
@@ -695,7 +716,8 @@ void Regression(const std::string &category) {
             ++less; std::cout << "IT_HANG " << f[0][0] << '_' << f[0][1] << " old=" << oldValid << " moi=" << r.debug.valid_rows << '\n';
         }
     }
-    Check(in.eof() && frames==27 && selected>0,"Nhãn thiếu/thừa khung hoặc không có hạng mục");
+    const size_t expectedSelected=category=="A" ? 11 : category=="B" ? 8 : category=="total" ? 23 : 4;
+    Check(in.eof() && frames==27 && selected==expectedSelected,"Nhãn thiếu/thừa khung hoặc sai số khung hạng mục");
     if(category=="C" || category=="total") Check(carpets==4,"Phải kiểm đủ bốn nhãn biên thảm C");
     if(category=="D") std::cout << "CHO_QUAN: " << selected << " khung, không tính đạt/hỏng\n";
     else std::cout << "Hoi_quy " << category << ": selected=" << selected << ", loi=" << failures << ", it_hang_ngoai_C=" << less << '\n';

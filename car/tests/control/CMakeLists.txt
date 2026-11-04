@@ -76,6 +76,7 @@ foreach(scenario near_boundary_left near_boundary_right match_boundary_left matc
         replay_b1_pair empty_mat_commands single_commands near_invalid_commands
         merge_mean merge_exact merge_chain merge_disabled merge_noise merge_off
         merge_near_outer merge_upper_roles merge_7675_930
+        merge_default_gap_0p07 merge_upper_anchor_row1
         regress_A regress_B regress_C regress_total)
     add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
     set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
