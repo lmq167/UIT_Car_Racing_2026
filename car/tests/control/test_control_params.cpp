@@ -50,6 +50,8 @@ int main(int argc, char **argv) {
         Check(report.str().find("cruise_cms = 8 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
         Check(report.str().find("kp = 42 độ (mặc định)")==std::string::npos,"Khóa đã nạp không được báo mặc định");
         for(bool header:{false,true}) {
+            for(int value:{0,200,2000,500})
+                Check(load("right_lost_ms: "+std::to_string(value)+"\n",header).right_lost_ms==value,"Hạn mất vạch phải hợp lệ phải nạp được");
             const auto plain=load("kp: 42.\nscan_rows: [0.85, 0.65, 0.45]\n",header);
             Check(plain.kp==42 && plain.scan_rows==defaults.scan_rows,"YAML thường phải nạp như YAML OpenCV");
             for(const auto &body:{"", "{}\n", "# Chỉ chú thích\n  # dòng hai\n", "\n {} # map rỗng\r\n", "{ \n }\n", "{}\t# map rỗng\r\n", "{}\n...\n"}) {
@@ -90,7 +92,11 @@ int main(int argc, char **argv) {
             {"lane_width_frac: [1.1,0.5,0.4]\n","lane_width_frac"},
             {"min_valid_rows: 4\n","min_valid_rows"},
             {"lost_stop_ms: 200\n","lost_stop_ms"}, {"min_cms: 9\n","min_cms"},
-            {"max_speed_cms: 7\n","cruise_cms"}, {"lost_cms: 9\nmax_speed_cms: 8\n","lost_cms"}
+            {"max_speed_cms: 7\n","cruise_cms"}, {"lost_cms: 9\nmax_speed_cms: 8\n","lost_cms"},
+            {"right_lost_ms: 199\n","right_lost_ms"}, {"right_lost_ms: 2001\n","right_lost_ms"},
+            {"right_lost_ms: -1\n","right_lost_ms"}, {"right_lost_ms: 500.5\n","right_lost_ms"},
+            {"right_clip_frac: 0.89\n","right_clip_frac"}, {"right_clip_frac: 1.01\n","right_clip_frac"},
+            {"kh: 31\n","kh"}, {"kh_gate_frac: 0.09\n","kh_gate_frac"}, {"kh_gate_frac: 1.01\n","kh_gate_frac"}
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");
