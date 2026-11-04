@@ -27,8 +27,9 @@ public:
     void Reset();
 private:
     int64_t last_now_ms_=-1, last_mask_ms_=-1, last_valid_ms_=-1, regain_mask_ms_=-1;
+    int64_t right_clip_since_ms_=-1;
     double angle_=0, error_=0;
-    bool lost_=false, derivative_ready_=false;
+    bool lost_=false, derivative_ready_=false, right_lost_=false;
     int regain_=0;
     LaneRef reference_=LaneRef::RIGHT;
 };
