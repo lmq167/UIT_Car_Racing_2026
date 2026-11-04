@@ -150,18 +150,19 @@ void LogWriter::run() noexcept {
         const auto engineHash=engine_.empty() ? "" : sha256(engine_);
         const auto controlHash=sha256(folder+"/control.yaml");
         const auto infoHash=sha256(folder+"/road_info.json");
-        if (engineHash=="loi" || controlHash=="loi" || infoHash=="loi")
-            warningNonBlocking("CANH BAO: bam SHA-256 that bai, van ghi log phien\n");
         const auto yoloInfo=yoloEnabled_ ? readBytes(yoloInfo_) : "null";
         if (yoloEnabled_) writeFile(folder+"/yolo_info.json",yoloInfo);
         const auto yoloHash=yoloEnabled_ && !yoloEngine_.empty() ? sha256(yoloEngine_) : "";
+        const auto yoloInfoHash=yoloEnabled_ ? sha256(folder+"/yolo_info.json") : "";
+        if (engineHash=="loi" || controlHash=="loi" || infoHash=="loi" || yoloHash=="loi" || yoloInfoHash=="loi")
+            warningNonBlocking("CANH BAO: bam SHA-256 that bai, van ghi log phien\n");
         writeFile(folder+"/session.json","{\n\"git_hash\":"+jsonString(UCR_AUTO_GIT_HASH)+
             ",\n\"git_branch\":"+jsonString(UCR_AUTO_GIT_BRANCH)+
             ",\n\"control_yaml\":"+jsonString(yaml_)+",\n\"control_sha256\":"+jsonString(controlHash)+
             ",\n\"info_json\":"+info+",\n\"info_sha256\":"+jsonString(infoHash)+
             ",\n\"engine_name\":"+jsonString(engine_)+",\n\"engine_sha256\":"+jsonString(engineHash)+
             ",\n\"yolo_enabled\":"+std::to_string(int(yoloEnabled_))+",\n\"yolo_info_json\":"+yoloInfo+
-            ",\n\"yolo_info_sha256\":"+jsonString(yoloEnabled_ ? sha256(folder+"/yolo_info.json") : "")+
+            ",\n\"yolo_info_sha256\":"+jsonString(yoloInfoHash)+
             ",\n\"yolo_engine_name\":"+jsonString(yoloEngine_)+",\n\"yolo_engine_sha256\":"+jsonString(yoloHash)+
             modelSession("unet",info,unetOnnxSha256_)+
             modelSession("yolo",yoloEnabled_ ? yoloInfo : "",yoloEnabled_ ? yoloOnnxSha256_ : "")+"\n}\n");

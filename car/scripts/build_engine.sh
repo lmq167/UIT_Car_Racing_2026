@@ -10,6 +10,11 @@ fi
 name=$1
 dir=${2:-$HOME/ucr_models}
 workspace=${3:-256}
+# FP32 chỉ để so: bắt buộc thư mục riêng, không đè engine FP16 mặc định
+if [[ $precision == fp32 && ( $# -lt 2 || "$(realpath -m -- "$dir")" == "$(realpath -m -- "$HOME/ucr_models")" ) ]]; then
+    echo "Lỗi: --fp32 cần thư mục riêng khác \$HOME/ucr_models" >&2
+    exit 2
+fi
 onnx=$dir/$name.onnx
 engine=$dir/$name.engine
 if [[ ! -f "$onnx" || ! "$workspace" =~ ^[1-9][0-9]*$ ]]; then
