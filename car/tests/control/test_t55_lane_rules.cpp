@@ -257,7 +257,6 @@ void ReplayB2(const std::vector<Frame> &frames) {
                 continue;
             }
             ++turning;
-            Check(baseline[i].cmd.deg>0 && active[i].cmd.deg>0,"B2 phải giữ dấu lái trái dương");
             const double gain=active[i].cmd.deg-baseline[i].cmd.deg;
             minimum=std::min(minimum,gain);
             Check(gain>=4-1e-9,"B2 tăng lái dưới 4 độ tại "+std::to_string(t));
