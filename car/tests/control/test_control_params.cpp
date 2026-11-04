@@ -96,6 +96,8 @@ int main(int argc, char **argv) {
             {"right_lost_ms: 199\n","right_lost_ms"}, {"right_lost_ms: 2001\n","right_lost_ms"},
             {"right_lost_ms: -1\n","right_lost_ms"}, {"right_lost_ms: 500.5\n","right_lost_ms"},
             {"right_clip_frac: 0.89\n","right_clip_frac"}, {"right_clip_frac: 1.01\n","right_clip_frac"},
+            {"pair_mode: -1\n","pair_mode"}, {"pair_mode: 2\n","pair_mode"}, {"pair_mode: 0.5\n","pair_mode"},
+            {"pair_max_shift_frac: 0.04\n","pair_max_shift_frac"}, {"pair_max_shift_frac: 0.61\n","pair_max_shift_frac"},
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");

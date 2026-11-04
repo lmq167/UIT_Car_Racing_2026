@@ -49,7 +49,9 @@ const Parameter table[] = {
     {"record_every_n",5,&ControlParams::record_every_n,1,40,"khung","Nhịp ghi ảnh và mặt nạ"},
     {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"},
     {"right_clip_frac",0.99,&ControlParams::right_clip_frac,0.90,1.0,"W","Ngưỡng vạch phải sát mép"},
-    {"right_lost_ms",500,&ControlParams::right_lost_ms,0,2000,"ms","Hạn mất vạch phải (0 = tắt)"}
+    {"right_lost_ms",500,&ControlParams::right_lost_ms,0,2000,"ms","Hạn mất vạch phải (0 = tắt)"},
+    {"pair_mode",0,&ControlParams::pair_mode,0,1,"1","Chọn cặp vạch (0 = như cũ, 1 = bao quanh xe)"},
+    {"pair_max_shift_frac",0.25,&ControlParams::pair_max_shift_frac,0.05,0.6,"W","Dịch ngang tối đa của vạch giữa hai hàng"}
 };
 void Require(bool ok, const std::string &key) {
     if(!ok) throw std::runtime_error("Tham số điều khiển không hợp lệ: " + key);
