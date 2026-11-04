@@ -47,7 +47,11 @@ const Parameter table[] = {
     {"lost_stop_ms",800,&ControlParams::lost_stop_ms,0,3000,"ms","Hạn trả góc về không"},
     {"regain_frames",3,&ControlParams::regain_frames,1,20,"khung","Số khung liên tiếp để phục hồi"},
     {"record_every_n",5,&ControlParams::record_every_n,1,40,"khung","Nhịp ghi ảnh và mặt nạ"},
-    {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"}
+    {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"},
+    {"right_clip_frac",0.99,&ControlParams::right_clip_frac,0.90,1.0,"W","Ngưỡng vạch phải sát mép"},
+    {"right_lost_ms",500,&ControlParams::right_lost_ms,0,2000,"ms","Hạn mất vạch phải (0 = tắt)"},
+    {"kh",0.0,&ControlParams::kh,0,30,"độ","Hệ số nhìn trước"},
+    {"kh_gate_frac",0.35,&ControlParams::kh_gate_frac,0.1,1.0,"W","Ngưỡng chênh tâm xa và giữa"}
 };
 void Require(bool ok, const std::string &key) {
     if(!ok) throw std::runtime_error("Tham số điều khiển không hợp lệ: " + key);
@@ -96,6 +100,7 @@ void ControlParams::Validate() const {
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");
     Require(lost_cms<=max_speed_cms,"lost_cms / max_speed_cms");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
+    Require(right_lost_ms==0 || (right_lost_ms>=200 && right_lost_ms<=2000),"right_lost_ms");
 }
 ControlParams ControlParams::Load(const std::string &path, std::ostream &report) {
     ControlParams params;

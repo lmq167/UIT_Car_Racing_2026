@@ -25,3 +25,7 @@ lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
 regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
 record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
+right_clip_frac: 0.99 # Ngưỡng vạch phải sát mép theo chiều rộng mặt nạ
+right_lost_ms: 500 # Hạn mất vạch phải, ms; 0 = tắt
+kh: 0 # Hệ số nhìn trước, độ; 0 = tắt
+kh_gate_frac: 0.35 # Ngưỡng chênh tâm xa và giữa theo chiều rộng mặt nạ
