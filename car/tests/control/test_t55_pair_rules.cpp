@@ -89,6 +89,16 @@ void Invalid(const ControlResult &r, size_t i) {
     Check(r.debug.rows.size()==3 && !r.debug.rows.at(i).valid,
           "Hàng "+std::to_string(i)+" phải không hợp lệ");
 }
+// T60 P1b: chuỗi cặp chưa có neo thì mọi hàng theo luật pair_mode 0 (Scan).
+void SameAsPair0(const ControlResult &r, const cv::Mat &mask, const ControlParams &p) {
+    auto p0=p; p0.pair_mode=0; LaneController c0;
+    const auto e=c0.Step(mask,1000,1000,p0);
+    Check(r.debug.rows.size()==e.debug.rows.size() && r.debug.valid_rows==e.debug.valid_rows,"Số hàng khác pair_mode 0");
+    for(size_t i=0;i<r.debug.rows.size();++i) {
+        Check(r.debug.rows[i].valid==e.debug.rows[i].valid,"Hàng "+std::to_string(i)+" khác pair_mode 0");
+        if(e.debug.rows[i].valid) Near(r.debug.rows[i].center,e.debug.rows[i].center,"Tâm hàng "+std::to_string(i),1e-9);
+    }
+}
 cv::Mat ReadMask(const std::string &path) {
     const auto mask=cv::imread(path,cv::IMREAD_UNCHANGED);
     Check(!mask.empty() && mask.type()==CV_8UC1,"Không nạp được mask 8 bit một kênh: "+path);
@@ -223,8 +233,8 @@ void Unit(const std::string &name) {
             Check(stale.debug.reason=="MAT_NAN_CU","Mặt nạ cũ phải báo MAT_NAN_CU");
         }
         if(name=="invalid_reset") {
-            const auto bad=Step(c,Uniform(p,{0.45,0.55}),p,1050);
-            for(size_t i=0;i<3;++i) Invalid(bad,i);
+            const auto mask=Uniform(p,{0.45,0.55});
+            SameAsPair0(Step(c,mask,p,1050),mask,p);
         }
         const bool outside=name=="outside";
         const double middle=outside ? 0.45 : 0.49;
@@ -250,9 +260,8 @@ void Unit(const std::string &name) {
         r=Step(c,Mask(p,{{0.3,0.7},{0.351,0.751},{0.351,0.751}}),p);
         Pair(r,0,0.3,0.7,0.5); Invalid(r,1); Invalid(r,2);
     } else if(name=="near_invalid") {
-        const auto r=Step(c,Mask(p,{{0.45,0.55},{0.3,0.7},{0.3,0.7}}),p);
-        for(size_t i=0;i<3;++i) Invalid(r,i);
-        Check(r.debug.valid_rows==0,"Không có mốc near thì không hàng nào hợp lệ");
+        const auto mask=Mask(p,{{0.45,0.55},{0.3,0.7},{0.3,0.7}});
+        SameAsPair0(Step(c,mask,p),mask,p);
     } else if(name=="width") {
         // Cặp mép đường rộng 0,1 vẫn hợp lệ, nhưng phép ra tâm cũ phải bỏ other.
         const auto mask=Mask(p,{{},{},{}},0.45,0.55);
@@ -261,8 +270,8 @@ void Unit(const std::string &name) {
         const auto r=left.Step(mask,1000,1000,p,control::LaneRef::LEFT);
         AllPairs(r,0.45,-1,0.65);
         c.Reset();
-        const auto bad=Step(c,Uniform(p,{0.45,0.55}),p);
-        for(size_t i=0;i<3;++i) Invalid(bad,i);
+        const auto narrow=Uniform(p,{0.45,0.55});
+        SameAsPair0(Step(c,narrow,p),narrow,p);
     } else if(name=="offset") {
         const auto mask=Uniform(p,{0.2,0.6,0.9});
         AllPairs(Step(c,mask,p),0.2,0.6,0.4);
@@ -422,6 +431,15 @@ void LostCommands(const std::string &name) {
         Check(r.debug.valid_rows==3 && r.debug.state=="BAM_LAN" && r.cmd.cms>0,
               "Một vạch + mép ảnh đủ ba hàng: phải bám làn");
         Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"G với một vạch hợp lệ phải bám làn");
+    } else if(name=="near_invalid_commands") {
+        // T60 P1b: không có neo thì làm như pair_mode 0, kể cả lệnh chạy.
+        SameAsPair0(r,mask,p);
+        control::Planner old;
+        auto legacy=p; legacy.pair_mode=0;
+        const auto before=old.Step(input,1000,legacy);
+        Check(plan.state==before.state && plan.reason==before.reason && plan.debug.valid_rows==before.debug.valid_rows,
+              "Không có neo: Planner phải như pair_mode 0");
+        Near(plan.cmd.cms,before.cmd.cms,"Tốc độ như pair_mode 0"); Near(plan.cmd.deg,before.cmd.deg,"Góc như pair_mode 0");
     } else {
         Check(r.debug.valid_rows==0,"Khung đầu không có hàng hợp lệ");
         for(const auto &row:r.debug.rows) Check(!row.valid,"Không được bịa hàng hợp lệ");
@@ -435,7 +453,6 @@ void LostCommands(const std::string &name) {
                   plan.debug.valid_rows==before.debug.valid_rows,"Mat rỗng phải giữ đường xử lý trước B3");
         } else Check(plan.debug.valid_rows==0 && plan.debug.state=="MAT_LAN","G không được bỏ qua đường mất làn");
         Near(plan.cmd.cms,0,"G không có làn: tốc độ 0"); Near(plan.cmd.deg,0,"G không có làn: góc 0");
-        if(name=="near_invalid_commands") for(size_t i=0;i<3;++i) Invalid(r,i);
     }
 }
 
