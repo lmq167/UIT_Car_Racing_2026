@@ -28,6 +28,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <exception>
 #include <poll.h>
@@ -270,9 +271,10 @@ struct DriveMotor {
     }
 };
 struct SensorSample {
-    double yaw_deg=0, odo_cm=0;
+    double yaw_deg=std::numeric_limits<double>::quiet_NaN(), odo_cm=std::numeric_limits<double>::quiet_NaN();
     bool sensor_ok=false;
     int64_t sensor_ms=-1;
+    uint64_t fault_id=0;
 };
 struct DriveImu {
     bool initialized=false;
@@ -298,6 +300,7 @@ struct DriveImu {
         common::ReadConfigValue("imu_drift_ms",config["imu_drift_ms"],drift);
         common::ReadConfigValue("yaw_axis",config["yaw_axis"],axis);
         common::ReadConfigValue("yaw_sign",config["yaw_sign"],sign);
+        if (drift>=4000) throw Failure(1,"imu_drift_ms phải nhỏ hơn 4000 ms");
         if (calibration.empty() || drift<1 || axis<0 || axis>2 || (sign!=1 && sign!=-1))
             throw Failure(1,"Cấu hình IMU không hợp lệ");
         device.reset(new BNO055("/dev/i2c-1",calibration));
@@ -330,12 +333,13 @@ struct DriveImu {
         return hooks.imuOk;
 #else
         BNO055::Data data;
+        sample.sensor_ms=nowMs();
         const bool ok=device->read(data);
         const auto now=Clock::now();
         const double dt=std::chrono::duration<double>(now-previous).count(); previous=now;
         if (!ok) return false;
         yaw+=(Axis(data.gyroscopeDegPerSec)-bias)*dt*sign;
-        sample.yaw_deg=yaw; sample.sensor_ms=nowMs(); return std::isfinite(yaw);
+        sample.yaw_deg=yaw; return std::isfinite(yaw);
 #endif
     }
 };

@@ -78,7 +78,7 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
     out<<','<<model.frame.id<<','<<command.yolo.detections.frame_id<<',';
     if (command.yolo.detections.captured_ms>=0) out<<command.yolo.detections.captured_ms;
     out<<','<<writer.detectionsDropped<<',';
-    const bool measured=params.turn_enable && command.sensor.sensor_ms>=0;
+    const bool measured=params.turn_enable;
     if (measured && std::isfinite(command.sensor.yaw_deg)) out<<command.sensor.yaw_deg;
     out<<',';
     if (measured && std::isfinite(command.sensor.odo_cm)) out<<command.sensor.odo_cm;
@@ -279,6 +279,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         YoloResult yolo;
         CommandStamped command;
         SensorSample sensor;
+        SensorSample plannerSensor;
+        uint64_t sensorFaultId=0;
+        bool sensorFaultPending=false;
         // --debug-windows: bộ đệm cấp một lần; vòng này chỉ chép sang bộ nhớ chung, vẽ ở tiến trình preview.
         std::unique_ptr<drive::PreviewDebug> debugData;
         if (options.debugWindows) debugData.reset(new drive::PreviewDebug());
@@ -345,12 +348,21 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             }
             if (exit || stopping) break;
             if (params->turn_enable) {
+                if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
+                    sensorFaultPending=false;
                 if (eventStop && !stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng trước đọc cảm biến");
+                sensor=SensorSample{};
                 const bool imuOk=imu.read(sensor);
+                if (!imuOk) sensor.yaw_deg=std::numeric_limits<double>::quiet_NaN();
                 float cm=0;
                 const bool encoderOk=motor.GetPositionCm(&cm);
                 if (encoderOk) sensor.odo_cm=cm;
                 sensor.sensor_ok=imuOk && encoderOk && std::isfinite(sensor.yaw_deg) && std::isfinite(sensor.odo_cm);
+                // Giữ nguyên mẫu lỗi tới khi vòng an toàn đã nhận lệnh Planner xử lý đúng mẫu đó.
+                if (!sensorFaultPending) {
+                    if (!sensor.sensor_ok) { sensor.fault_id=++sensorFaultId; sensorFaultPending=true; }
+                    plannerSensor=sensor;
+                }
                 // Đọc UART/I2C có thể chậm: kiểm tuổi lệnh/ảnh lại theo giờ sau đọc.
                 now=nowMs();
                 imageFresh=image>=0 && now-image<=kStaleFrameMs;
@@ -358,8 +370,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (enabled && !imageFresh) {
                     enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true;
                 }
-            } else sensor=SensorSample{};
-            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,sensor});
+            } else { sensor=plannerSensor=SensorSample{}; sensorFaultPending=false; }
+            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor});
             double speed=0; int angle=0;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
