@@ -804,15 +804,22 @@ def t57_wait(run, predicate, message):
     return run.wait(predicate, 10, message)
 
 
-def t57_transient_window(stalled, resumed, created, stop=None, reasons=()):
+def t57_transient_window(stalled, resumed, created, stop=None, events=()):
     """Không cho bộ giám sát tuổi lệnh che lỗi cảm biến trong cửa sổ Planner."""
     need(0 <= resumed - stalled < 500 and 0 <= resumed - created < 500,
          'Stall Planner chạm cmd_max_age_ms=500', 't57_transient')
     if stop is not None:
         need(resumed <= stop < created + 500,
              'Lệnh dừng có thể do hết tuổi lệnh', 't57_transient')
-        need(any(resumed <= e[0] <= stop and e[2] == 'LOI_CAM_BIEN' for e in reasons),
-             'Lệnh dừng không có reason LOI_CAM_BIEN trước motor0', 't57_transient')
+        reason = next((i for i, e in enumerate(events) if e[0] >= resumed and e[1] == 'reason'), None)
+        pair = stopping_pair(events, stop, 't57_transient')
+        need(pair is not None and reason is not None, 'Thiếu cặp dừng/reason sau resumed', 't57_transient')
+        motor = events.index(pair[0])
+        # Cùng vòng an toàn có thể gửi hai cặp dừng trước trace reason.
+        need(events[reason][2] in ('LOI_CAM_BIEN', 'CAM_BIEN_CU') and motor < reason and
+             not any(e[1] == 'inject' or (e[1] == 'motor_speed' and e[2] != 0)
+                     for e in events[motor + 1:reason]),
+             'Reason đầu sau resumed không là LOI_CAM_BIEN/CAM_BIEN_CU cùng vòng dừng', 't57_transient')
 
 
 def t57_case(case, cfg, root):
@@ -993,8 +1000,10 @@ def t57_case(case, cfg, root):
                              'Lỗi idle rò sang phiên armed mới', 't57_idle')
                         space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
                     end = stopped(r, event[0], 500, mark=mark)
+                    t57_wait(r, lambda: any(e[0] >= resumed[0] for e in r.of('reason', mark)),
+                             'Thiếu reason sau resumed')
                     pair = stopping_pair(r.events()[mark:], event[0])
-                    t57_transient_window(stalled[0], resumed[0], created, pair[0][0], r.of('reason', mark))
+                    t57_transient_window(stalled[0], resumed[0], created, pair[0][0], r.events()[mark:])
                 elif case.startswith('t57_csv_'):
                     failed = ('imu', 'encoder') if case == 't57_csv_both' else (case[8:],)
                     # Hai giá trị riêng, khác 0 và khác mẫu hồi để bắt giữ số cũ.
@@ -1039,9 +1048,10 @@ def t57_case(case, cfg, root):
                     if case == 't57_g_pending_after_fault':
                         r.key('G')
                     end = stopped(r, event[0], 200, mark=mark)
+                reasons = ('LOI_CAM_BIEN', 'CAM_BIEN_CU') if case.startswith('t57_transient_') else (reason,)
                 r.wait(lambda: any(e[2] == 'DUNG' for e in r.of('state', mark)) and
-                       any(e[2] == reason for e in r.of('reason', mark)),
-                       message='Thiếu DUNG/' + reason)
+                       any(e[2] in reasons for e in r.of('reason', mark)),
+                       message='Thiếu DUNG/' + '/'.join(reasons))
                 r.t57_imu = r.t57_encoder = True
                 if case == 't57_lost_image_turning':
                     t57_wait(r, lambda: r.of('mask') and float(str(r.of('mask')[-1][2]).split()[1]) > event[0] + 500,
@@ -2230,16 +2240,29 @@ def selftest():
     feed.t57_encoder = False; feed.commands[:] = []
     feed.wait(lambda: True)
     assert not feed.commands
-    fault_reason = [(130, 'reason', 'LOI_CAM_BIEN', False)]
-    t57_transient_window(100, 120, 90, 140, fault_reason)
-    for stalled, resumed, created, stop, reasons in (
+    stop_pair = [(763, 'motor_speed', 0, False), (763, 'servo_angle', 0, False)]
+    fault_reason = [(763, 'state', 'DUNG', False), (763, 'reason', 'LOI_CAM_BIEN', False)]
+    next_round = [(774, 'inject', '35 imu_sample 0 0', False),
+                  (774, 'motor_speed', 0, False)]
+    trace = [(763, 'inject', '34 encoder_sample 0', False)] + stop_pair * 2
+    t57_transient_window(740, 760, 730, 763, trace + fault_reason + next_round)
+    t57_transient_window(740, 760, 730, 763,
+                         trace + [(764, e[1], e[2], e[3]) for e in fault_reason] + next_round)
+    t57_transient_window(740, 760, 730, 763, stop_pair + fault_reason + next_round)
+    t57_transient_window(740, 760, 730, 763,
+                         trace + [(763, 'state', 'DUNG', False),
+                                  (763, 'reason', 'CAM_BIEN_CU', False)] + next_round)
+    for stalled, resumed, created, stop, events in (
             (100, 600, 100, None, ()),
             (100, 120, -380, None, ()),
-            (100, 120, 90, 590, fault_reason),
-            (100, 120, 90, 140, []),
-            (100, 120, 90, 140, [(130, 'reason', 'LENH_CU', False)]),
-            (100, 120, 90, 140, [(141, 'reason', 'LOI_CAM_BIEN', False)])):
-        fails(lambda: t57_transient_window(stalled, resumed, created, stop, reasons),
+            (740, 760, 263, 763, stop_pair + fault_reason),
+            (740, 760, 730, 763, stop_pair),
+            (740, 760, 730, 763, stop_pair + [(763, 'reason', 'LENH_CU', False)] + fault_reason),
+            (740, 760, 730, 763, fault_reason),
+            (740, 760, 730, 763, fault_reason + stop_pair),
+            (740, 760, 730, 763, stop_pair + next_round + [(774, 'reason', 'LOI_CAM_BIEN', False)]),
+            (740, 760, 730, 763, stop_pair + [(763, 'motor_speed', 8, False)] + fault_reason)):
+        fails(lambda: t57_transient_window(stalled, resumed, created, stop, events),
               't57_transient')
     for failed in (('imu',), ('encoder',), ('imu', 'encoder')):
         fault_row = dict(reason='LOI_CAM_BIEN', planner_state='DUNG',
