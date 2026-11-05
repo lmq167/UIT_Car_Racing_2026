@@ -93,6 +93,7 @@ void Invalid(const ControlResult &r, size_t i) {
 void SameAsPair0(const ControlResult &r, const cv::Mat &mask, const ControlParams &p) {
     auto p0=p; p0.pair_mode=0; LaneController c0;
     const auto e=c0.Step(mask,1000,1000,p0);
+    Check(e.debug.valid_rows>0,"pair_mode 0 phải có hàng hợp lệ để so sánh");
     Check(r.debug.rows.size()==e.debug.rows.size() && r.debug.valid_rows==e.debug.valid_rows,"Số hàng khác pair_mode 0");
     for(size_t i=0;i<r.debug.rows.size();++i) {
         Check(r.debug.rows[i].valid==e.debug.rows[i].valid,"Hàng "+std::to_string(i)+" khác pair_mode 0");
@@ -262,6 +263,11 @@ void Unit(const std::string &name) {
     } else if(name=="near_invalid") {
         const auto mask=Mask(p,{{0.45,0.55},{0.3,0.7},{0.3,0.7}});
         SameAsPair0(Step(c,mask,p),mask,p);
+    } else if(name=="anchor_far_invalid") {
+        p.scan_rows={0.85,0.65,0.45}; p.Validate();
+        const auto r=Step(c,Mask(p,{{0.3,0.7},{0.3,0.7},{0.1}}),p);
+        Pair(r,0,0.3,0.7,0.5); Pair(r,1,0.3,0.7,0.5); Invalid(r,2);
+        Check(r.debug.valid_rows==2,"Đã có neo: hàng xa không ghép được phải bị bỏ");
     } else if(name=="width") {
         // Cặp mép đường rộng 0,1 vẫn hợp lệ, nhưng phép ra tâm cũ phải bỏ other.
         const auto mask=Mask(p,{{},{},{}},0.45,0.55);
@@ -434,6 +440,8 @@ void LostCommands(const std::string &name) {
     } else if(name=="near_invalid_commands") {
         // T60 P1b: không có neo thì làm như pair_mode 0, kể cả lệnh chạy.
         SameAsPair0(r,mask,p);
+        Check(plan.cmd.cms>0 && plan.cmd.cms<=p.max_speed_cms,
+              "Không có neo: tốc độ Planner phải dương và không vượt trần");
         control::Planner old;
         auto legacy=p; legacy.pair_mode=0;
         const auto before=old.Step(input,1000,legacy);

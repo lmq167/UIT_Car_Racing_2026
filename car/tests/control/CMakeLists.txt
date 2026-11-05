@@ -64,7 +64,7 @@ target_link_libraries(test_t55_pair_rules PRIVATE ucr_control opencv_imgcodecs)
 target_compile_definitions(test_t55_pair_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
 target_compile_options(test_t55_pair_rules PRIVATE -Wall -Wextra)
 foreach(scenario off 6010 single_right single_left empty exact near_previous near_other near_none
-        near_tie outside upper_gap upper_tie shift_limit near_invalid reset stale invalid_reset width offset)
+        near_tie outside upper_gap upper_tie shift_limit near_invalid anchor_far_invalid reset stale invalid_reset width offset)
     add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
     set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
