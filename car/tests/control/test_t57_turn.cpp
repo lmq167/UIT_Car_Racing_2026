@@ -76,7 +76,8 @@ void Params(const std::string& path) {
     for (int i=0;i<6;++i) {
         for (double value:{low[i],high[i],low[i]-1,high[i]+1}) {
             { std::ofstream out(path); Check(bool(out),"Không mở được YAML tạm");
-              out<<"steer_max_deg: 30\n"<<names[i]<<": "<<value<<'\n'; }
+              out<<"steer_max_deg: 30\n"<<names[i]<<": "<<value<<'\n';
+              if (i==2) out<<"turn_enable: 1\n"; }
             bool rejected=false;
             try { std::ostringstream report; auto loaded=control::ControlParams::Load(path,report); loaded.Validate(); }
             catch (const std::exception&) { rejected=true; }
