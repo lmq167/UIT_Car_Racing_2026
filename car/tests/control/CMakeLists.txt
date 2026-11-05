@@ -108,3 +108,11 @@ add_executable(test_planner test_planner.cpp)
 target_link_libraries(test_planner PRIVATE ucr_control)
 add_test(NAME control_planner COMMAND test_planner)
 set_tests_properties(control_planner PROPERTIES LABELS "control" TIMEOUT 15)
+
+add_executable(test_t58_vote_release test_t58_vote_release.cpp)
+target_link_libraries(test_t58_vote_release PRIVATE ucr_control)
+foreach(scenario hold_2of5 release_2of5 hold_1of5 start_2of5 default_3of5 stale_red
+        start_green_only repeat_batch window1 even_2of4 mixed_batch stop_while_waiting relatch_after_release)
+    add_test(NAME acc_t58_${scenario} COMMAND test_t58_vote_release ${scenario})
+    set_tests_properties(acc_t58_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()

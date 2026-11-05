@@ -152,7 +152,10 @@ void Unit() {
     }
     {
         Rig r; r.p.vote_window=6; r.latch();
-        r.green(); r.green(); Check(r.green().cmd.cms>0,"Xanh mở với cửa sổ 6");
+        r.green(); r.green(); const auto third=r.green();
+        Check(third.state==control::PlannerState::DUNG_DEN_DO && third.cmd.cms==0,
+              "Ba xanh vẫn còn ba đỏ trong cửa sổ 6 phải giữ chốt");
+        Check(r.green().cmd.cms>0,"Xanh thứ tư mới mở với cửa sổ 6");
         Check(r.step().cmd.cms>0,"Phiếu đỏ cũ không tái chốt sau xanh");
     }
     {
