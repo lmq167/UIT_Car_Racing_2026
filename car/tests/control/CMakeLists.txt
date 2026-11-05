@@ -116,3 +116,12 @@ foreach(scenario hold_2of5 release_2of5 hold_1of5 start_2of5 default_3of5 stale_
     add_test(NAME acc_t58_${scenario} COMMAND test_t58_vote_release ${scenario})
     set_tests_properties(acc_t58_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
+
+add_executable(test_t59_pair_hold test_t59_pair_hold.cpp)
+target_link_libraries(test_t59_pair_hold PRIVATE ucr_control)
+target_compile_definitions(test_t59_pair_hold PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
+target_compile_options(test_t59_pair_hold PRIVATE -Wall -Wextra)
+foreach(scenario jump_left straight_stable straight_seq far_not_worse no_row_loss flip pair0_golden)
+    add_test(NAME acc_t59_${scenario} COMMAND test_t59_pair_hold ${scenario})
+    set_tests_properties(acc_t59_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
