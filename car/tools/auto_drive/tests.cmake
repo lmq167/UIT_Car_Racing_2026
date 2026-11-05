@@ -22,7 +22,10 @@ set(_auto_cases A01 A02 A03 A04 A05 A06 A07 A08 A09 A10 A11 A12 A13 A14 A15 A16 
     A70u A70y A71u A71y A72u A72y A73 A74ua A74ub A74ya A74yb A75 A77 A78 A79 A80 A60 B5
     t57_disabled_equivalence t57_open_imu t57_open_imu_drift t57_read_imu t57_read_encoder t57_reload t57_stale_imu t57_exit_turning
     t57_lost_image_turning t57_space_during_turn t57_g_pending_after_fault
-    t57_reload_during_turn t57_init_ok_order)
+    t57_reload_during_turn t57_init_ok_order
+    t57_transient_imu_armed t57_transient_encoder_armed
+    t57_transient_imu_turning t57_transient_encoder_turning
+    t57_csv_imu t57_csv_encoder t57_csv_both)
 foreach(_auto_case IN LISTS _auto_cases)
     add_test(NAME acc_auto_${_auto_case}
         COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_auto_drive.py"
