@@ -60,7 +60,7 @@ RowDebug Scan(const cv::Mat &mask, int y, double width, const ControlParams &par
     row.valid=row.center>=0 && row.center<=mask.cols;
     return row;
 }
-struct Pair { double left=0, right=0; bool valid=false; };
+struct Pair { double left=0, right=0; bool valid=false, left_line=false, right_line=false; };
 RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams &params,
                   LaneRef ref, bool near, const Pair &anchor, Pair &selected) {
     int begin, end; bool surface;
@@ -119,7 +119,20 @@ RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams 
         }
         // Duyệt từ trái sang phải, giữ cặp trái khi điểm bằng nhau.
         if(!selected.valid || (match && !best_match) || (match==best_match && score<best)) {
-            selected={left,right,true}; best=score; best_match=match;
+            selected={left,right,true,edges[i-1].line,edges[i].line}; best=score; best_match=match;
+        }
+    }
+    if(!selected.valid && !near && anchor.valid && (anchor.left_line || anchor.right_line)) {
+        const bool keep_right=anchor.right_line && (ref==LaneRef::RIGHT || !anchor.left_line);
+        const double target=keep_right ? anchor.right : anchor.left;
+        double closest=std::numeric_limits<double>::infinity();
+        for(double line:row.lines) {
+            const double delta=std::abs(line-target);
+            if(delta<=params.pair_max_shift_frac*mask.cols && delta<closest) {
+                selected={keep_right ? line-width : line,keep_right ? line : line+width,
+                          true,!keep_right,keep_right};
+                closest=delta;
+            }
         }
     }
     if(!selected.valid) return row;
@@ -165,6 +178,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         if(maximum>2) throw std::runtime_error("Mặt nạ có chỉ số lớp ngoài 0/1/2");
         double weighted=0, total=0;
         Pair anchor;
+        std::vector<Pair> pairs;
+        std::vector<double> width_ratios;
         for(size_t i=0;i<params.scan_rows.size();++i) {
             const int y=std::min(mask.rows-1,int(params.scan_rows[i]*mask.rows));
             RowDebug row;
@@ -174,10 +189,19 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                 const Pair previous{near_left_,near_right_,have_near_};
                 row=ScanPair(mask,y,params.lane_width_frac[i]*mask.cols,params,ref,
                              i==0,i==0 ? previous : anchor,selected);
-                if(row.valid) anchor=selected;
+                if(selected.valid && row.valid) anchor=selected;
                 if(i==0) {
-                    have_near_=row.valid;
+                    have_near_=selected.valid && row.valid;
                     if(have_near_) { near_left_=selected.left; near_right_=selected.right; }
+                }
+                if(!selected.valid) row=Scan(mask,y,params.lane_width_frac[i]*mask.cols,params,ref);
+                pairs.push_back(selected);
+                const double width=params.lane_width_frac[i]*mask.cols;
+                const double gap=selected.right-selected.left;
+                width_ratios.push_back(0);
+                if(row.valid && selected.left_line && selected.right_line &&
+                   gap>=params.lane_width_min_ratio*width && gap<=params.lane_width_max_ratio*width) {
+                    width_ratios.back()=gap/width;
                 }
             }
             if(row.valid) {
@@ -186,6 +210,39 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                 total+=params.row_weights[i];
             }
             result.debug.rows.push_back(row);
+        }
+        if(params.pair_mode==1) {
+            weighted=0; total=0;
+            for(size_t i=0;i<result.debug.rows.size();++i) {
+                auto &row=result.debug.rows[i];
+                if(!row.valid) continue;
+                const auto &pair=pairs[i];
+                const double nominal=params.lane_width_frac[i]*mask.cols, pair_gap=pair.right-pair.left;
+                // Mép giả chỉ bị thay khi cặp trông như một làn đủ bề rộng; ngoài miền đó giữ luật B3 (mép thảm ẩn).
+                if(pair.left_line!=pair.right_line && pair_gap>=params.lane_width_min_ratio*nominal &&
+                   pair_gap<=params.lane_width_max_ratio*nominal) {
+                    double k=0;
+                    size_t nearest=width_ratios.size();
+                    for(size_t j=0;j<width_ratios.size();++j) {
+                        const size_t distance=i>j ? i-j : j-i;
+                        if(width_ratios[j]>0 && distance<nearest) {
+                            k=width_ratios[j]; nearest=distance;
+                        }
+                    }
+                    if(k>0) {
+                        const double width=k*params.lane_width_frac[i]*mask.cols;
+                        const double replacement=pair.left_line ? pair.left+width : pair.right-width;
+                        if(replacement>=0 && replacement<=mask.cols) {
+                            if(pair.left_line) { row.left=pair.left; row.right=replacement; }
+                            else { row.right=pair.right; row.left=replacement; }
+                            row.center=(row.left+row.right)/2;
+                            if(i==0 && have_near_) { near_left_=row.left; near_right_=row.right; }
+                        }
+                    }
+                }
+                weighted+=params.row_weights[i]*(row.center-(mask.cols/2.0+params.center_offset_frac*mask.cols))/(mask.cols/2.0);
+                total+=params.row_weights[i];
+            }
         }
         if(total>0) result.debug.e=Clamp(weighted/total,-1,1);
         // Hàng trọng số 0 không được tạo lệnh khi các hàng có trọng số đều hỏng.
