@@ -25,7 +25,7 @@ set(_auto_cases A01 A02 A03 A04 A05 A06 A07 A08 A09 A10 A11 A12 A13 A14 A15 A16 
     t57_reload_during_turn t57_init_ok_order
     t57_transient_imu_armed t57_transient_encoder_armed
     t57_transient_imu_turning t57_transient_encoder_turning
-    t57_csv_imu t57_csv_encoder t57_csv_both)
+    t57_transient_idle t57_csv_imu t57_csv_encoder t57_csv_both)
 foreach(_auto_case IN LISTS _auto_cases)
     add_test(NAME acc_auto_${_auto_case}
         COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_auto_drive.py"

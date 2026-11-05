@@ -41,7 +41,7 @@ CASES += ['t57_disabled_equivalence', 't57_open_imu', 't57_open_imu_drift',
           't57_g_pending_after_fault', 't57_reload_during_turn', 't57_init_ok_order',
           't57_transient_imu_armed', 't57_transient_encoder_armed',
           't57_transient_imu_turning', 't57_transient_encoder_turning',
-          't57_csv_imu', 't57_csv_encoder', 't57_csv_both']
+          't57_transient_idle', 't57_csv_imu', 't57_csv_encoder', 't57_csv_both']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -788,9 +788,9 @@ def t57_fault_csv(rows, failed):
 
 def t57_sample(run):
     if run.t57_imu:
-        run.inject('imu_sample 0 0')
+        run.inject('imu_sample {} 0'.format(getattr(run, 't57_yaw', 0)))
     if run.t57_encoder:
-        run.inject('encoder_sample 0')
+        run.inject('encoder_sample {}'.format(getattr(run, 't57_odo', 0)))
 
 
 def t57_feed(run):
@@ -813,6 +813,17 @@ def t57_feed(run):
 
 def t57_wait(run, predicate, message):
     return run.wait(predicate, 10, message)
+
+
+def t57_transient_window(stalled, resumed, created, stop=None, reasons=()):
+    """Không cho bộ giám sát tuổi lệnh che lỗi cảm biến trong cửa sổ Planner."""
+    need(0 <= resumed - stalled < 500 and 0 <= resumed - created < 500,
+         'Stall Planner chạm cmd_max_age_ms=500', 't57_transient')
+    if stop is not None:
+        need(resumed <= stop < created + 500,
+             'Lệnh dừng có thể do hết tuổi lệnh', 't57_transient')
+        need(any(resumed <= e[0] <= stop and e[2] == 'LOI_CAM_BIEN' for e in reasons),
+             'Lệnh dừng không có reason LOI_CAM_BIEN trước motor0', 't57_transient')
 
 
 def t57_case(case, cfg, root):
@@ -863,12 +874,19 @@ def t57_case(case, cfg, root):
         return
     def setup(run):
         rows = mask_rows('straight')
-        if not case.endswith('_armed'):
+        if not case.endswith('_armed') and case != 't57_transient_idle':
             for row in rows:
                 end = max(i for i, value in enumerate(row) if value)
                 for x in range(end):
                     row[x] = 1
         (run.root / 'straight.png').write_bytes(png_bytes(rows))
+        if case == 't57_transient_idle':
+            opened = mask_rows('straight')
+            for row in opened:
+                end = max(i for i, value in enumerate(row) if value)
+                for x in range(end):
+                    row[x] = 1
+            (run.root / 'left.png').write_bytes(png_bytes(opened))
         run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
         run.seq = 2
 
@@ -876,6 +894,9 @@ def t57_case(case, cfg, root):
     previous = YOLO_BOXES.get(mode)
     YOLO_BOXES[mode] = [('left', 800)]
     modes = ('term', 'esc', 'kill_preview') if case == 't57_exit_turning' else ('single',)
+    idle = case == 't57_transient_idle'
+    if idle:
+        modes = ('imu', 'encoder')
     values = {'turn_enable': 1, 'start_wait_green': 0, 'vote_min': 1,
               'yolo_every_n': 1, 'mask_max_age_ms': 1000}
     if case.startswith('t57_transient_'):
@@ -883,7 +904,9 @@ def t57_case(case, cfg, root):
     try:
         for action in modes:
             with running(cfg, root / action, values=values,
-                         setup=setup, no_yolo=False, yolo_schedule=((1, mode),)) as r:
+                         setup=setup, no_yolo=False,
+                         schedule=((1, 'straight'), (120, 'left')) if idle else ((1, 'straight'),),
+                         yolo_schedule=((1, 'empty'), (120, mode)) if idle else ((1, mode),)) as r:
                 t57_feed(r); r.boot()
                 if case == 't57_init_ok_order':
                     kinds = [e[1] for e in r.events()]
@@ -895,10 +918,11 @@ def t57_case(case, cfg, root):
                     r.t57_imu = r.t57_encoder = False
                     r.finish(); continue
                 mark = len(r.events()); r.key('G')
-                if case.endswith('_armed'):
+                if case.endswith('_armed') or idle:
                     t57_wait(r, lambda: any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
                              'Mép đóng chưa bám làn')
-                    t57_wait(r, lambda: r.of('detections', mark), 'Chưa có biển trái để armed')
+                    if not idle:
+                        t57_wait(r, lambda: r.of('detections', mark), 'Chưa có biển trái để armed')
                     r.frames(4)
                     need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', mark)),
                          'Mép đóng vẫn vào rẽ', 'setup')
@@ -950,21 +974,46 @@ def t57_case(case, cfg, root):
                 reason = 'LOI_CAM_BIEN'
                 if case.startswith('t57_transient_'):
                     # Chặn Planner, hồi mẫu ngay sau ack lỗi, trước kỳ lệnh kế.
-                    r.inject('controller_stall'); r.frames(2)
+                    stalled = r.inject('controller_stall'); r.frames(2)
                     before = len(r.of('command'))
+                    created = float(str(r.of('command')[-1][2]).split()[1])
                     r.t57_imu = r.t57_encoder = False
-                    sensor = 'encoder' if '_encoder_' in case else 'imu'
+                    sensor = action if idle else ('encoder' if '_encoder_' in case else 'imu')
                     event = r.inject(sensor + '_read_fail')
                     r.inject('imu_sample 0 0' if sensor == 'imu' else 'encoder_sample 0')
                     need(len(r.of('command')) == before,
                          'Planner chưa dừng trong cửa sổ tiêm lỗi/hồi mẫu', 'setup')
                     r.t57_imu = r.t57_encoder = True
-                    r.inject('controller_resume')
+                    resumed = r.inject('controller_resume')
+                    t57_transient_window(stalled[0], resumed[0], created)
+                    if idle:
+                        def still_idle():
+                            need(not any(e[2] == 'LOI_CAM_BIEN' for e in r.of('reason', mark)) and
+                                 all(e[2] == 'BAM_LAN' for e in r.of('state', mark)) and
+                                 not any(motor_zero(e) for e in r.events()[mark:]),
+                                 'Lỗi chưa armed làm dừng/đổi pha', 't57_idle')
+                        r.frames(4, still_idle); still_idle()
+                        need(r.of('command', mark) and
+                             float(str(r.of('command')[-1][2]).split()[1]) >= resumed[0],
+                             'Planner chưa nhận mẫu sau lỗi idle', 'setup')
+                        need(int(str(r.of('frame')[-1][2]).split()[0]) < 120,
+                             'Biển tới trước khi kiểm xong lỗi idle', 'setup')
+                        t57_wait(r, lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', mark)),
+                                 'Lỗi idle chưa giải: biển mới/mép mở không vào RE_TRAI')
+                        need(not any(e[2] == 'LOI_CAM_BIEN' for e in r.of('reason', mark)),
+                             'Lỗi idle rò sang phiên armed mới', 't57_idle')
+                        space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
                     end = stopped(r, event[0], 500, mark=mark)
+                    pair = stopping_pair(r.events()[mark:], event[0])
+                    t57_transient_window(stalled[0], resumed[0], created, pair[0][0], r.of('reason', mark))
                 elif case.startswith('t57_csv_'):
                     failed = ('imu', 'encoder') if case == 't57_csv_both' else (case[8:],)
-                    t57_wait(r, lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != ''
-                                            for row in r.rows()), 'Chưa có mẫu CSV tốt trước lỗi')
+                    # Hai giá trị riêng, khác 0 và khác mẫu hồi để bắt giữ số cũ.
+                    r.t57_yaw, r.t57_odo = 17, 23
+                    t57_wait(r, lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != '' and
+                                            float(row['yaw_deg']) == 17 and float(row['odo_cm']) == 23
+                                            for row in r.rows()), 'Chưa có mẫu CSV tốt 17/23 trước lỗi')
+                    r.t57_yaw = r.t57_odo = 0
                     r.t57_imu = 'imu' not in failed
                     r.t57_encoder = 'encoder' not in failed
                     for sensor in failed:
@@ -2236,12 +2285,28 @@ def selftest():
     feed = SensorFeed(); t57_feed(feed)
     feed.wait(lambda: True)
     assert feed.commands == ['imu_sample 0 0', 'encoder_sample 0']
+    feed.t57_yaw, feed.t57_odo = 17, 23
+    feed.commands[:] = []
+    feed.wait(lambda: True)
+    assert feed.commands == ['imu_sample 17 0', 'encoder_sample 23']
+    feed.t57_yaw = feed.t57_odo = 0
     feed.t57_imu = False; feed.commands[:] = []
     feed.wait(lambda: True)
     assert feed.commands == ['encoder_sample 0']
     feed.t57_encoder = False; feed.commands[:] = []
     feed.wait(lambda: True)
     assert not feed.commands
+    fault_reason = [(130, 'reason', 'LOI_CAM_BIEN', False)]
+    t57_transient_window(100, 120, 90, 140, fault_reason)
+    for stalled, resumed, created, stop, reasons in (
+            (100, 600, 100, None, ()),
+            (100, 120, -380, None, ()),
+            (100, 120, 90, 590, fault_reason),
+            (100, 120, 90, 140, []),
+            (100, 120, 90, 140, [(130, 'reason', 'LENH_CU', False)]),
+            (100, 120, 90, 140, [(141, 'reason', 'LOI_CAM_BIEN', False)])):
+        fails(lambda: t57_transient_window(stalled, resumed, created, stop, reasons),
+              't57_transient')
     for failed in (('imu',), ('encoder',), ('imu', 'encoder')):
         fault_row = dict(reason='LOI_CAM_BIEN', planner_state='DUNG',
                          yaw_deg='' if 'imu' in failed else '0',
