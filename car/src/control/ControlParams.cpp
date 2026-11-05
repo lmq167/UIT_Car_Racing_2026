@@ -23,6 +23,12 @@ struct Parameter {
 };
 // Nguồn duy nhất cho mặc định, miền, nạp và in bảng (L2).
 const Parameter table[] = {
+    {"turn_enable",0,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
+    {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
+    {"turn_steer_deg",25.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
+    {"turn_arm_cm",80.0,&ControlParams::turn_arm_cm,10,300,"cm","Quãng chờ ngã rẽ tối đa"},
+    {"turn_max_cm",70.0,&ControlParams::turn_max_cm,10,200,"cm","Quãng rẽ tối đa"},
+    {"turn_max_ms",8000,&ControlParams::turn_max_ms,1000,20000,"ms","Thời gian rẽ tối đa"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
     {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},
@@ -115,6 +121,8 @@ void ControlParams::Validate() const {
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");
     Require(lost_cms<=max_speed_cms,"lost_cms / max_speed_cms");
     Require(vote_min<=vote_window,"vote_min / vote_window");
+    // Chỉ ràng buộc khi bật rẽ: yaml cũ có steer_max_deg nhỏ vẫn nạp được lúc rẽ tắt.
+    Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
     Require(right_lost_ms==0 || (right_lost_ms>=200 && right_lost_ms<=2000),"right_lost_ms");

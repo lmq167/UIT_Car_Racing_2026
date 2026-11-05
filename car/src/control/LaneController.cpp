@@ -7,6 +7,7 @@
 namespace control {
 namespace {
 double Clamp(double value, double low, double high) { return std::max(low,std::min(value,high)); }
+}
 RowDebug ScanLines(const cv::Mat &mask, int y, int &begin, int &end, bool &surface) {
     RowDebug row; row.y=y;
     const auto *pixels=mask.ptr<unsigned char>(y);
@@ -32,6 +33,7 @@ RowDebug ScanLines(const cv::Mat &mask, int y, int &begin, int &end, bool &surfa
     }
     return row;
 }
+namespace {
 RowDebug Scan(const cv::Mat &mask, int y, double width, const ControlParams &params, LaneRef ref) {
     int begin, end; bool surface;
     auto row=ScanLines(mask,y,begin,end,surface);

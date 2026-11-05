@@ -10,6 +10,8 @@
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
 #include "hardware/Motor.h"
 #include "hardware/Servo.h"
+#include "sensor/BNO055.h"
+#include "common/ConfigValue.h"
 #endif
 #include <algorithm>
 #include <array>
@@ -248,6 +250,15 @@ struct DriveMotor {
         return device.LastWriteOk();
 #endif
     }
+    bool GetPositionCm(float* cm) {
+        HardwareCall call(1);
+        if (hardwareFault) return false;
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        *cm=static_cast<float>(hooks.odoCm); return hooks.encoderOk;
+#else
+        return device.GetPositionCm(cm);
+#endif
+    }
     bool EmergencyStop() noexcept {
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
         const bool ok = !fakeMotorFail();
@@ -255,6 +266,76 @@ struct DriveMotor {
         return ok;
 #else
         return device.EmergencyStop();
+#endif
+    }
+};
+struct SensorSample {
+    double yaw_deg=0, odo_cm=0;
+    bool sensor_ok=false;
+    int64_t sensor_ms=-1;
+};
+struct DriveImu {
+    bool initialized=false;
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+    std::unique_ptr<BNO055> device;
+    int axis=2;
+    double sign=1, bias=0, yaw=0;
+    Clock::time_point previous;
+    double Axis(const BNO055::Vector3& v) const { return axis==0 ? v.x : axis==1 ? v.y : v.z; }
+#endif
+    void init(const Paths& paths) {
+        trace("imu_init");
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        (void)paths;
+        { HardwareCall call(2); if (fakeOpenFail("imu")) throw Failure(1,"Lỗi khởi tạo IMU"); }
+        trace("imu_drift");
+        { HardwareCall call(2); if (fakeOpenFail("imu_drift")) throw Failure(1,"Lỗi đo trôi IMU"); }
+#else
+        cv::FileStorage config(paths.root+"/config.yaml",cv::FileStorage::READ);
+        if (!config.isOpened()) throw Failure(1,"Không đọc được config.yaml cho IMU");
+        std::string calibration; int drift;
+        common::ReadConfigValue("imu_calibration_file",config["imu_calibration_file"],calibration);
+        common::ReadConfigValue("imu_drift_ms",config["imu_drift_ms"],drift);
+        common::ReadConfigValue("yaw_axis",config["yaw_axis"],axis);
+        common::ReadConfigValue("yaw_sign",config["yaw_sign"],sign);
+        if (calibration.empty() || drift<1 || axis<0 || axis>2 || (sign!=1 && sign!=-1))
+            throw Failure(1,"Cấu hình IMU không hợp lệ");
+        device.reset(new BNO055("/dev/i2c-1",calibration));
+        { HardwareCall call(2); if (!device->initialize()) throw Failure(1,"Lỗi khởi tạo IMU"); }
+        trace("imu_drift");
+        { HardwareCall call(2); if (!device->measureYawRateDrift(std::chrono::milliseconds(drift)))
+            throw Failure(1,"Lỗi đo trôi IMU"); }
+        bias=device->yawRateBiasDegPerSec();
+        if (axis!=2) {
+            double sum=0; int count=0;
+            const auto end=Clock::now()+std::chrono::milliseconds(drift);
+            do {
+                BNO055::Data data;
+                { HardwareCall call(2); if (!device->read(data)) throw Failure(1,"Lỗi đo trôi trục IMU"); }
+                sum+=Axis(data.gyroscopeDegPerSec); ++count;
+                ::poll(nullptr,0,10);
+            } while (Clock::now()<end);
+            bias=sum/count;
+        }
+        if (!std::isfinite(bias)) throw Failure(1,"Độ trôi IMU không hữu hạn");
+        previous=Clock::now();
+#endif
+        initialized=true;
+    }
+    bool read(SensorSample& sample) {
+        HardwareCall call(2);
+        if (hardwareFault) return false;
+#if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
+        sample.yaw_deg=hooks.yawDeg; sample.sensor_ms=hooks.sensorMs;
+        return hooks.imuOk;
+#else
+        BNO055::Data data;
+        const bool ok=device->read(data);
+        const auto now=Clock::now();
+        const double dt=std::chrono::duration<double>(now-previous).count(); previous=now;
+        if (!ok) return false;
+        yaw+=(Axis(data.gyroscopeDegPerSec)-bias)*dt*sign;
+        sample.yaw_deg=yaw; sample.sensor_ms=nowMs(); return std::isfinite(yaw);
 #endif
     }
 };

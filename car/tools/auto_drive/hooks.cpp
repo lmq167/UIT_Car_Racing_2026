@@ -23,7 +23,15 @@ void pollHooks(int64_t now, const std::function<void(const char*,const std::stri
             if (!(in>>n) || !std::isfinite(n)) throw std::runtime_error("hook_error: đối số không hữu hạn");
             return n;
         };
-        if (cmd=="camera_stall") hooks.cameraStall=true;
+        if (cmd=="imu_sample") {
+            const double yaw=number(), age=number();
+            if (age<0 || age>double(std::numeric_limits<int64_t>::max()/2) || std::floor(age)!=age)
+                throw std::runtime_error("hook_error: tuổi IMU không hợp lệ");
+            hooks.yawDeg=yaw; hooks.sensorMs=now-static_cast<int64_t>(age); hooks.imuOk=true;
+        } else if (cmd=="encoder_sample") { hooks.odoCm=number(); hooks.encoderOk=true; }
+        else if (cmd=="imu_read_fail") hooks.imuOk=false;
+        else if (cmd=="encoder_read_fail") hooks.encoderOk=false;
+        else if (cmd=="camera_stall") hooks.cameraStall=true;
         else if (cmd=="camera_resume") hooks.cameraStall=false;
         else if (cmd=="camera_pause_600ms") hooks.cameraPauseUntil=now+600;
         else if (cmd=="road_stall") hooks.roadStall=true;

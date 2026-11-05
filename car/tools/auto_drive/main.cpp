@@ -13,6 +13,7 @@ struct ControlInput {
     uint64_t epoch=0;
     std::shared_ptr<const control::ControlParams> params;
     YoloResult yolo;
+    SensorSample sensor;
 };
 struct CommandStamped {
     control::Plan plan;
@@ -22,6 +23,7 @@ struct CommandStamped {
     int64_t created_ms=-1, image_ms=-1;
     double loop_ms=0;
     YoloResult yolo;
+    SensorSample sensor;
 };
 std::string checkModel(const std::string& dir,const std::string& name) {
     const auto base=dir+"/"+name;
@@ -75,7 +77,12 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
     if (command.created_ms>=0) out<<command.created_ms;
     out<<','<<model.frame.id<<','<<command.yolo.detections.frame_id<<',';
     if (command.yolo.detections.captured_ms>=0) out<<command.yolo.detections.captured_ms;
-    out<<','<<writer.detectionsDropped<<'\n';
+    out<<','<<writer.detectionsDropped<<',';
+    const bool measured=params.turn_enable && command.sensor.sensor_ms>=0;
+    if (measured && std::isfinite(command.sensor.yaw_deg)) out<<command.sensor.yaw_deg;
+    out<<',';
+    if (measured && std::isfinite(command.sensor.odo_cm)) out<<command.sensor.odo_cm;
+    out<<'\n';
     return out.str();
 }
 
@@ -84,6 +91,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
               const perception::InfoJson& info,std::unique_ptr<perception::IInferEngine>& engine,
               const perception::YoloInfo* yoloInfo,std::unique_ptr<perception::IInferEngine>& yoloEngine) {
     DriveMotor motor(kReverseMotor); DriveServo servo;
+    DriveImu imu;
     terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
     std::unique_ptr<Camera> camera;
     drive::PreviewOptions previewOptions;
@@ -120,6 +128,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         if (stopping) throw SignalStop{};
         InitSignalMask initMask;
         watchdog.reset(new Watchdog(motor,servo,paths));
+        if (params->turn_enable) imu.init(paths);
         trace("state","CHO_SAN_SANG");
         if (!motor.init()) throw Failure(1,"Motor::Init thất bại");
         if (!motor.SetSpeedCms(0)) throw Failure(1,"Không xác nhận motor 0 sau Init");
@@ -218,6 +227,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         pi.mask=input.model.mask; pi.mask_ms=input.model.frame.captured_ms;
                         pi.image_ms=input.image_ms;
                         pi.detections=input.yolo.detections; pi.yolo_enabled=!options.noYolo;
+                        pi.yaw_deg=input.sensor.yaw_deg; pi.odo_cm=input.sensor.odo_cm;
+                        pi.sensor_ok=input.sensor.sensor_ok; pi.sensor_ms=input.sensor.sensor_ms;
                         if (epoch!=input.epoch) {
                             planner.Reset(!options.noYolo); epoch=input.epoch; goPending=input.enabled;
                         }
@@ -227,13 +238,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
-                            plan.state==control::PlannerState::DUNG_DEN_DO || !input.enabled) goPending=false;
+                            plan.state==control::PlannerState::DUNG_DEN_DO ||
+                            (input.params->turn_enable && (plan.state==control::PlannerState::RE_TRAI ||
+                             plan.state==control::PlannerState::RE_PHAI ||
+                             (plan.state==control::PlannerState::DUNG && plan.reason!="SPACE"))) || !input.enabled) goPending=false;
                         if (input.enabled && hooks.overridePending.load()) {
                             plan.cmd={hooks.overrideCms.load(),hooks.overrideDeg.load()};
                             hooks.overridePending=false;
                         }
                         const double loop=std::max(interval,std::chrono::duration<double,std::milli>(Clock::now()-start).count());
-                        CommandStamped command{plan,input.model,input.params,++id,epoch,now,input.image_ms,loop,input.yolo};
+                        CommandStamped command{plan,input.model,input.params,++id,epoch,now,input.image_ms,loop,input.yolo,input.sensor};
                         if (commands.offer(command)) trace("command",std::to_string(id)+" "+std::to_string(now));
                     } catch (...) { controllerFault=true; }
                     const auto target=start+std::chrono::milliseconds(input.params->control_period_ms+hooks.controlDelay.load());
@@ -251,6 +265,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         watchdog->heartbeat=nowMs(); watchdog->initialized=true;
         const auto boot=nowMs();
         bool enabled=false,ready=false,exit=false;
+        bool turnFault=false;
+        double safetyPeakMs=0;
+        auto safetyPrevious=Clock::now();
         std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
         uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0;
         int every=params->record_every_n;
@@ -260,12 +277,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         ModelResult model;
         YoloResult yolo;
         CommandStamped command;
+        SensorSample sensor;
         // --debug-windows: bộ đệm cấp một lần; vòng này chỉ chép sang bộ nhớ chung, vẽ ở tiến trình preview.
         std::unique_ptr<drive::PreviewDebug> debugData;
         if (options.debugWindows) debugData.reset(new drive::PreviewDebug());
         uint64_t debugFrame=0,debugCommand=0;
         while (!exit && !stopping) {
-            const auto now=nowMs(); watchdog->heartbeat=now;
+            const auto safetyStart=Clock::now();
+            const double safetyInterval=std::chrono::duration<double,std::milli>(safetyStart-safetyPrevious).count();
+            safetyPrevious=safetyStart;
+            auto now=nowMs(); watchdog->heartbeat=now;
             try { pollHooks(now,trace); }
             catch (...) { trace("hook_error","CTRL invalide"); throw; }
             const auto child=preview.pollChild();
@@ -277,10 +298,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             if (now-boot>kFrameTimeoutMs && (image<0 || model.mask.empty() || !preview.wasShown()))
                 throw Failure(1,"Quá hạn ảnh/mask/preview đầu tiên");
             bool eventGo=false,eventStop=false,forceLog=false;
-            const bool imageFresh=image>=0 && now-image<=kStaleFrameMs;
-            const bool maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
+            bool imageFresh=image>=0 && now-image<=kStaleFrameMs;
+            bool maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
             if (enabled && !imageFresh) { enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true; }
             if (controllerFault.exchange(false)) { enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch; eventStop=true; forceLog=true; }
+            if (enabled && command.epoch==epoch && command.created_ms>=0 &&
+                now-command.created_ms<=params->cmd_max_age_ms && params->turn_enable &&
+                command.plan.state==control::PlannerState::DUNG && command.plan.reason!="SPACE" &&
+                command.plan.reason!=control::kMissingImageReason) {
+                enabled=false; turnFault=true; latch=command.plan.reason; ++epoch; eventStop=true; forceLog=true;
+            }
             const auto keys=preview.pollKeys();
             const bool batchStop=keys.find(' ')!=std::string::npos;
             for (unsigned char key:keys) {
@@ -289,11 +316,12 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 trace("key",std::string(1,key));
                 if (key=='E' || key=='3') { exit=true; eventStop=true; break; }
                 if (key==' ') {
-                    enabled=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
+                    enabled=false; turnFault=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
                     if (!stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng Space");
                 } else if (key=='g' || key=='G') {
                     eventGo=true; forceLog=true;
                     if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
+                    else if (turnFault) trace("go","ignored "+latch);
                     else if (!imageFresh || !maskFresh) trace("go",imageFresh ? "ignored MAT_NAN_CU" : "ignored MAT_ANH");
                     else if (!enabled) { enabled=true; latch.clear(); reason="BAM_LAN"; ++epoch; }
                 } else if (key=='r' || key=='R') {
@@ -303,16 +331,34 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             // Toàn bộ bộ tham số bất biến được thay một lần sau khi kiểm đủ.
                             std::ostringstream table;
                             auto replacement=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,table));
+                            if (replacement->turn_enable && !imu.initialized)
+                                throw std::runtime_error("Không bật rẽ bằng R: IMU chưa khởi tạo; cần khởi động lại chương trình");
                             if (yoloInfo && yoloInfo->conf_threshold>float(std::min({replacement->red_conf_min,replacement->green_conf_min,replacement->off_conf_min})))
                                 throw std::runtime_error("conf_threshold YOLO cao hơn conf_min đèn");
                             params=replacement; every=params->record_every_n; yoloEvery=params->yolo_every_n; ++epoch;
                             std::cout<<table.str()<<std::flush; trace("reload","accepted");
-                        } catch (...) { trace("reload","error"); }
+                        } catch (const std::exception& e) { std::cerr<<"Lỗi nạp control.yaml: "<<e.what()<<'\n'; trace("reload","error"); }
+                        catch (...) { trace("reload","error"); }
                     }
                 }
             }
             if (exit || stopping) break;
-            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo});
+            if (params->turn_enable) {
+                if (eventStop && !stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng trước đọc cảm biến");
+                const bool imuOk=imu.read(sensor);
+                float cm=0;
+                const bool encoderOk=motor.GetPositionCm(&cm);
+                if (encoderOk) sensor.odo_cm=cm;
+                sensor.sensor_ok=imuOk && encoderOk && std::isfinite(sensor.yaw_deg) && std::isfinite(sensor.odo_cm);
+                // Đọc UART/I2C có thể chậm: kiểm tuổi lệnh/ảnh lại theo giờ sau đọc.
+                now=nowMs();
+                imageFresh=image>=0 && now-image<=kStaleFrameMs;
+                maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
+                if (enabled && !imageFresh) {
+                    enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true;
+                }
+            } else sensor=SensorSample{};
+            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,sensor});
             double speed=0; int angle=0;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
@@ -353,8 +399,14 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 ready=true; trace("ready");
             }
             const bool newCommand=command.id && command.id!=lastLog;
+            if (params->turn_enable) {
+                safetyPeakMs=std::max({safetyPeakMs,safetyInterval,
+                    std::chrono::duration<double,std::milli>(Clock::now()-safetyStart).count()});
+                command.loop_ms=std::max(command.loop_ms,safetyPeakMs);
+            }
             if (newCommand) {
                 timings.emplace_back(now,command.loop_ms);
+                safetyPeakMs=0;
                 while (!timings.empty() && now-timings.front().first>5000) timings.pop_front();
                 std::vector<double> values;
                 for (const auto& t:timings) values.push_back(t.second);

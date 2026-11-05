@@ -24,6 +24,7 @@ endfunction()
 if(UCR_WITH_TRT)
     add_executable(ucr_auto ${_auto_sources}
         "${_auto_root}/src/hardware/Motor.cpp" "${_auto_root}/src/hardware/Servo.cpp"
+        "${_auto_root}/src/sensor/BNO055.cpp"
         "${_auto_root}/src/common/Logger.cpp")
     configure_auto(ucr_auto)
     target_link_libraries(ucr_auto PRIVATE perception_trt "${TENSORRT_LIBRARY}")

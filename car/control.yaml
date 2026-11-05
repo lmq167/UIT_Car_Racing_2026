@@ -43,3 +43,9 @@ green_box_min_area_frac: 0.0001 # Diện tích xanh tối thiểu, W*H
 off_box_min_area_frac: 0.0001 # Diện tích tắt tối thiểu, W*H
 approach_cms: 5.0 # Tốc độ tiếp cận đỏ, cm/s
 red_stop_x_frac: 0.90 # Mép phải hộp đỏ để dừng, W
+turn_enable: 0 # Rẽ theo biển bằng IMU và encoder; mặc định tắt
+turn_yaw_deg: 80 # Góc quay đích, độ (30–120)
+turn_steer_deg: 25 # Góc lái cố định, độ (5 đến steer_max_deg)
+turn_arm_cm: 80 # Quãng chờ ngã rẽ tối đa, cm (10–300)
+turn_max_cm: 70 # Quãng đang rẽ tối đa, cm (10–200)
+turn_max_ms: 8000 # Thời gian đang rẽ tối đa, ms (1000–20000)
