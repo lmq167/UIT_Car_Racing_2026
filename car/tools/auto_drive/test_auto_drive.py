@@ -34,7 +34,7 @@ CASES = ['A{:02d}'.format(i) for i in list(range(1, 36)) + list(range(40, 49))]
 CASES += ['A07b', 'A08b', 'A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h',
           'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51',
           'A70u', 'A70y', 'A71u', 'A71y', 'A72u', 'A72y', 'A73',
-          'A74ua', 'A74ub', 'A74ya', 'A74yb', 'A75', 'A77', 'A78', 'A79', 'A80', 'A60']
+          'A74ua', 'A74ub', 'A74ya', 'A74yb', 'A75', 'A77', 'A78', 'A79', 'A80', 'A81', 'A60']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -57,7 +57,7 @@ YOLO_BOXES = dict(empty=[], green=[('green', 800)], off=[('off', 800)],
 BOUNDS = {
     'control_period_ms': (50, 20, 100, 'ms'), 'mask_max_age_ms': (300, 50, 1000, 'ms'),
     'cmd_max_age_ms': (200, 50, 500, 'ms'), 'det_max_age_ms': (500, 50, 2000, 'ms'),
-    'max_speed_cms': (10, 0, 10, 'cm/s'), 'cruise_cms': (8, 0, 10, 'cm/s'),
+    'max_speed_cms': (10, 0, 20, 'cm/s'), 'cruise_cms': (8, 0, 20, 'cm/s'),
     'min_cms': (4, 0, 10, 'cm/s'), 'lost_cms': (4, 0, 10, 'cm/s'),
     'slow_per_deg': (0.1, 0, 1, 'cm/s/'), 'steer_max_deg': (30, 0, 40, ''),
     'steer_rate_dps': (200, 10, 1000, '/s'), 'kp': (30, 0, 200, ''),
@@ -158,7 +158,7 @@ def cap(events):
     # A33: kiểm cả lệnh thử gửi bị fail; không cho lọt giá trị ngoài lớp kẹp.
     for _, kind, value, _ in events:
         if kind in ('motor_speed', 'servo_angle'):
-            limit = 10 if kind == 'motor_speed' else 40
+            limit = 20 if kind == 'motor_speed' else 40
             need(math.isfinite(value) and abs(value) <= limit, 'Vượt trần cứng: {} {}'.format(kind, value), 'invariant_cap')
 
 
@@ -597,6 +597,16 @@ def speed_is(run, speed):
     need(sent and all(abs(v - speed) < 1e-6 for v in sent), 'Tốc độ không dùng cruise đã chọn: ' + repr(sent))
 
 
+def cap20_curve(rows):
+    curved = [row for row in rows if abs(float(row['requested_steer_deg'])) >= 20]
+    need(len(curved) >= 3, 'Thiếu mẫu cua góc lớn', 'cap20_curve')
+    for row in curved:
+        expected = 20 - 0.1 * abs(float(row['requested_steer_deg']))
+        need(all(abs(float(row[key]) - expected) < 0.01
+                 for key in ('requested_speed_cms', 'sent_speed_cms')),
+             'Tốc độ cua không giảm theo slow_per_deg mặc định', 'cap20_curve')
+
+
 def record(run):
     rows = run.of('record')
     need(rows, 'Thiếu trace record')
@@ -650,7 +660,7 @@ def inspect_session(run, sha256_failed=False):
                 for name in ('y_frac', 'left_frac', 'right_frac', 'center_frac'):
                     if s[name] is not None:
                         need(math.isfinite(float(s[name])) and 0 <= float(s[name]) <= 1, 'Tỉ lệ hàng quét sai')
-        need(abs(float(row['sent_speed_cms'])) <= 10 and abs(float(row['sent_steer_deg'])) <= 40, 'CSV vượt trần')
+        need(abs(float(row['sent_speed_cms'])) <= 20 and abs(float(row['sent_steer_deg'])) <= 40, 'CSV vượt trần')
         frame_id = int(row['frame_id'])
         if frame_id > 0:
             need(any(int(str(e[2]).split()[0]) == frame_id for e in run.of('frame')), 'CSV frame không có trace')
@@ -906,24 +916,26 @@ def test_case(case, cfg, root):
         return
     # A03/A04/A05 — B1/H3: nạp nguyên tử, sai giữ bản tốt, đang chạy bỏ R.
     if case in ('A03', 'A04', 'A05'):
-        old, new = {'cruise_cms': 6, 'slow_per_deg': 0}, {'cruise_cms': 9, 'slow_per_deg': 0}
-        with running(cfg, root, values=old) as r:
-            r.boot(); r.go(); speed_is(r, 6)
-            if case == 'A03':
-                patch_yaml(r, new); reload(r, 'ignored')
-                space(r); r.go(); speed_is(r, 6)
-            else:
-                space(r)
-                patch_yaml(r, new); stamp = reload(r, 'accepted')
-                r.frames(5, lambda: no_motion(r, stamp))
-                r.go(); speed_is(r, 9); space(r)
-                if case == 'A05':
-                    for bad in ('cruise_cms: [\n', {'unknown': 1}, {'kp': 201},
-                                {'min_cms': 9, 'cruise_cms': 8}, {'lost_hold_ms': 900, 'lost_stop_ms': 800}):
-                        patch_yaml(r, bad); stamp = reload(r, 'error')
-                        r.frames(4, lambda: no_motion(r, stamp))
-                        r.go(); speed_is(r, 9); space(r)
-            r.finish()
+        for before, after in ((6, 9), (10, 10)):
+            old = dict(max_speed_cms=10, cruise_cms=before, slow_per_deg=0)
+            new = dict(max_speed_cms=10, cruise_cms=after, slow_per_deg=0)
+            with running(cfg, root / str(before), values=old) as r:
+                r.boot(); r.go(); speed_is(r, before)
+                if case == 'A03':
+                    patch_yaml(r, new); reload(r, 'ignored')
+                    space(r); r.go(); speed_is(r, before)
+                else:
+                    space(r)
+                    patch_yaml(r, new); stamp = reload(r, 'accepted')
+                    r.frames(5, lambda: no_motion(r, stamp))
+                    r.go(); speed_is(r, after); space(r)
+                    if case == 'A05':
+                        for bad in ('cruise_cms: [\n', {'unknown': 1}, {'kp': 201},
+                                    {'min_cms': 9, 'cruise_cms': 8}, {'lost_hold_ms': 900, 'lost_stop_ms': 800}):
+                            patch_yaml(r, bad); stamp = reload(r, 'error')
+                            r.frames(4, lambda: no_motion(r, stamp))
+                            r.go(); speed_is(r, after); space(r)
+                r.finish()
         return
     # A06 — hợp đồng P2 thay L1/P1: đủ YOLO chạy; thiếu/hỏng từ chối trước motor_init.
     if case == 'A06':
@@ -996,6 +1008,13 @@ def test_case(case, cfg, root):
         bad = []
         for key, (_, lo, hi, _) in BOUNDS.items():
             bad.extend({key: v} for v in ('sai_kieu', lo - 1, hi + 1))
+        # T60: cô lập miền cruise khỏi quan hệ cruise <= max_speed.
+        for values in bad:
+            if 'cruise_cms' in values:
+                values['max_speed_cms'] = 20
+        bad += [dict(max_speed_cms=20.1), dict(max_speed_cms=20, cruise_cms=20.1)]
+        bad += [dict(max_speed_cms=20, cruise_cms=20, **{key: 10.1})
+                for key in ('approach_cms', 'min_cms', 'lost_cms')]
         for key in VECTORS:
             bad.extend(({key: []}, {key: [0.5] * 6}, {key: 'sai_kieu'}, {key: [-0.1, 0.5, 0.5]}))
         bad += [{'scan_rows': [0, 0.65, 0.45]}, {'scan_rows': [1, 0.65, 0.45]},
@@ -1017,7 +1036,7 @@ def test_case(case, cfg, root):
             for bound in (lo, hi):
                 values = {key: bound}
                 if key in ('max_speed_cms', 'cruise_cms', 'min_cms', 'lost_cms'):
-                    values.update(max_speed_cms=10, cruise_cms=bound, min_cms=0, lost_cms=0)
+                    values.update(max_speed_cms=20, cruise_cms=bound, min_cms=0, lost_cms=0)
                     values[key] = bound
                     if key == 'max_speed_cms':
                         values.update(cruise_cms=0)
@@ -1028,7 +1047,7 @@ def test_case(case, cfg, root):
                 if key == 'min_valid_rows':
                     values.update(scan_rows=[0.2, 0.35, 0.5, 0.65, 0.85], row_weights=[1] * 5, lane_width_frac=[0.5] * 5)
                 variants.append(values)
-        variants += [dict(max_speed_cms=10, steer_max_deg=40),
+        variants += [dict(max_speed_cms=20, cruise_cms=20, steer_max_deg=40),
                      dict(scan_rows=[0.5], row_weights=[1], lane_width_frac=[1]),
                      dict(scan_rows=[0.1, 0.3, 0.5, 0.7, 0.9], row_weights=[0, 0, 0, 0, 1], lane_width_frac=[1] * 5)]
         for i, values in enumerate(variants):
@@ -1110,16 +1129,17 @@ def test_case(case, cfg, root):
             r.frames(8, lambda: no_motion(r, end))
             r.go(); r.finish()
         return
-    # A16/A35 — L6/bản duyệt: đúng ±10/±40 cả khi yaml thấp hơn; CSV giữ yêu cầu trước kẹp.
+    # A16/A35 — L6/bản duyệt: đúng ±20/±40 cả khi yaml thấp hơn; CSV giữ yêu cầu trước kẹp.
     if case in ('A16', 'A35'):
-        for low in (False, True):
-            values = dict(max_speed_cms=5, cruise_cms=5, min_cms=0, steer_max_deg=10) if low else {}
-            with running(cfg, root / str(low), values=values) as r:
+        for name, values in (('default', {}),
+                             ('low', dict(max_speed_cms=5, cruise_cms=5, min_cms=0, steer_max_deg=10)),
+                             ('cap20', dict(max_speed_cms=20, cruise_cms=20))):
+            with running(cfg, root / name, values=values) as r:
                 r.boot(); r.go()
                 for sign in (1, -1):
                     def sent():
                         es = [e for e in r.events() if e[0] >= ev[0] and not e[3]]
-                        return (any(e[1] == 'motor_speed' and e[2] == sign * 10 for e in es) and
+                        return (any(e[1] == 'motor_speed' and e[2] == sign * 20 for e in es) and
                                 any(e[1] == 'servo_angle' and e[2] == sign * 40 for e in es))
                     # Lệnh tiêm một nhịp có thể bị nhịp thường ghi đè trước vòng an toàn.
                     for attempt in range(5):
@@ -1134,9 +1154,9 @@ def test_case(case, cfg, root):
                     r.wait(lambda: any(float(row['t_ms']) >= ev[0] and
                                        float(row['requested_speed_cms']) == sign * 50 and
                                        float(row['requested_steer_deg']) == sign * 90 and
-                                       float(row['sent_speed_cms']) == sign * 10 and
+                                       float(row['sent_speed_cms']) == sign * 20 and
                                        float(row['sent_steer_deg']) == sign * 40 for row in r.rows()),
-                           message='CSV không giữ yêu cầu 50/90 và đã gửi 10/40')
+                           message='CSV không giữ yêu cầu 50/90 và đã gửi 20/40')
                 r.finish()
         return
     # A17 — B5/L4/L5, M4: bão hoà 8 ảnh và 256 CSV, Space vẫn đúng hạn.
@@ -1720,18 +1740,23 @@ def test_case(case, cfg, root):
         return
     # A47 — H6/P2: --no-yolo bỏ chờ xanh và không đọc YOLO, cả sau R.
     if case == 'A47':
-        values = dict(YOLO_VALUES)
-        with running(cfg, root, values=values, yolo_schedule=((1, 'red_edge'),),
-                     model_load_fail='yolo', setup=lambda r: (r.root / 'yolo.csv').write_text('hong\n', encoding='utf-8')) as r:
-            r.boot(); r.go(); speed_is(r, 8)
-            need(not r.of('detections'), '--no-yolo vẫn suy luận YOLO')
-            end = space(r); mark = len(r.events())
-            patch_yaml(r, values); reload(r, 'accepted')
-            r.frames(5, lambda: no_motion(r, end))
-            r.go(); speed_is(r, 8)
-            need(not any(e[2] in ('CHO_DEN_XUAT_PHAT', 'DUNG_DEN_DO') for e in r.of('reason', mark)),
-                 '--no-yolo áp luật đèn sau R')
-            r.finish()
+        for cruise, expected, speed in ((8, 'accepted', 8), (20, 'accepted', 20),
+                                        (21, 'error', 8), (20.1, 'error', 8)):
+            values = dict(YOLO_VALUES)
+            values.update(max_speed_cms=10, cruise_cms=8)
+            with running(cfg, root / str(cruise), values=values, yolo_schedule=((1, 'red_edge'),),
+                         model_load_fail='yolo', setup=lambda r: (r.root / 'yolo.csv').write_text('hong\n', encoding='utf-8')) as r:
+                r.boot(); r.go(); speed_is(r, 8)
+                need(not r.of('detections'), '--no-yolo vẫn suy luận YOLO')
+                end = space(r); mark = len(r.events())
+                changed = dict(values)
+                changed.update(max_speed_cms=10 if cruise == 8 else 20, cruise_cms=cruise)
+                patch_yaml(r, changed); reload(r, expected)
+                r.frames(5, lambda: no_motion(r, end))
+                r.go(); speed_is(r, speed)
+                need(not any(e[2] in ('CHO_DEN_XUAT_PHAT', 'DUNG_DEN_DO') for e in r.of('reason', mark)),
+                     '--no-yolo áp luật đèn sau R')
+                r.finish()
         return
     # A48 — hợp đồng fixture P2: lỗi CSV/NPY không được che bằng lô rỗng.
     if case == 'A48':
@@ -1798,14 +1823,14 @@ def test_case(case, cfg, root):
         return
     # A33 — bản duyệt: checker chung bắt cả hai trần và không bỏ lệnh fail.
     if case == 'A33':
-        for kind, value in (('motor_speed', 10.01), ('servo_angle', -40.01)):
+        for kind, value in (('motor_speed', 20.01), ('servo_angle', -40.01)):
             try:
                 cap([(0, kind, value, False)])
             except Failure as error:
                 need(error.tag == 'invariant_cap', 'Checker hỏng sai lý do')
             else:
                 raise Failure('self_check', 'Checker bỏ lọt trần')
-        cap([(0, 'motor_speed', -10, False), (1, 'servo_angle', 40, False)])
+        cap([(0, 'motor_speed', -20, False), (1, 'servo_angle', 40, False)])
         # Tự kiểm encode/decode fixture khi ca thực chạy, phiên này chỉ py_compile.
         need(read_png(png_bytes(mask_rows('left'))) == b''.join(bytes(r) for r in mask_rows('left')), 'PNG roundtrip')
         test_case('A16', cfg, root)
@@ -1819,6 +1844,30 @@ def test_case(case, cfg, root):
                 angles = [e[2] for e in r.of('servo_angle', mark) if not e[3]]
                 need(angles and all(v * sign > 0 for v in angles), 'Sai dấu +trái/-phải: ' + repr(angles), 'steer_sign')
                 r.finish()
+        return
+    # A81 — T60: chạy bình thường tới 20, trần motor/góc và thông báo khởi động.
+    if case == 'A81':
+        with running(cfg, root / 'straight', values=dict(max_speed_cms=20, cruise_cms=20, slow_per_deg=0)) as r:
+            r.boot()
+            need('Trần cứng: 20 cm/s, 40 độ' in r.text() and 'chạy <=20 cm/s' in r.text(),
+                 'Thông báo khởi động phải dùng trần 20', 'cap20_banner')
+            r.go(); speed_is(r, 20); r.finish()
+            events = r.events()
+            cap(events)
+            speeds = [e[2] for e in events if e[1] == 'motor_speed' and not e[3]]
+            need(speeds and max(speeds) == 20, 'Vết motor phải đạt đúng 20', 'cap20_speed')
+            inspect_session(r)
+        for mode in ('left', 'right'):
+            with running(cfg, root / mode, values=dict(max_speed_cms=20, cruise_cms=20, kp=200, kd=0),
+                         schedule=((1, mode),)) as r:
+                r.boot(); event = r.go()
+                r.wait(lambda: len([row for row in r.rows() if float(row['t_ms']) >= event[0]
+                                    and abs(float(row['requested_steer_deg'])) >= 20
+                                    and float(row['sent_speed_cms']) > 0]) >= 3,
+                       message='Thiếu lệnh cua góc lớn tại cruise 20')
+                cap20_curve([row for row in r.rows() if float(row['t_ms']) >= event[0]
+                             and float(row['sent_speed_cms']) > 0])
+                r.finish(); cap(r.events()); inspect_session(r)
         return
     # A60 — T47m LOW-4: lỗi sha256sum vẫn đủ log như A21 và cảnh báo trên stderr.
     if case == 'A60':
@@ -1877,6 +1926,22 @@ def selftest():
             assert error.tag == tag
         else:
             assert False, 'Bộ kiểm bỏ lọt ' + tag
+    for kind, limit in (('motor_speed', 20), ('servo_angle', 40)):
+        for sign in (-1, 1):
+            for failed in (False, True):
+                cap([(0, kind, sign * limit, failed)])
+                fails(lambda: cap([(0, kind, sign * (limit + 0.1), failed)]), 'invariant_cap')
+    for sign in (-1, 1):
+        row = dict(requested_steer_deg=sign * 30, requested_speed_cms=17, sent_speed_cms=17)
+        cap20_curve([row] * 3)
+        fails(lambda: cap20_curve([row] * 2), 'cap20_curve')
+        for speed in (20, 20.1, 8, 0):
+            bad = dict(row, sent_speed_cms=speed)
+            fails(lambda: cap20_curve([bad] * 3), 'cap20_curve')
+    assert BOUNDS['max_speed_cms'] == (10, 0, 20, 'cm/s')
+    assert BOUNDS['cruise_cms'] == (8, 0, 20, 'cm/s')
+    assert BOUNDS['min_cms'] == BOUNDS['lost_cms'] == (4, 0, 10, 'cm/s')
+    assert P2_BOUNDS['approach_cms'] == (5, 0, 10)
     assert len(P2_BOUNDS) == 12
     assert not {'conf_min', 'box_min_area_frac', 'box_min_area_px'} & set(YOLO_VALUES)
     for light in ('red', 'green', 'off'):

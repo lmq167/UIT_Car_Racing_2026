@@ -47,9 +47,14 @@ int main(int argc, char **argv) {
         };
         const auto missing=load("kp: 42.\n");
         Check(missing.kp==42 && missing.cruise_cms==8 && missing.scan_rows==defaults.scan_rows,"Thiếu khóa phải dùng mặc định");
+        Check(missing.max_speed_cms==10 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
+              "Thiếu khóa tốc độ phải giữ mặc định 10/8/5/4/4");
         Check(report.str().find("cruise_cms = 8 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
         Check(report.str().find("kp = 42 độ (mặc định)")==std::string::npos,"Khóa đã nạp không được báo mặc định");
         for(bool header:{false,true}) {
+            const auto cap20=load("max_speed_cms: 20\ncruise_cms: 20\napproach_cms: 10\nmin_cms: 10\nlost_cms: 10\n",header);
+            Check(cap20.max_speed_cms==20 && cap20.cruise_cms==20 && cap20.approach_cms==10 &&
+                  cap20.min_cms==10 && cap20.lost_cms==10,"Phải nhận trần 20 và giữ biên 10 của approach/min/lost");
             for(int value:{0,200,2000,500})
                 Check(load("right_lost_ms: "+std::to_string(value)+"\n",header).right_lost_ms==value,"Hạn mất vạch phải hợp lệ phải nạp được");
             const auto plain=load("kp: 42.\nscan_rows: [0.85, 0.65, 0.45]\n",header);
@@ -103,7 +108,16 @@ int main(int argc, char **argv) {
             {"off_box_min_area_frac: 1.1\n","off_box_min_area_frac"},
             {"unknown: 1\n","unknown"}, {"lane_width_px: [100]\n","lane_width_px"},
             {"kp: .Nan\n","kp"}, {"kd: .Inf\n","kd"}, {"kp: -1\n","kp"},
-            {"steer_max_deg: 41\n","steer_max_deg"}, {"max_speed_cms: 11\n","max_speed_cms"},
+            {"steer_max_deg: 41\n","steer_max_deg"}, {"max_speed_cms: 21\n","max_speed_cms"},
+            {"max_speed_cms: 20.1\n","max_speed_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20.1\n","cruise_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 21\n","cruise_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\napproach_cms: 10.1\n","approach_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\nmin_cms: 10.1\n","min_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\nlost_cms: 10.1\n","lost_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\napproach_cms: 15\n","approach_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\nmin_cms: 15\n","min_cms"},
+            {"max_speed_cms: 20\ncruise_cms: 20\nlost_cms: 15\n","lost_cms"},
             {"control_period_ms: 19\n","control_period_ms"}, {"regain_frames: 3.5\n","regain_frames"},
             {"cruise_cms: \"8\"\n","cruise_cms"}, {"kp: []\n","kp"},
             {"kp:\n","kp"}, {"scan_rows: []\n","scan_rows"},
