@@ -181,6 +181,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                     have_near_=selected.valid && row.valid;
                     if(have_near_) { near_left_=selected.left; near_right_=selected.right; }
                 }
+                // Hàng không ghép được cặp thì dùng luật pair_mode 0 thay vì bỏ hàng.
+                if(!selected.valid) row=Scan(mask,y,params.lane_width_frac[i]*mask.cols,params,ref);
                 pairs.push_back(selected);
                 const double width=params.lane_width_frac[i]*mask.cols;
                 const double gap=selected.right-selected.left;
