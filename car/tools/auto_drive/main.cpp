@@ -454,7 +454,7 @@ int main(int argc,char** argv) {
     try { options=parse(argc,argv); }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
     if (options.help) {
-        std::cout<<"ucr_auto [--control control.yaml] [--model-dir $HOME/ucr_models] [--no-yolo] [--out-root runs_auto]\n"
+        std::cout<<"ucr_auto [--control control.yaml] [--model-dir $HOME/ucr_models] [--no-yolo] [--debug-windows] [--out-root runs_auto]\n"
                  <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
         return 0;
     }
