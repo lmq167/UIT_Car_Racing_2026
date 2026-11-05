@@ -158,13 +158,15 @@ struct PreviewDebugRow {
     float left = -1, right = -1, center = -1;
     uint8_t valid = 0;
 };
-struct PreviewDebugBox { // Khung YOLO theo điểm ảnh của khung nguồn (P2 sẽ điền).
+struct PreviewDebugBox { // Khung YOLO theo điểm ảnh của khung nguồn.
     int32_t x = 0, y = 0, w = 0, h = 0;
     float confidence = 0;
     char label[16] = {};
 };
 struct PreviewDebug {
     int64_t mask_ms = -1;
+    int32_t yolo_state = 0;
+    int64_t det_ms = -1;
     uint64_t frame_id = 0;
     int32_t mask_w = 0, mask_h = 0;
     int32_t src_w = 0, src_h = 0, crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;

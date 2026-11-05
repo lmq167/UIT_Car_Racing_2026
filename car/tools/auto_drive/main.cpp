@@ -115,6 +115,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         if (yoloInfo) {
             validateYoloEngine(options.yoloEngine,*yoloInfo);
             yoloEngine.reset(new perception::TrtEngine(options.yoloEngine));
+            std::cout<<"YOLO: nap OK "<<options.yoloEngine<<' '<<yoloInfo->class_names.size()<<" lop\n"<<std::flush;
         }
 #endif
         if (stopping) throw SignalStop{};
@@ -404,6 +405,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     debugFrame=shown.frame.id; debugCommand=command.id;
                     auto fill=[&](const control::ControlDebug* plan,double offset) {
                         fillPreviewDebug(*debugData,shown.mask,shown.frame.captured_ms,shown.frame.id,plan,offset,info.source,info.crop);
+                        fillPreviewBoxes(*debugData,yolo.detections,now,params->det_max_age_ms,!options.noYolo);
                         preview.publishDebug(*debugData);
                     };
                     if (withRows) fill(&command.plan.debug,command.params->center_offset_frac);
@@ -500,7 +502,10 @@ int main(int argc,char** argv) {
             const char* tensors=std::getenv("UCR_AUTO_FAKE_YOLO_TENSORS");
             if (!tensors) throw Failure(1,"Thiếu UCR_AUTO_FAKE_YOLO_TENSORS");
             yoloEngine.reset(new FakeYoloEngine(absolutePath(tensors),*yoloInfo));
+            std::cout<<"YOLO: nap OK "<<options.yoloEngine<<' '<<yoloInfo->class_names.size()<<" lop\n"<<std::flush;
 #endif
+        } else {
+            std::cout<<"YOLO: TAT (--no-yolo)\n"<<std::flush;
         }
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
         if (const char* fail=std::getenv("UCR_AUTO_FAKE_MODEL_LOAD_FAIL")) {

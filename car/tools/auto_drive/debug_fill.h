@@ -2,12 +2,31 @@
 // Chép dữ liệu điều khiển sang PreviewDebug cho --debug-windows; thuần, chỉ đọc đầu vào.
 #include "../collect_common/preview.h"
 #include "control/LaneController.h"
+#include "control/Detections.h"
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <opencv2/core.hpp>
 
 namespace auto_drive {
+inline void fillPreviewBoxes(drive::PreviewDebug& out, const control::Detections& det,
+                             int64_t now_ms, int64_t max_age_ms, bool yolo_enabled) {
+    out.yolo_state = yolo_enabled ? 1 : 0;
+    out.det_ms = det.captured_ms;
+    out.nboxes = 0;
+    if (!yolo_enabled || det.captured_ms < 0 || now_ms - det.captured_ms > max_age_ms) return;
+    out.nboxes = int(std::min<size_t>(det.items.size(), drive::kDebugMaxBoxes));
+    for (int i = 0; i < out.nboxes; ++i) {
+        const auto& in = det.items[i];
+        auto& box = out.boxes[i];
+        box.x = int32_t(std::lround(in.box.x)); box.y = int32_t(std::lround(in.box.y));
+        box.w = int32_t(std::lround(in.box.width)); box.h = int32_t(std::lround(in.box.height));
+        box.confidence = in.confidence;
+        std::snprintf(box.label, sizeof(box.label), "%.15s", in.class_name.c_str());
+    }
+}
+
 // plan có thể null (chưa có hàng quét). Mask rỗng/quá sức chứa thì mask_w = mask_h = 0.
 inline void fillPreviewDebug(drive::PreviewDebug& out, const cv::Mat& mask, int64_t mask_ms, uint64_t frame_id,
                              const control::ControlDebug* plan, double center_offset_frac,

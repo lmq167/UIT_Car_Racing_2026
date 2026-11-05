@@ -110,6 +110,10 @@ inline void drawDebugOverlay(cv::Mat& display, const PreviewDebug& d, const Prev
     std::memcpy(reason, d.reason, sizeof(d.reason));
     char line[128];
     const int base = display.rows - 8;
+    if (d.yolo_state == 0) std::snprintf(line, sizeof(line), "YOLO: TAT");
+    else if (d.det_ms < 0) std::snprintf(line, sizeof(line), "YOLO: OK tuoi=-- hop=%d", boxes);
+    else std::snprintf(line, sizeof(line), "YOLO: OK tuoi=%lldms hop=%d", (long long)(frame_ms - d.det_ms), boxes);
+    debugText(display, line, cv::Point(8, base - 54), cv::Scalar(255, 255, 255));
     std::snprintf(line, sizeof(line), "%s | %s", state, reason);
     debugText(display, line, cv::Point(8, base - 36), cv::Scalar(255, 255, 255));
     std::snprintf(line, sizeof(line), "gui: v=%.1f cm/s  lai=%.0f do", s.cmd_speed, s.cmd_steer);

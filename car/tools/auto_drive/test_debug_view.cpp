@@ -36,9 +36,11 @@ void slotRoundTrip() {
     std::unique_ptr<drive::PreviewSlot<PreviewDebug>> slot(new drive::PreviewSlot<PreviewDebug>());
     std::unique_ptr<PreviewDebug> in(new PreviewDebug()), out(new PreviewDebug());
     in->frame_id = 7; in->mask[100] = 2; in->mask[drive::kDebugMaskBytes - 1] = 1;
+    in->yolo_state = 1; in->det_ms = 1234;
     slot->write(*in);
     CHECK(slot->read(*out));
     CHECK(out->frame_id == 7 && out->mask[100] == 2 && out->mask[drive::kDebugMaskBytes - 1] == 1);
+    CHECK(out->yolo_state == 1 && out->det_ms == 1234);
 }
 
 void maskWindow() {
@@ -121,6 +123,47 @@ void fill() {
     CHECK(d->nrows == 0 && d->state[0] == 0 && d->mask_w == 160);
 }
 
+void fillBoxes() {
+    std::unique_ptr<PreviewDebug> d(new PreviewDebug());
+    CHECK(d->yolo_state == 0 && d->det_ms == -1);
+    control::Detections det;
+    det.captured_ms = 1000;
+    det.items = {{"do", cv::Rect2f(100.4f, 100.6f, 200.5f, 100.4f), 0.87f, 1000},
+                 {"abcdefghijklmnopq", cv::Rect2f(300, 200, 50, 60), 0.01f, 1000}};
+    auto_drive::fillPreviewBoxes(*d, det, 1500, 500, true);
+    CHECK(d->nboxes == 2 && d->yolo_state == 1 && d->det_ms == 1000);
+    CHECK(d->boxes[0].x == 100 && d->boxes[0].y == 101 && d->boxes[0].w == 201 && d->boxes[0].h == 100);
+    CHECK(std::string(d->boxes[0].label) == "do" && d->boxes[0].confidence == 0.87f);
+    CHECK(std::string(d->boxes[1].label) == "abcdefghijklmno" && d->boxes[1].label[15] == '\0');
+    CHECK(d->boxes[1].x == 300 && d->boxes[1].y == 200 && d->boxes[1].w == 50 && d->boxes[1].h == 60);
+    CHECK(d->boxes[1].confidence == 0.01f);
+    auto_drive::fillPreviewBoxes(*d, det, 1501, 500, true);
+    CHECK(d->nboxes == 0 && d->yolo_state == 1 && d->det_ms == 1000);
+    auto_drive::fillPreviewBoxes(*d, det, 1000, 500, true);
+    auto_drive::fillPreviewBoxes(*d, det, 1000, 500, false);
+    CHECK(d->nboxes == 0 && d->yolo_state == 0 && d->det_ms == 1000);
+    det.items.resize(10, det.items.front());
+    auto_drive::fillPreviewBoxes(*d, det, 1000, 500, true);
+    CHECK(d->nboxes == 8);
+    det.captured_ms = -1;
+    auto_drive::fillPreviewBoxes(*d, det, 1000, 500, true);
+    CHECK(d->nboxes == 0 && d->yolo_state == 1 && d->det_ms == -1);
+}
+
+void boxesOverlay() {
+    std::unique_ptr<PreviewDebug> d(new PreviewDebug());
+    d->src_w = 1280; d->src_h = 720;
+    control::Detections det;
+    det.captured_ms = 1000;
+    det.items = {{"do", cv::Rect2f(100, 100, 200, 100), 0.87f, 1000}};
+    auto_drive::fillPreviewBoxes(*d, det, 1040, 500, true);
+    cv::Mat display(360, 640, CV_8UC3, cv::Scalar(100, 100, 100));
+    drive::PreviewState state{};
+    drive::drawDebugOverlay(display, *d, state, 1040);
+    CHECK(near(display.at<cv::Vec3b>(75, 50), 0, 165, 255, 0));
+    CHECK(near(display.at<cv::Vec3b>(75, 100), 100, 100, 100, 0));
+}
+
 // Chỉ in số đo để ước tính chi phí trên Jetson; không đặt ngưỡng vì máy chạy test khác xe.
 void timing() {
     const auto d = overlayFixture();
@@ -149,7 +192,7 @@ void timing() {
 }
 
 int main() {
-    slotRoundTrip(); maskWindow(); overlay(); fill(); timing();
+    slotRoundTrip(); maskWindow(); overlay(); fill(); fillBoxes(); boxesOverlay(); timing();
     if (failures) { std::cerr << failures << " ca hỏng\n"; return 1; }
     std::cout << "test_debug_view OK\n";
     return 0;
