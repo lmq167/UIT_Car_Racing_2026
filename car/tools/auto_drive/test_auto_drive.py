@@ -798,7 +798,7 @@ def t57_case(case, cfg, root):
             if explicit:
                 values['turn_enable'] = 0
             with running(cfg, root / str(explicit), values=values, env={'OPEN_FAIL': 'imu'}) as r:
-                r.boot(); mark = len(r.events()); r.go()
+                r.boot(); started = r.go(); mark = r.events().index(started)
                 r.frames(6)
                 commands = [e for e in r.events()[mark:] if e[1] in ('motor_speed', 'servo_angle')]
                 need(commands and all(not e[3] and e[2] == (8 if e[1] == 'motor_speed' else 0)
@@ -827,7 +827,7 @@ def t57_case(case, cfg, root):
         return
     if case == 't57_reload':
         # T57_design:10: R không bật IMU chưa khởi tạo, giữ toàn bộ YAML cũ.
-        with running(cfg, root, values={'turn_enable': 0, 'cruise_cms': 6}) as r:
+        with running(cfg, root, values={'turn_enable': 0, 'cruise_cms': 6, 'slow_per_deg': 0}) as r:
             r.boot(); space(r)
             patch_yaml(r, {'turn_enable': 1, 'cruise_cms': 9})
             before = r.text(); reload(r, 'error')
