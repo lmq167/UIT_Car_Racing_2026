@@ -511,7 +511,7 @@ int main(int argc,char** argv) {
         engine.reset(new FakeRoadEngine(absolutePath(list),info));
 #endif
         VehicleLock lock;
-        std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=10 cm/s, người giám sát đứng sát xe\n"<<std::flush;
+        std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=20 cm/s, người giám sát đứng sát xe\n"<<std::flush;
         if (!externalStop(paths)) { warning(); return 1; }
         int code=0;
         if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine,yoloInfo.get(),yoloEngine);

@@ -3,7 +3,7 @@
 #include <cmath>
 
 namespace auto_drive {
-constexpr float kMaxAutoSpeedCms = 10;
+constexpr float kMaxAutoSpeedCms = 20;
 constexpr int kMaxAutoSteerDeg = 40;
 constexpr bool kReverseMotor = false;
 constexpr int kStaleFrameMs = control::kStaleImageMs, kPollMs = 10, kUartPollMs = 50;
