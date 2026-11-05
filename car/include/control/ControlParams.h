@@ -24,6 +24,8 @@ struct ControlParams {
     double red_conf_min, green_conf_min, off_conf_min;
     double red_box_min_area_frac, green_box_min_area_frac, off_box_min_area_frac;
     double approach_cms, red_stop_x_frac;
+    int turn_enable, turn_max_ms;
+    double turn_yaw_deg, turn_steer_deg, turn_arm_cm, turn_max_cm;
 
     static ControlParams Load(const std::string &path, std::ostream &report);
     void Validate() const;

@@ -20,6 +20,7 @@ struct ControlDebug {
     std::string state="MAT_LAN", reason="CHUA_CO_LAN";
 };
 struct ControlResult { Command cmd; ControlDebug debug; };
+RowDebug ScanLines(const cv::Mat &mask, int y, int &begin, int &end, bool &surface);
 class LaneController {
 public:
     ControlResult Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,

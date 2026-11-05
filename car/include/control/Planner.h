@@ -6,7 +6,7 @@
 namespace control {
 constexpr int kStaleImageMs = 500;
 constexpr const char* kMissingImageReason = "MAT_ANH";
-enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN };
+enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN, RE_TRAI, RE_PHAI };
 const char *StateName(PlannerState state);
 struct PlannerInput {
     cv::Mat mask;
@@ -15,6 +15,9 @@ struct PlannerInput {
     Detections detections;
     bool yolo_enabled=false; // Bên gọi P1 không có nguồn YOLO; auto/replay đặt tường minh.
     double yaw=0, encoder=0;
+    double yaw_deg=0, odo_cm=0;
+    bool sensor_ok=false;
+    int64_t sensor_ms=-1;
     bool go=false, stop=false;
     LaneRef reference=LaneRef::RIGHT;
 };
@@ -30,7 +33,7 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
@@ -47,5 +50,10 @@ private:
     LaneController lane_;
     PlannerState state_=PlannerState::CHO_SAN_SANG;
     std::string reason_="CHO_G";
+    int turn_direction_=0, edge_run_=0;
+    bool turning_=false, turn_fault_=false;
+    double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
+    int64_t edge_mask_ms_=-1, turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
+    void ClearTurn();
 };
 }

@@ -15,6 +15,9 @@ struct HookState {
     std::atomic<bool> yoloStall{false}, yoloThrow{false}, plannerThrow{false};
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
     std::atomic<bool> yoloThrowOn{false};
+    bool imuOk=false, encoderOk=false;
+    double yawDeg=0, odoCm=0;
+    int64_t sensorMs=-1;
 #endif
     std::atomic<bool> controllerStall{false}, controllerThrow{false};
     std::atomic<bool> writerStall{false}, jpegFail{false}, csvFail{false};
