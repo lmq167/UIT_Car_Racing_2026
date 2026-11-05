@@ -84,7 +84,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG) {
             if(red_latched_) { state_=PlannerState::DUNG_DEN_DO; reason_="DUNG_DEN_DO"; }
             if((state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO) &&
-               fresh && !red && !off && green && greens>=params.vote_min && green_run_>=params.green_frames) {
+               fresh && !red && !off && green && greens>=params.vote_min && reds<params.vote_min && green_run_>=params.green_frames) {
                 red_latched_=false; start_cleared_=true; green_run_=0;
                 votes_.clear(); red_ms_=-1; red_x_=0;
                 state_=PlannerState::BAM_LAN; lane_.Reset(); released=true;
