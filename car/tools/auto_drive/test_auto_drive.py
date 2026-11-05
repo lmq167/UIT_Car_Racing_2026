@@ -38,7 +38,10 @@ CASES += ['A07b', 'A08b', 'A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h',
 CASES += ['t57_disabled_equivalence', 't57_open_imu', 't57_open_imu_drift',
           't57_read_imu', 't57_read_encoder', 't57_reload', 't57_stale_imu',
           't57_exit_turning', 't57_lost_image_turning', 't57_space_during_turn',
-          't57_g_pending_after_fault', 't57_reload_during_turn', 't57_init_ok_order']
+          't57_g_pending_after_fault', 't57_reload_during_turn', 't57_init_ok_order',
+          't57_transient_imu_armed', 't57_transient_encoder_armed',
+          't57_transient_imu_turning', 't57_transient_encoder_turning',
+          't57_csv_imu', 't57_csv_encoder', 't57_csv_both']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -771,6 +774,18 @@ def t57_log(rows):
         need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
 
 
+def t57_fault_csv(rows, failed):
+    """Kiểm đúng mẫu lỗi trong lệnh, trước khi cấp lại mẫu tốt."""
+    faults = [row for row in rows if row['reason'] == 'LOI_CAM_BIEN']
+    need(faults, 'CSV chưa có mẫu LOI_CAM_BIEN', 't57_fault_csv')
+    for row in faults:
+        need(row['planner_state'] == 'DUNG', 'CSV lỗi không DUNG', 't57_fault_csv')
+        for sensor, column in (('imu', 'yaw_deg'), ('encoder', 'odo_cm')):
+            value = row[column]
+            need(value == '' if sensor in failed else value != '' and float(value) == 0,
+                 'CSV sai ô {} của mẫu lỗi {}'.format(column, failed), 't57_fault_csv')
+
+
 def t57_sample(run):
     if run.t57_imu:
         run.inject('imu_sample 0 0')
@@ -848,10 +863,11 @@ def t57_case(case, cfg, root):
         return
     def setup(run):
         rows = mask_rows('straight')
-        for row in rows:
-            end = max(i for i, value in enumerate(row) if value)
-            for x in range(end):
-                row[x] = 1
+        if not case.endswith('_armed'):
+            for row in rows:
+                end = max(i for i, value in enumerate(row) if value)
+                for x in range(end):
+                    row[x] = 1
         (run.root / 'straight.png').write_bytes(png_bytes(rows))
         run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
         run.seq = 2
@@ -860,10 +876,13 @@ def t57_case(case, cfg, root):
     previous = YOLO_BOXES.get(mode)
     YOLO_BOXES[mode] = [('left', 800)]
     modes = ('term', 'esc', 'kill_preview') if case == 't57_exit_turning' else ('single',)
+    values = {'turn_enable': 1, 'start_wait_green': 0, 'vote_min': 1,
+              'yolo_every_n': 1, 'mask_max_age_ms': 1000}
+    if case.startswith('t57_transient_'):
+        values['cmd_max_age_ms'] = 500
     try:
         for action in modes:
-            with running(cfg, root / action, values={'turn_enable': 1, 'start_wait_green': 0,
-                         'vote_min': 1, 'yolo_every_n': 1, 'mask_max_age_ms': 1000},
+            with running(cfg, root / action, values=values,
                          setup=setup, no_yolo=False, yolo_schedule=((1, mode),)) as r:
                 t57_feed(r); r.boot()
                 if case == 't57_init_ok_order':
@@ -876,8 +895,16 @@ def t57_case(case, cfg, root):
                     r.t57_imu = r.t57_encoder = False
                     r.finish(); continue
                 mark = len(r.events()); r.key('G')
-                t57_wait(r, lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', mark)),
-                         'Không vào RE_TRAI trước tác nhân')
+                if case.endswith('_armed'):
+                    t57_wait(r, lambda: any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
+                             'Mép đóng chưa bám làn')
+                    t57_wait(r, lambda: r.of('detections', mark), 'Chưa có biển trái để armed')
+                    r.frames(4)
+                    need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', mark)),
+                         'Mép đóng vẫn vào rẽ', 'setup')
+                else:
+                    t57_wait(r, lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', mark)),
+                             'Không vào RE_TRAI trước tác nhân')
                 need(any(e[1] == 'motor_speed' and e[2] > 0 and not e[3] for e in r.events()[mark:]),
                      'Tiền đề chưa có lệnh chạy', 'setup')
                 mark = len(r.events())
@@ -921,7 +948,41 @@ def t57_case(case, cfg, root):
                              'Space/G rẽ tiếp phiên cũ', 't57_reset')
                     r.frames(4, no_old_turn); no_old_turn(); space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
                 reason = 'LOI_CAM_BIEN'
-                if case == 't57_stale_imu':
+                if case.startswith('t57_transient_'):
+                    # Chặn Planner, hồi mẫu ngay sau ack lỗi, trước kỳ lệnh kế.
+                    r.inject('controller_stall'); r.frames(2)
+                    before = len(r.of('command'))
+                    r.t57_imu = r.t57_encoder = False
+                    sensor = 'encoder' if '_encoder_' in case else 'imu'
+                    event = r.inject(sensor + '_read_fail')
+                    r.inject('imu_sample 0 0' if sensor == 'imu' else 'encoder_sample 0')
+                    need(len(r.of('command')) == before,
+                         'Planner chưa dừng trong cửa sổ tiêm lỗi/hồi mẫu', 'setup')
+                    r.t57_imu = r.t57_encoder = True
+                    r.inject('controller_resume')
+                    end = stopped(r, event[0], 500, mark=mark)
+                elif case.startswith('t57_csv_'):
+                    failed = ('imu', 'encoder') if case == 't57_csv_both' else (case[8:],)
+                    t57_wait(r, lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != ''
+                                            for row in r.rows()), 'Chưa có mẫu CSV tốt trước lỗi')
+                    r.t57_imu = 'imu' not in failed
+                    r.t57_encoder = 'encoder' not in failed
+                    for sensor in failed:
+                        event = r.inject(sensor + '_read_fail')
+                    end = stopped(r, event[0], 200, mark=mark)
+                    t57_wait(r, lambda: any(row['reason'] == 'LOI_CAM_BIEN' and
+                                            all(row[column] == '' for sensor, column in
+                                                (('imu', 'yaw_deg'), ('encoder', 'odo_cm'))
+                                                if sensor in failed) for row in r.rows()),
+                             'Thiếu dòng CSV mẫu lỗi với ô tương ứng trống')
+                    # Hai lệnh tiêm: mẫu lỗi đầu có thể chỉ chứa lỗi thứ nhất.
+                    rows = r.rows()
+                    if len(failed) == 2:
+                        first = next(i for i, row in enumerate(rows) if row['reason'] == 'LOI_CAM_BIEN'
+                                     and row['yaw_deg'] == row['odo_cm'] == '')
+                        rows = rows[first:]
+                    t57_fault_csv(rows, failed)
+                elif case == 't57_stale_imu':
                     r.t57_imu = False
                     stamp = external_stamp_ms(); reason = 'CAM_BIEN_CU'
                     end = stopped(r, stamp, 400, mark=mark)
@@ -2181,6 +2242,18 @@ def selftest():
     feed.t57_encoder = False; feed.commands[:] = []
     feed.wait(lambda: True)
     assert not feed.commands
+    for failed in (('imu',), ('encoder',), ('imu', 'encoder')):
+        fault_row = dict(reason='LOI_CAM_BIEN', planner_state='DUNG',
+                         yaw_deg='' if 'imu' in failed else '0',
+                         odo_cm='' if 'encoder' in failed else '0')
+        t57_fault_csv([fault_row], failed)
+        fails(lambda: t57_fault_csv([], failed), 't57_fault_csv')
+        for column in ('yaw_deg', 'odo_cm'):
+            bad = dict(fault_row)
+            bad[column] = '0' if fault_row[column] == '' else ''
+            fails(lambda: t57_fault_csv([bad], failed), 't57_fault_csv')
+        bad = dict(fault_row, planner_state='BAM_LAN')
+        fails(lambda: t57_fault_csv([bad], failed), 't57_fault_csv')
     # T57: tự kiểm bộ đọc log bằng CSV đúng và các bản cố ý làm sai.
     row = dict((key, '') for key in T57_OLD_FIELDS + ['yaw_deg', 'odo_cm'])
     t57_log([row])
