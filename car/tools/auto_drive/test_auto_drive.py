@@ -35,6 +35,10 @@ CASES += ['A07b', 'A08b', 'A30c', 'A30d', 'A30e', 'A30f', 'A30g', 'A30h',
           'A40b', 'A42b', 'A43b', 'A49', 'A50', 'A51',
           'A70u', 'A70y', 'A71u', 'A71y', 'A72u', 'A72y', 'A73',
           'A74ua', 'A74ub', 'A74ya', 'A74yb', 'A75', 'A77', 'A78', 'A79', 'A80', 'A81', 'A60']
+CASES += ['t57_disabled_equivalence', 't57_open_imu', 't57_open_imu_drift',
+          't57_read_imu', 't57_read_encoder', 't57_reload', 't57_stale_imu',
+          't57_exit_turning', 't57_lost_image_turning', 't57_space_during_turn',
+          't57_g_pending_after_fault', 't57_reload_during_turn', 't57_init_ok_order']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -750,7 +754,219 @@ def check_gitignore():
              'Quy tắc phải bỏ qua đường dẫn và thuộc bản chép ucr_car/.gitignore: ' + result.stdout, 'gitignore')
 
 
+# Header cũ đầy đủ từ log_writer.cpp tại cây nền; khóa cả vị trí cột.
+T57_OLD_FIELDS = ('t_ms frame_id mask_file cmd_cms cmd_deg mask_ms image_ms go stop lane_ref planner_state '
+                  'image_age_ms mask_age_ms det_age_ms scan_rows e p d requested_steer_deg requested_speed_cms '
+                  'sent_steer_deg sent_speed_cms reason road_ms yolo_ms loop_ms dropped csv_dropped '
+                  'camera_fps loop_p95_ms rss_mb free_mb command_id command_ms mask_id det_frame_id '
+                  'det_captured_ms detections_dropped').split()
+
+
+def t57_log(rows):
+    """Chỉ nối hai cột cuối; khi tắt để trống cả dòng thoát."""
+    need(rows, 'Thiếu CSV để kiểm T57', 't57_log')
+    for row in rows:
+        need(list(row) == T57_OLD_FIELDS + ['yaw_deg', 'odo_cm'],
+             'T57 đổi/mất/thừa/đảo cột cũ hoặc không nối cuối', 't57_log')
+        need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
+
+
+def t57_sample(run):
+    if run.t57_imu:
+        run.inject('imu_sample 0 0')
+    if run.t57_encoder:
+        run.inject('encoder_sample 0')
+
+
+def t57_feed(run):
+    # Cấp mẫu age_ms=0 mỗi lượt chờ, gồm boot/key/frames/stop; không ngủ cố định.
+    original = run.wait
+    run.t57_imu = run.t57_encoder = True
+    feeding = [False]
+    def wait(predicate, *args, **kwargs):
+        def poll():
+            if not feeding[0] and run.process.poll() is None:
+                feeding[0] = True
+                try:
+                    t57_sample(run)
+                finally:
+                    feeding[0] = False
+            return predicate()
+        return original(poll, *args, **kwargs)
+    run.wait = wait
+
+
+def t57_wait(run, predicate, message):
+    return run.wait(predicate, 10, message)
+
+
+def t57_case(case, cfg, root):
+    if case == 't57_disabled_equivalence':
+        # T57_design:2,23: tắt mặc định/tường minh cùng lệnh làn thẳng hiện có.
+        snapshots = []
+        for explicit in (False, True):
+            values = dict(kp=0, kd=0, slow_per_deg=0, start_wait_green=0)
+            if explicit:
+                values['turn_enable'] = 0
+            with running(cfg, root / str(explicit), values=values, env={'OPEN_FAIL': 'imu'}) as r:
+                r.boot(); mark = len(r.events()); r.go()
+                r.frames(6)
+                commands = [e for e in r.events()[mark:] if e[1] in ('motor_speed', 'servo_angle')]
+                need(commands and all(not e[3] and e[2] == (8 if e[1] == 'motor_speed' else 0)
+                                      for e in commands), 'Tắt đổi lệnh làn thẳng cũ', 't57_disabled')
+                space(r); r.t57_imu = r.t57_encoder = False; r.finish()
+                need(not r.of('imu_init') and not r.of('imu_drift'), 'Tắt vẫn init IMU', 't57_disabled')
+                rows = r.rows(); t57_log(rows)
+                stable = [row for row in rows if row['planner_state'] == 'BAM_LAN' and row['reason'] == 'BAM_LAN']
+                need(stable, 'Thiếu đoạn bám làn trong CSV', 't57_log')
+                # Cột thời gian/đếm khung không xác định giữa hai tiến trình thật.
+                fields = ['planner_state', 'scan_rows', 'e', 'p', 'd', 'requested_steer_deg',
+                          'requested_speed_cms', 'sent_steer_deg', 'sent_speed_cms', 'reason']
+                snapshots.append((list(rows[0])[:-2], {tuple(row[k] for k in fields) for row in stable}))
+        need(snapshots[0] == snapshots[1], 'Tắt tường minh khác mặc định ở cột cũ', 't57_disabled')
+        return
+    if case.startswith('t57_open_'):
+        # T57_design:10,24; notes:8: lỗi IMU phải thoát trước motor_init.
+        target = case[len('t57_open_'):]
+        with running(cfg, root, values={'turn_enable': 1}, env={'OPEN_FAIL': target}) as r:
+            reject(r, code=1)
+            need(r.of('imu_init'), 'Thiếu dấu vết init IMU', 't57_init')
+            if target == 'imu_drift':
+                kinds = [e[1] for e in r.events()]
+                need('imu_drift' in kinds and kinds.index('imu_init') < kinds.index('imu_drift'),
+                     'Đo trôi không sau initialize', 't57_init')
+        return
+    if case == 't57_reload':
+        # T57_design:10: R không bật IMU chưa khởi tạo, giữ toàn bộ YAML cũ.
+        with running(cfg, root, values={'turn_enable': 0, 'cruise_cms': 6}) as r:
+            r.boot(); space(r)
+            patch_yaml(r, {'turn_enable': 1, 'cruise_cms': 9})
+            before = r.text(); reload(r, 'error')
+            need(r.text() != before, 'Từ chối R không in lỗi', 't57_reload')
+            need(not r.of('imu_init'), 'R tự init IMU', 't57_reload')
+            r.go(); speed_is(r, 6); space(r); r.t57_imu = r.t57_encoder = False; r.finish()
+        return
+    def setup(run):
+        rows = mask_rows('straight')
+        for row in rows:
+            end = max(i for i, value in enumerate(row) if value)
+            for x in range(end):
+                row[x] = 1
+        (run.root / 'straight.png').write_bytes(png_bytes(rows))
+        run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
+        run.seq = 2
+
+    mode = 't57_left'
+    previous = YOLO_BOXES.get(mode)
+    YOLO_BOXES[mode] = [('left', 800)]
+    modes = ('term', 'esc', 'kill_preview') if case == 't57_exit_turning' else ('single',)
+    try:
+        for action in modes:
+            with running(cfg, root / action, values={'turn_enable': 1, 'start_wait_green': 0,
+                         'vote_min': 1, 'yolo_every_n': 1, 'mask_max_age_ms': 1000},
+                         setup=setup, no_yolo=False, yolo_schedule=((1, mode),)) as r:
+                t57_feed(r); r.boot()
+                if case == 't57_init_ok_order':
+                    kinds = [e[1] for e in r.events()]
+                    need(all(k in kinds for k in ('imu_init', 'imu_drift', 'motor_init')) and
+                         kinds.index('imu_init') < kinds.index('imu_drift') < kinds.index('motor_init'),
+                         'Sai thứ tự init IMU/đo trôi/motor', 't57_init')
+                    need(not r.of('tof_init') and not r.of('motor_config'),
+                         'Auto init ToF/gửi cấu hình ngoài Motor::Init', 't57_init')
+                    r.t57_imu = r.t57_encoder = False
+                    r.finish(); continue
+                mark = len(r.events()); r.key('G')
+                t57_wait(r, lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', mark)),
+                         'Không vào RE_TRAI trước tác nhân')
+                need(any(e[1] == 'motor_speed' and e[2] > 0 and not e[3] for e in r.events()[mark:]),
+                     'Tiền đề chưa có lệnh chạy', 'setup')
+                mark = len(r.events())
+                if case == 't57_exit_turning':
+                    r.t57_imu = r.t57_encoder = False
+                    if action == 'esc':
+                        r.finish(key='\x1b')
+                    else:
+                        stamp = external_stamp_ms()
+                        if action == 'term':
+                            os.kill(r.process.pid, signal.SIGTERM)
+                        else:
+                            windows = sorted(pid for pid in r.children() if td.nice(pid) == 10)
+                            need(windows, 'Thiếu preview chính', 'setup')
+                            os.kill(windows[0], signal.SIGKILL)
+                        stopped(r, stamp, 1000, mark=mark)
+                        r.exited(0 if action == 'term' else 1)
+                    import fcntl
+                    with (r.root / 'vehicle.lock').open('a') as lock:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    continue
+                if case == 't57_reload_during_turn':
+                    patch_yaml(r, {'turn_enable': 0, 'min_cms': 2})
+                    reload(r, 'ignored')
+                    def unchanged():
+                        need(not any(e[2] != 'RE_TRAI' for e in r.of('state', mark)),
+                             'R đổi trạng thái đang rẽ', 't57_reload')
+                        need(all(e[3] or e[2] == 4 for e in r.of('motor_speed', mark)),
+                             'R áp dụng YAML khi đang rẽ', 't57_reload')
+                    r.frames(4, unchanged); unchanged(); space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
+                if case == 't57_space_during_turn':
+                    # Chặn biển mới và đợi phiếu cũ hết tuổi trước G.
+                    r.inject('yolo_stall')
+                    last = float(str(r.of('detections')[-1][2]).split()[1])
+                    t57_wait(r, lambda: td.now_ms() > last + 500, 'Phiếu cũ chưa hết tuổi')
+                    space(r); mark = len(r.events()); r.key('G')
+                    t57_wait(r, lambda: any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
+                             'Space/G không về bám làn')
+                    def no_old_turn():
+                        need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', mark)),
+                             'Space/G rẽ tiếp phiên cũ', 't57_reset')
+                    r.frames(4, no_old_turn); no_old_turn(); space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
+                reason = 'LOI_CAM_BIEN'
+                if case == 't57_stale_imu':
+                    r.t57_imu = False
+                    stamp = external_stamp_ms(); reason = 'CAM_BIEN_CU'
+                    end = stopped(r, stamp, 400, mark=mark)
+                elif case == 't57_lost_image_turning':
+                    event = r.inject('camera_pause_600ms'); reason = 'MAT_ANH'
+                    end = stopped(r, event[0], 700, mark=mark)
+                else:
+                    if case == 't57_g_pending_after_fault':
+                        r.key('G')
+                    imu = case != 't57_read_encoder'
+                    if imu:
+                        r.t57_imu = False
+                    else:
+                        r.t57_encoder = False
+                    event = r.inject('imu_read_fail' if imu else 'encoder_read_fail')
+                    if case == 't57_g_pending_after_fault':
+                        r.key('G')
+                    end = stopped(r, event[0], 200, mark=mark)
+                r.wait(lambda: any(e[2] == 'DUNG' for e in r.of('state', mark)) and
+                       any(e[2] == reason for e in r.of('reason', mark)),
+                       message='Thiếu DUNG/' + reason)
+                r.t57_imu = r.t57_encoder = True
+                if case == 't57_lost_image_turning':
+                    t57_wait(r, lambda: r.of('mask') and float(str(r.of('mask')[-1][2]).split()[1]) > event[0] + 500,
+                             'Chưa có ảnh/mask hồi phục')
+                r.frames(4, lambda: no_motion(r, end, 't57_latch'))
+                if case != 't57_lost_image_turning':
+                    r.key('G')
+                    r.frames(4, lambda: no_motion(r, end, 't57_latch'))
+                space(r)
+                r.frames(2, lambda: no_motion(r, end, 't57_latch'))
+                mark = len(r.events()); r.key('G')
+                t57_wait(r, lambda: any(e[1] == 'motor_speed' and e[2] > 0 and not e[3]
+                                        for e in r.events()[mark:]), 'Space rồi G không mở chốt')
+                space(r); r.t57_imu = r.t57_encoder = False; r.finish()
+    finally:
+        if previous is None:
+            del YOLO_BOXES[mode]
+        else:
+            YOLO_BOXES[mode] = previous
+
+
 def test_case(case, cfg, root):
+    if case.startswith('t57_'):
+        return t57_case(case, cfg, root)
     # A70 — T47l mục 1–2: thiếu riêng từng file, trước mọi tác động motor/servo.
     if case in ('A70u', 'A70y'):
         name = 'unet' if case.endswith('u') else 'yolo'
@@ -1943,6 +2159,44 @@ def selftest():
     assert BOUNDS['cruise_cms'] == (8, 0, 20, 'cm/s')
     assert BOUNDS['min_cms'] == BOUNDS['lost_cms'] == (4, 0, 10, 'cm/s')
     assert P2_BOUNDS['approach_cms'] == (5, 0, 10)
+    class SensorFeed:
+        def __init__(self):
+            self.process = SimpleNamespace(poll=lambda: None)
+            self.commands = []
+        def wait(self, predicate, *args, **kwargs):
+            for _ in range(5):
+                result = predicate()
+                if result:
+                    return result
+            assert False, 'Bộ cấp mẫu không kết thúc hữu hạn'
+        def inject(self, command):
+            self.commands.append(command)
+            return self.wait(lambda: True)
+    feed = SensorFeed(); t57_feed(feed)
+    feed.wait(lambda: True)
+    assert feed.commands == ['imu_sample 0 0', 'encoder_sample 0']
+    feed.t57_imu = False; feed.commands[:] = []
+    feed.wait(lambda: True)
+    assert feed.commands == ['encoder_sample 0']
+    feed.t57_encoder = False; feed.commands[:] = []
+    feed.wait(lambda: True)
+    assert not feed.commands
+    # T57: tự kiểm bộ đọc log bằng CSV đúng và các bản cố ý làm sai.
+    row = dict((key, '') for key in T57_OLD_FIELDS + ['yaw_deg', 'odo_cm'])
+    t57_log([row])
+    fails(lambda: t57_log([]), 't57_log')
+    bad = dict(row); bad['yaw_deg'] = '0'
+    fails(lambda: t57_log([bad]), 't57_log')
+    bad = dict(row); del bad['sent_speed_cms']
+    fails(lambda: t57_log([bad]), 't57_log')
+    bad = dict(row); del bad['detections_dropped']
+    fails(lambda: t57_log([bad]), 't57_log')
+    keys = list(row); keys[0], keys[1] = keys[1], keys[0]
+    fails(lambda: t57_log([dict((key, row[key]) for key in keys)]), 't57_log')
+    bad = dict((key, row[key]) for key in ['yaw_deg', 'odo_cm'] + CSV_FIELDS)
+    fails(lambda: t57_log([bad]), 't57_log')
+    bad = dict(row); bad['extra_old'] = ''
+    fails(lambda: t57_log([bad]), 't57_log')
     assert len(P2_BOUNDS) == 12
     assert not {'conf_min', 'box_min_area_frac', 'box_min_area_px'} & set(YOLO_VALUES)
     for light in ('red', 'green', 'off'):
@@ -2313,7 +2567,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: 5 mẫu gitignore, P1/M7, fixture YOLO, CLI/env, lô mới, chốt đèn, A32 và hợp đồng model T47l (vết tổng hợp)')
+        print('PASS selftest: gitignore, P1/M7, YOLO, CLI/env, chốt đèn, A32, model T47l và log T57 (vết tổng hợp)')
         return
     if cfg.case == 'gitignore':
         check_gitignore()
