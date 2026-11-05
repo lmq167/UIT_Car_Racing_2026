@@ -167,18 +167,34 @@ bool Run(const std::string &name, const Masks &masks) {
         Expect(std::isfinite(e0) && std::isfinite(e1) && std::abs(e1) <= std::abs(e0) + 1e-9,
                "m8887_1980: |e1| vượt |e0| + 1e-9", ok);
     } else if (name == "no_row_loss") {
-        // T59_test.md:11: so đủ 50 ảnh, không dừng ở ảnh hỏng đầu tiên.
-        size_t failures = 0;
-        for (const auto &item : masks) {
-            const int n0 = Fresh(item.second, 0).debug.valid_rows;
-            const int n1 = Fresh(item.second, 1).debug.valid_rows;
-            if (n1 < n0) {
-                ++failures;
-                std::cout << item.first << " valid_rows0=" << n0 << " valid_rows1=" << n1 << '\n';
-            }
+        // Quân 05/11 (đổi tiêu chí d): luật B3 cũ giữ nguyên, hàng không ghép được cặp thì hỏng.
+        // Mặt nạ có làn thật 8887 260-1780: còn >= 2 hàng, e cùng dấu và lệch <= 0,02 so với mã 28e2930.
+        // Mất cả 3 hàng chỉ chấp nhận ở m8677_220 và m8677_320 (cảnh không có làn).
+        std::ifstream in(std::string(T55_FIXTURE_DIR) + "/t59_cur_golden.txt");
+        Check(bool(in), "Không mở được golden mã hiện tại");
+        std::map<std::string, bool> real;
+        LaneController c;  // e đo theo chuỗi khung như xe thật: mốc near của khung trước giữ cặp ổn định
+        const auto p1 = Params(1);
+        int64_t ms = 1000;
+        std::string line, name2;
+        while (DataLine(in, line)) {
+            std::istringstream row(line);
+            double e = 0;
+            int rows = 0;
+            Check(bool(row >> name2 >> e >> rows) && std::isfinite(e), "Sai dòng golden mã hiện tại");
+            real[name2] = true;
+            const auto r = Step(c, masks.at(name2), p1, ms);
+            ms += 50;
+            const double e1 = r.debug.e;
+            std::cout << name2 << " e=" << e1 << " e_hien_tai=" << e << " hang=" << r.debug.valid_rows << '\n';
+            Expect(r.debug.valid_rows >= 2, name2 + ": còn dưới 2 hàng hợp lệ", ok);
+            Expect(std::isfinite(e1) && e1 * e > 0 && std::abs(e1 - e) <= 0.02, name2 + ": e khác dấu hoặc lệch > 0,02", ok);
         }
-        std::cout << "Đã so " << masks.size() << " mặt nạ, mất hàng=" << failures << '\n';
-        Expect(failures == 0, "Mode 1 làm giảm số hàng hợp lệ", ok);
+        Check(real.size() == 30, "Golden mã hiện tại phải có 30 mặt nạ 8887 260-1780");
+        for (const auto &item : masks) {
+            if (item.first == "m8677_220" || item.first == "m8677_320") continue;
+            Expect(Fresh(item.second, 1).debug.valid_rows >= 1, item.first + ": mất cả 3 hàng ngoài hai cảnh không có làn", ok);
+        }
     } else if (name == "pair0_golden") {
         return Golden(masks);
     } else {
