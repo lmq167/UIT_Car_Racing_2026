@@ -109,6 +109,19 @@ target_link_libraries(test_planner PRIVATE ucr_control)
 add_test(NAME control_planner COMMAND test_planner)
 set_tests_properties(control_planner PROPERTIES LABELS "control" TIMEOUT 15)
 
+add_executable(test_t57_turn test_t57_turn.cpp)
+target_link_libraries(test_t57_turn PRIVATE ucr_control)
+target_compile_options(test_t57_turn PRIVATE -Wall -Wextra)
+foreach(scenario signs votes j1 arm_distance yaw command disabled LOI_CAM_BIEN
+        CAM_BIEN_CU sensor_invalid RE_QUA_CM RE_QUA_MS KET_RE red fault_red mask_stale
+        low_conf_armed space_during_turn nonfinite_sensor
+        armed_sensor_fault armed_red red_release_after_turn_red sign_while_turning after_turn_lane)
+    add_test(NAME acc_t57_${scenario} COMMAND test_t57_turn ${scenario})
+    set_tests_properties(acc_t57_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+add_test(NAME acc_t57_params COMMAND test_t57_turn params ${CMAKE_CURRENT_BINARY_DIR}/t57_params.yaml)
+set_tests_properties(acc_t57_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+
 add_executable(test_t58_vote_release test_t58_vote_release.cpp)
 target_link_libraries(test_t58_vote_release PRIVATE ucr_control)
 foreach(scenario hold_2of5 release_2of5 hold_1of5 start_2of5 default_3of5 stale_red
