@@ -543,8 +543,9 @@ def phase_batches(run, lo, hi, count):
 
 def moving(run, mark):
     speeds = [e[2] for e in run.of('motor_speed', mark) if not e[3]]
-    need(not any(motor_zero(e) for e in run.events()[mark:]) and all(0 < v <= 10 for v in speeds),
-         'Dừng đỏ khi chưa đủ phiếu/vị trí hoặc vượt trần10', 'red_boundary')
+    max_speed = min(run.values.get('max_speed_cms', BOUNDS['max_speed_cms'][0]), 20)
+    need(not any(motor_zero(e) for e in run.events()[mark:]) and all(0 < v <= max_speed for v in speeds),
+         'Dừng đỏ khi chưa đủ phiếu/vị trí hoặc vượt trần max_speed_cms', 'red_boundary')
 
 
 def inspect_detections(run):
@@ -2210,6 +2211,14 @@ def selftest():
     assert len(phase_batches(SyntheticRun(events), 3, 9, 2)) == 2
     fails(lambda: phase_batches(SyntheticRun(events), 3, 9, 3), 'setup')
     moving(SyntheticRun([(100, 'motor_speed', 8, False)]), 0)
+    for maximum, speed, valid in ((10, 10, True), (10, 11, False),
+                                  (20, 20, True), (20, 21, False), (30, 21, False)):
+        run = SyntheticRun([(100, 'motor_speed', speed, False)])
+        run.values['max_speed_cms'] = maximum
+        if valid:
+            moving(run, 0)
+        else:
+            fails(lambda: moving(run, 0), 'red_boundary')
     fails(lambda: moving(SyntheticRun(events), 0), 'red_boundary')
     for bad, tag in ((events[:3] + [(100, 'detections', '3 90', False)], 'interface'),
                      (events[:3] + [(100, 'motor_speed', 8, False)] + events[3:], 'green_frames')):
