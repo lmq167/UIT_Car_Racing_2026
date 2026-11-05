@@ -84,8 +84,12 @@ void Params(const std::string& path) {
         }
     }
     p.turn_steer_deg=p.steer_max_deg+1;
+    p.turn_enable=1;
     bool rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }
-    Check(rejected,"Validate phải từ chối góc rẽ quá trần");
+    Check(rejected,"Validate phải từ chối góc rẽ quá trần khi bật rẽ");
+    p.turn_enable=0;
+    rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }
+    Check(!rejected,"Validate phải chấp nhận góc rẽ quá trần khi tắt rẽ");
 }
 
 void Case(const std::string& name) {
