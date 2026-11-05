@@ -122,19 +122,6 @@ RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams 
             selected={left,right,true,edges[i-1].line,edges[i].line}; best=score; best_match=match;
         }
     }
-    if(!selected.valid && !near && anchor.valid && (anchor.left_line || anchor.right_line)) {
-        const bool keep_right=anchor.right_line && (ref==LaneRef::RIGHT || !anchor.left_line);
-        const double target=keep_right ? anchor.right : anchor.left;
-        double closest=std::numeric_limits<double>::infinity();
-        for(double line:row.lines) {
-            const double delta=std::abs(line-target);
-            if(delta<=params.pair_max_shift_frac*mask.cols && delta<closest) {
-                selected={keep_right ? line-width : line,keep_right ? line : line+width,
-                          true,!keep_right,keep_right};
-                closest=delta;
-            }
-        }
-    }
     if(!selected.valid) return row;
     const double boundary=ref==LaneRef::RIGHT ? selected.right : selected.left;
     if(ref==LaneRef::RIGHT) { row.right=boundary; row.center=boundary-width/2; }
@@ -194,7 +181,6 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                     have_near_=selected.valid && row.valid;
                     if(have_near_) { near_left_=selected.left; near_right_=selected.right; }
                 }
-                if(!selected.valid) row=Scan(mask,y,params.lane_width_frac[i]*mask.cols,params,ref);
                 pairs.push_back(selected);
                 const double width=params.lane_width_frac[i]*mask.cols;
                 const double gap=selected.right-selected.left;
