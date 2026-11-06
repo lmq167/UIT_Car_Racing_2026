@@ -51,13 +51,26 @@ struct Rig {
             Check(result.state==control::PlannerState::BAM_LAN,"Xác nhận vẫn bám làn");
         }
     }
-    control::Plan edge(bool left=true) {
-        mask(left?0:60,left?140:200); now+=40; return step();
+    control::Plan advance(double cm) {
+        in.odo_cm+=cm; now+=40; return step();
     }
     control::Plan turn(bool left=true) {
-        arm(left?"left":"right"); edge(left); auto result=edge(left);
+        arm(left?"left":"right"); advance(p.turn_start_cm/2); auto result=advance(p.turn_start_cm/2);
         Check(control::StateName(result.state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Thiết lập phải đang rẽ");
         return result;
+    }
+    void obstacle(bool present) {
+        in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
+        in.mask.colRange(20,181).setTo(1);
+        in.mask.col(20).setTo(2); in.mask.col(180).setTo(2);
+        if (present) in.mask(cv::Rect(90,40,40,55)).setTo(0);
+    }
+    void avoid() {
+        p.obstacle_action=2; obstacle(true);
+        control::Plan plan;
+        for (int i=0;i<p.vote_min;++i) { now+=40; plan=step(); }
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
+              plan.reference==control::LaneRef::LEFT,"Thiết lập phải đang né trái");
     }
 };
 void Cancelled(const control::Plan& plan, const control::ControlParams& p) {
@@ -69,8 +82,8 @@ void Cancelled(const control::Plan& plan, const control::ControlParams& p) {
 void TurnUnavailable(Rig& r) {
     r.mask(60,140); r.in.detections={};
     for (bool left:{true,false}) {
-        r.arm(left?"left":"right"); r.edge(left);
-        Check(r.edge(left).state==control::PlannerState::BAM_LAN,"Lỗi cảm biến phải bỏ rẽ hết phiên");
+        r.arm(left?"left":"right"); r.advance(r.p.turn_start_cm/2);
+        Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Lỗi cảm biến phải bỏ rẽ hết phiên");
     }
 }
 void RecoveredSensor(Rig& r) {
@@ -97,6 +110,7 @@ void Params(const std::string& path) {
         for (double value:{low[i],high[i],low[i]-1,high[i]+1}) {
             { std::ofstream out(path); Check(bool(out),"Không mở được YAML tạm");
               out<<"steer_max_deg: 30\n"<<names[i]<<": "<<value<<'\n';
+              if (i==3) out<<"turn_start_cm: 0\n";
               if (i==2) out<<"turn_enable: 1\n"; }
             bool rejected=false;
             try { std::ostringstream report; auto loaded=control::ControlParams::Load(path,report); loaded.Validate(); }
@@ -113,17 +127,128 @@ void Params(const std::string& path) {
     Check(!rejected,"Validate phải chấp nhận góc rẽ quá trần khi tắt rẽ");
 }
 
+// T68a Chỉ làm 3,5: kiểm cả loader lẫn Validate, không thay khóa sản phẩm.
+void T68Params(const std::string& path) {
+    control::ControlParams defaults;
+    Check(defaults.turn_start_cm==30,"Mặc định turn_start_cm phải là30");
+    auto load=[&](const std::string& body) {
+        { std::ofstream out(path); Check(bool(out),"Không mở được YAML tạm");
+          out<<"steer_max_deg: 30\n"<<body; }
+        std::ostringstream report;
+        return control::ControlParams::Load(path,report);
+    };
+    Check(load("").turn_start_cm==30,"Thiếu khóa phải dùng mặc định30");
+    for (double value:{0.0,30.0,150.0}) {
+        const auto p=load("turn_start_cm: "+std::to_string(value)+"\nturn_arm_cm: 151\n");
+        Check(p.turn_start_cm==value,"Loader phải nhận đúng turn_start_cm");
+        p.Validate();
+    }
+    for (double value:{-0.1,150.1}) {
+        auto p=defaults; p.turn_start_cm=value; p.turn_arm_cm=200;
+        bool rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }
+        Check(rejected,"Validate phải từ chối -0,1/150,1");
+        rejected=false;
+        try { load("turn_start_cm: "+std::to_string(value)+"\nturn_arm_cm: 200\n").Validate(); }
+        catch (const std::exception&) { rejected=true; }
+        Check(rejected,"YAML ngoài miền phải bị từ chối");
+    }
+    for (double value:{80.0,80.1}) {
+        auto p=defaults; p.turn_start_cm=value;
+        bool rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }
+        Check(rejected,"Validate phải từ chối start >= arm");
+    }
+}
+
 void Case(const std::string& name) {
     // T57_design:5,20,25: đủ phiếu bốn lớp, không thêm ngưỡng tin cậy.
-    if (name=="signs") {
+    if (name=="signs" || name=="t68_signs") {
         for (const std::string sign:{"left","no_right","right","no_left"}) {
             Rig r; const bool left=sign=="left" || sign=="no_right";
-            r.arm(sign); Check(r.edge(left).state==control::PlannerState::BAM_LAN,"J1 cần hai mask");
-            const auto plan=r.edge(left);
+            r.arm(sign); Check(r.advance(r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"Chưa đủ quãng chưa rẽ");
+            const auto plan=r.advance(1);
             Check(control::StateName(plan.state)==std::string(left?"RE_TRAI":"RE_PHAI") &&
                   plan.reason==control::StateName(plan.state) && plan.debug.state==plan.reason &&
                   plan.debug.reason==plan.reason,"Sai hướng/lý do/debug biển");
         }
+    } else if (name=="t68_no_sign") {
+        Rig r;
+        for (bool open:{false,true}) {
+            r.mask(open?0:60,140);
+            for (int i=0;i<4;++i)
+                Check(r.advance(r.p.turn_start_cm).state==control::PlannerState::BAM_LAN,"Không biển thì encoder/mép mở không được gây rẽ");
+        }
+    } else if (name=="t68_start_distance") {
+        for (bool left:{false,true}) {
+            Rig r;
+            for (int i=0;i<r.p.vote_min;++i) {
+                r.in.odo_cm=100+10*i;
+                Check(r.send({left?"left":"right"}).state==control::PlannerState::BAM_LAN,"Chưa đủ quãng từ phiếu cuối");
+            }
+            Check(r.advance(29).state==control::PlannerState::BAM_LAN,"29cm từ lúc đủ phiếu chưa rẽ");
+            Check(control::StateName(r.advance(1).state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Đúng30cm từ phiếu cuối phải rẽ");
+        }
+    } else if (name=="t68_conflict") {
+        for (const auto& signs: {std::vector<std::string>{"left","right"},
+                {"no_left","no_right"},{"left","no_left"},{"right","no_right"}}) {
+            Rig r;
+            for (int i=0;i<r.p.vote_window;++i) r.send(signs);
+            Check(r.advance(r.p.turn_start_cm).state==control::PlannerState::BAM_LAN,"Hai hướng xung đột không được armed");
+            r.mask(0,200); Check(r.advance(1).state==control::PlannerState::BAM_LAN,"Mép mở không giải quyết xung đột biển");
+        }
+    } else if (name=="t68_red_hold") {
+        for (bool left:{false,true}) {
+            Rig r; r.in.odo_cm=100; r.arm(left?"left":"right");
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_min;++i) plan=r.send({"red"});
+            const auto red_start=r.now;
+            for (int i=0;i<250;++i) {
+                plan=r.send({"red",left?"right":"left"});
+                Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
+                      "Giữ đỏ10s phải dừng motor/servo");
+            }
+            Check(r.now-red_start==10000 && r.in.odo_cm==100,"Thiết lập đỏ10s, encoder đứng yên");
+            for (int i=0;i<r.p.vote_window+r.p.green_frames;++i) plan=r.send({"green"});
+            Check(plan.state==control::PlannerState::BAM_LAN,"Đủ xanh nhả đỏ");
+            Check(r.advance(29).state==control::PlannerState::BAM_LAN,"Đỏ không đổi mốc đủ phiếu");
+            Check(control::StateName(r.advance(1).state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Đỏ10s và biển ngược không đổi hướng chốt");
+        }
+    } else if (name=="t68_avoidance" || name=="t68_arm_distance") {
+        Rig r; r.arm(); r.avoid();
+        const bool cancel=name=="t68_arm_distance";
+        auto plan=r.advance(cancel?r.p.turn_arm_cm:r.p.turn_start_cm);
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
+              plan.reference==control::LaneRef::LEFT,"Đủ quãng khi NE_TRAI không được rẽ/hủy ở đúng80");
+        if (cancel) {
+            plan=r.advance(0.01);
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE","Quá80cm khi né phải HUY_RE");
+            r.in.odo_cm=r.p.turn_start_cm;
+        }
+        r.obstacle(false);
+        for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA" &&
+              plan.reference==control::LaneRef::LEFT,"Đủ quãng khi NE_QUA không được rẽ");
+        bool returned=false;
+        for (int i=0;i<400;++i) {
+            r.now+=100; plan=r.step();
+            if (plan.reason=="VE_PHAI") {
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT,"VE_PHAI phải trả làn trước khi rẽ");
+                returned=true; break;
+            }
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA","Chưa hết pha né không được bắt đầu rẽ");
+        }
+        Check(returned,"Phải kết thúc pha né trong giới hạn mô phỏng");
+        r.now+=40; plan=r.step();
+        Check(plan.state==(cancel?control::PlannerState::BAM_LAN:control::PlannerState::RE_TRAI),
+              cancel?"Đã hủy thì về bám làn không rẽ lại":"Về bám làn thường mới được rẽ");
+    } else if (name=="t68_hold_heading") {
+        Rig r; r.arm();
+        for (int i=0;i<r.p.vote_min;++i) r.send({"round_barrier"});
+        r.in.mask.setTo(0);
+        control::Plan plan;
+        for (int i=0;i<12;++i) plan=r.send({"round_barrier"});
+        Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.cms>0,"Thiết lập phải GIU_HUONG");
+        plan=r.advance(r.p.turn_start_cm);
+        Check(plan.state==control::PlannerState::GIU_HUONG,"Đang GIU_HUONG đủ quãng cũng không bắt đầu rẽ");
     } else if (name=="votes") {
         for (const std::string mode:{"conflict","repeat","few","stale","barrier"}) {
             Rig r;
@@ -134,17 +259,18 @@ void Case(const std::string& name) {
                 else r.send({mode=="barrier"?"work_barrier":"left"});
                 if (mode=="stale") r.now+=r.p.det_max_age_ms+1;
             }
-            auto plan=r.edge(); plan=r.edge();
+            auto plan=r.advance(r.p.turn_start_cm/2); plan=r.advance(r.p.turn_start_cm/2);
             Check(control::StateName(plan.state)==std::string("BAM_LAN"),"Sai luật phiếu "+mode);
         }
     } else if (name=="obstacle_stop_no_turn") {
-        // Đang DUNG_VAT_CAN (obstacle_action 1) thì mép mặt nạ mở không được bắt đầu rẽ.
+        // Đang DUNG_VAT_CAN (obstacle_action 1), đủ quãng cũng không được bắt đầu rẽ.
         Rig r; r.p.obstacle_action=1; r.arm();
         r.mask(60,140);
         for (int y=24;y<57;++y) for (int x=90;x<120;++x) r.in.mask.at<unsigned char>(y,x)=0;
         control::Plan plan;
         for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
         Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0,"Thiết lập phải DUNG_VAT_CAN");
+        r.in.odo_cm+=r.p.turn_start_cm;
         for (int i=0;i<4;++i) {
             r.mask(0,140);
             for (int y=24;y<57;++y) for (int x=90;x<120;++x) r.in.mask.at<unsigned char>(y,x)=0;
@@ -221,7 +347,7 @@ void Case(const std::string& name) {
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
-        r.edge(); Check(control::StateName(r.edge().state)==std::string("RE_TRAI"),"Conf thấp đủ phiếu vẫn armed");
+        r.advance(r.p.turn_start_cm/2); Check(control::StateName(r.advance(r.p.turn_start_cm/2).state)==std::string("RE_TRAI"),"Conf thấp đủ phiếu vẫn armed");
     } else if (name=="space_during_turn") {
         for (bool turning:{false,true}) for (bool preserve:{false,true}) {
             Rig r; r.in.yaw_deg=37; r.in.odo_cm=100;
@@ -230,7 +356,7 @@ void Case(const std::string& name) {
             r.planner.Reset(preserve); r.in.stop=false; r.in.detections={};
             r.in.yaw_deg=-300; r.in.odo_cm=-300; r.in.go=true; ++r.now;
             Check(r.step().state==control::PlannerState::BAM_LAN,"G sau Space bỏ mốc cũ"); r.in.go=false;
-            r.edge(); Check(r.edge().state==control::PlannerState::BAM_LAN,"Space xóa armed/hướng cũ");
+            r.advance(r.p.turn_start_cm/2); Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Space xóa armed/hướng cũ");
             r.mask(60,140); r.in.yaw_deg=10; r.in.odo_cm=0;
             r.turn(false); r.in.yaw_deg=10+r.p.turn_yaw_deg; ++r.now;
             Check(r.step().state==control::PlannerState::BAM_LAN,"Phiên mới dùng yaw0 mới");
@@ -287,7 +413,7 @@ void Case(const std::string& name) {
         Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0,"Đỏ dừng phiên rẽ/armed");
         for (int i=0;i<r.p.vote_window+r.p.green_frames;++i) plan=r.send({"green"});
         Check(plan.state==control::PlannerState::BAM_LAN,"Nhả đỏ về bám làn");
-        if (turning) { r.edge(); Check(r.edge().state==control::PlannerState::BAM_LAN,"Không rẽ tiếp yaw0 trước đỏ"); }
+        if (turning) { r.advance(r.p.turn_start_cm/2); Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Không rẽ tiếp yaw0 trước đỏ"); }
         else {
             r.in.odo_cm=100+r.p.turn_arm_cm+0.01; ++r.now;
             Check(r.step().reason=="HUY_RE","Đỏ giữ armed và mốc odo cũ");
@@ -296,12 +422,12 @@ void Case(const std::string& name) {
             Rig kept; kept.p.vote_window=kept.p.vote_min; kept.arm();
             for (int i=0;i<kept.p.vote_min;++i) kept.send({"red"});
             for (int i=0;i<kept.p.vote_window+kept.p.green_frames;++i) kept.send({"green"});
-            kept.edge(); Check(control::StateName(kept.edge().state)==std::string("RE_TRAI"),"Nhả đỏ còn armed khi trong quãng");
+            kept.advance(kept.p.turn_start_cm/2); Check(control::StateName(kept.advance(kept.p.turn_start_cm/2).state)==std::string("RE_TRAI"),"Nhả đỏ còn armed khi trong quãng");
             for (bool release:{false,true}) {
                 Rig fault; fault.p.vote_window=fault.p.vote_min; fault.arm();
                 for (int i=0;i<fault.p.vote_min;++i) plan=fault.send({"red"});
                 Check(plan.state==control::PlannerState::DUNG_DEN_DO,"Thiết lập phải giữ đỏ khi armed");
-                fault.mask(0,140);
+                fault.in.odo_cm+=fault.p.turn_start_cm;
                 if (!release) {
                     fault.in.sensor_ok=false; ++fault.now; plan=fault.step();
                     Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
@@ -321,16 +447,16 @@ void Case(const std::string& name) {
         Rig r; r.in.odo_cm=100; r.arm();
         r.in.odo_cm=110;
         for (int i=0;i<r.p.vote_window;++i) r.send({"right","no_left"});
-        r.edge(); Check(control::StateName(r.edge().state)==std::string("RE_TRAI"),"Armed bỏ biển ngược");
+        Check(control::StateName(r.advance(r.p.turn_start_cm-10).state)==std::string("RE_TRAI"),"Armed bỏ biển ngược");
         for (int i=0;i<r.p.vote_window;++i) Check(control::StateName(r.send({"right"}).state)==std::string("RE_TRAI"),"Đang rẽ không đổi hướng");
         r.in.yaw_deg=r.p.turn_yaw_deg; ++r.now; Check(r.step().state==control::PlannerState::BAM_LAN,"Biển mới không đổi yaw0");
         Rig distance; distance.in.odo_cm=100; distance.arm(); distance.in.odo_cm=120;
         for (int i=0;i<distance.p.vote_window;++i) distance.send({"left"});
         distance.in.odo_cm=100+distance.p.turn_arm_cm+0.01; ++distance.now;
         Check(distance.step().reason=="HUY_RE","Biển mới không đặt lại mốc armed");
-        Rig travel; travel.turn(); travel.in.odo_cm=10;
+        Rig travel; travel.turn(); const double turn_odo=travel.in.odo_cm; travel.in.odo_cm+=10;
         for (int i=0;i<travel.p.vote_window;++i) travel.send({"right"});
-        travel.in.odo_cm=travel.p.turn_max_cm+0.01; ++travel.now;
+        travel.in.odo_cm=turn_odo+travel.p.turn_max_cm+0.01; ++travel.now;
         Cancelled(travel.step(),travel.p);
         Rig clock; clock.p.turn_max_ms=1000; clock.turn(); const auto start=clock.now;
         while (clock.now<start+clock.p.turn_max_ms) {
@@ -346,22 +472,18 @@ void Case(const std::string& name) {
         ++r.now; plan=r.step(); Check(std::abs(plan.debug.d)<1e-9,"Không xung đạo hàm ở mask kế tiếp");
     } else if (name=="j1") {
         Rig r; r.arm();
-        for (int y=0;y<20;++y) for (int x=0;x<=60;++x) r.in.mask.at<unsigned char>(y,x)=1;
-        for (int i=0;i<2;++i) { r.now+=40; Check(r.step().state==control::PlannerState::BAM_LAN,"Mép ở hàng xa không thay scan_rows[0]"); }
-        Check(r.edge(false).state==control::PlannerState::BAM_LAN,"Sai mép không rẽ");
-        Check(r.edge().state==control::PlannerState::BAM_LAN,"Mask mới thứ nhất");
-        for (int i=0;i<3;++i) { ++r.now; Check(r.step(false).state==control::PlannerState::BAM_LAN,"Không đếm lại mask_ms"); }
-        r.mask(60,140); ++r.now; r.step();
-        Check(r.edge().state==control::PlannerState::BAM_LAN,"Mask đóng mép ngắt liên tiếp");
-        Check(control::StateName(r.edge().state)==std::string("RE_TRAI"),"Hai mask mới liên tiếp mới rẽ");
+        r.mask(0,140);
+        for (int i=0;i<4;++i) { r.now+=40; Check(r.step().state==control::PlannerState::BAM_LAN,"J1 đúng nhưng chưa đi đủ quãng không được rẽ"); }
+        Check(r.advance(r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"J1 đúng và29cm vẫn chưa rẽ");
     } else if (name=="arm_distance") {
         for (double sign:{-1.0,1.0}) {
             Rig r; r.in.odo_cm=100; r.arm();
+            r.avoid();
             r.in.odo_cm=100+sign*r.p.turn_arm_cm; ++r.now;
             Check(r.step().reason!="HUY_RE","Đúng biên chưa hủy");
             r.in.odo_cm+=sign*0.01; ++r.now;
             auto plan=r.step(); Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE" && plan.debug.reason==plan.reason,"Quá quãng phải hủy");
-            r.edge(); Check(r.edge().state==control::PlannerState::BAM_LAN,"Hủy không được rẽ lại");
+            r.advance(r.p.turn_start_cm/2); Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Hủy không được rẽ lại");
         }
     } else if (name=="yaw") {
         for (bool left:{false,true}) for (double sign:{-1.0,1.0}) {
@@ -375,7 +497,7 @@ void Case(const std::string& name) {
         double left_angle=0;
         for (bool left:{false,true}) {
             Rig r; r.p.turn_steer_deg=r.p.steer_max_deg=25; r.p.steer_rate_dps=10;
-            r.arm(left?"left":"right"); auto before=r.edge(left); auto plan=r.edge(left);
+            r.arm(left?"left":"right"); auto before=r.advance(r.p.turn_start_cm-1); auto plan=r.advance(1);
             Check(std::abs(plan.cmd.deg-before.cmd.deg)<=0.4+1e-6,"Giới hạn rate từ góc vừa gửi");
             double previous=plan.cmd.deg;
             for (int i=0;i<30;++i) {
@@ -396,7 +518,7 @@ void Case(const std::string& name) {
             a.in.sensor_ok=false; a.in.sensor_ms=-1; a.in.yaw_deg=999; a.in.odo_cm=-999;
             b.in.sensor_ok=true; b.in.yaw_deg=0; b.in.odo_cm=0;
             a.send({"left"}); b.send({"left"});
-            auto x=a.edge(), y=b.edge();
+            auto x=a.advance(a.p.turn_start_cm), y=b.advance(b.p.turn_start_cm);
             Check(x.state==y.state && x.reason==y.reason && x.cmd.cms==y.cmd.cms && x.cmd.deg==y.cmd.deg && x.state==control::PlannerState::BAM_LAN,"Tắt phải bỏ qua cảm biến/biển rẽ");
         }
     } else if (name=="red") {
@@ -413,13 +535,13 @@ void Case(const std::string& name) {
             r.now+=200; Check(r.step(true,false).state==control::PlannerState::RE_TRAI,"200ms vẫn hợp lệ"); ++r.now;
         } else if (reason=="sensor_invalid") { r.in.sensor_ms=-1; reason="CAM_BIEN_CU"; }
         else if (reason=="RE_QUA_CM") {
-            r.in.odo_cm=-r.p.turn_max_cm; ++r.now;
+            r.in.odo_cm-=r.p.turn_max_cm; ++r.now;
             Check(r.step().state==control::PlannerState::RE_TRAI,"Đúng biên cm chưa lỗi"); r.in.odo_cm-=0.01;
         } else if (reason=="RE_QUA_MS") {
             for (int64_t t=start+100;t<=start+r.p.turn_max_ms;t+=100) { r.now=t; r.in.odo_cm+=0.1; r.step(); }
             Check(r.step().state==control::PlannerState::RE_TRAI,"Đúng biên ms chưa lỗi"); ++r.now;
         } else if (reason=="KET_RE") {
-            Rig progress; progress.turn(); progress.now+=1500; progress.in.odo_cm=1;
+            Rig progress; progress.turn(); progress.now+=1500; progress.in.odo_cm+=1;
             Check(progress.step().state==control::PlannerState::RE_TRAI,"Đúng1cm/1500ms không phải kẹt");
             r.now=start+1499; Check(r.step().state==control::PlannerState::RE_TRAI,"Chưa1500ms không kẹt"); ++r.now;
         } else if (reason=="mask_stale") { r.now+=r.p.mask_max_age_ms+1; }
@@ -451,7 +573,7 @@ void Case(const std::string& name) {
         RecoveredSensor(r);
         if (name=="RE_QUA_CM" || name=="RE_QUA_MS") {
             Rig limit; limit.turn(); limit.in.yaw_deg=limit.p.turn_yaw_deg;
-            if (name=="RE_QUA_CM") { limit.in.odo_cm=limit.p.turn_max_cm+0.01; ++limit.now; }
+            if (name=="RE_QUA_CM") { limit.in.odo_cm+=limit.p.turn_max_cm+0.01; ++limit.now; }
             else limit.now+=limit.p.turn_max_ms+1;
             Cancelled(limit.step(),limit.p);
             RecoveredSensor(limit);
@@ -470,7 +592,10 @@ void Case(const std::string& name) {
 int main(int argc, char** argv) {
     try {
         Check(argc>=2,"Thiếu tên ca");
-        if (std::string(argv[1])=="params") { Check(argc==3,"Thiếu YAML tạm"); Params(argv[2]); }
+        if (std::string(argv[1])=="params" || std::string(argv[1])=="t68_params") {
+            Check(argc==3,"Thiếu YAML tạm");
+            if (std::string(argv[1])=="params") Params(argv[2]); else T68Params(argv[2]);
+        }
         else Case(argv[1]);
         std::cout<<"ĐẠT: "<<argv[1]<<'\n'; return 0;
     } catch (const std::exception& e) { std::cerr<<"KHÔNG ĐẠT: "<<e.what()<<'\n'; return 1; }
