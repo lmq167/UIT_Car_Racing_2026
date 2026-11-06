@@ -88,6 +88,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
         ClearTurn(); turn_fault_=true;
     };
+    // Lỗi cảm biến/rẽ chỉ tạm: cảm biến tươi liên tục >= 1 s thì cho rẽ lại (IMU lỗi lúc khởi động luôn sensor_ok sai nên không hồi).
+    if(params.turn_enable && turn_fault_) {
+        if(sensor_bad) sensor_good_ms_=-1;
+        else if(sensor_good_ms_<0) sensor_good_ms_=now_ms;
+        else if(now_ms-sensor_good_ms_>=1000) { turn_fault_=false; sensor_good_ms_=-1; }
+    }
     if(params.turn_enable && !turn_fault_) {
         if(sensor_bad) fault();
         else if(turning_) {

@@ -362,6 +362,18 @@ void Case(const std::string& name) {
         Check(plan.state!=control::PlannerState::GIU_HUONG,"Bánh không tiến 1500 ms phải hết giữ hướng");
         for (int i=0;i<60;++i) plan=rb();
         Check(plan.cmd.cms==0 && plan.state!=control::PlannerState::GIU_HUONG,"Sau đó dừng do mất làn, không giữ hướng lại");
+    } else if (name=="fault_recovers") {
+        // Một mẫu cảm biến cũ chỉ tắt rẽ tạm; cảm biến tươi lại >= 1 s thì biển mới rẽ được.
+        Rig r; r.in.odo_cm=0;
+        r.now+=40; r.in.sensor_ms=r.now-300; r.step(true,false);  // một mẫu cũ 300 ms
+        control::Plan plan;
+        for (int i=0;i<r.p.vote_min;++i) plan=r.send({"left"},0.9f);
+        r.in.odo_cm+=r.p.turn_start_cm+1; plan=r.step();
+        Check(plan.state==control::PlannerState::BAM_LAN,"Ngay sau lỗi không được rẽ");
+        for (int i=0;i<30;++i) { r.now+=40; r.step(); }  // 1,2 s cảm biến tươi
+        for (int i=0;i<r.p.vote_min;++i) plan=r.send({"left"},0.9f);
+        r.in.odo_cm+=r.p.turn_start_cm+1; plan=r.step();
+        Check(plan.state==control::PlannerState::RE_TRAI,"Cảm biến tươi lại 1 s thì phải rẽ được");
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
