@@ -85,6 +85,16 @@ void Unit() {
         Check(r.send({}).cmd.cms>5,"G mới không mang giữ cũ");
     }
     {
+        // Người đi bộ đủ phiếu: tốc độ 0, lý do NGUOI_DI_BO, state giữ BAM_LAN; tin cậy < 0,5 bỏ; hết phiếu chạy tiếp.
+        Rig r; r.moving();
+        for(int i=0;i<3;++i) Check(r.send({r.light("person",700,0.4f)}).cmd.cms>0,"Tin cậy thấp không dừng");
+        r.send({r.light("people",700)}); r.send({r.light("person",700)});
+        auto plan=r.send({r.light("people",700)});
+        Check(plan.cmd.cms==0 && plan.reason=="NGUOI_DI_BO" && plan.state==control::PlannerState::BAM_LAN,"Đủ phiếu người phải dừng, giữ state");
+        for(int i=0;i<20;++i) plan=r.send({});
+        Check(plan.cmd.cms>0 && plan.reason!="NGUOI_DI_BO","Hết phiếu người phải chạy tiếp");
+    }
+    {
         Rig r; r.p.start_wait_green=0;
         r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=0; r.p.approach_cms=5;
         const auto plan=r.go();
