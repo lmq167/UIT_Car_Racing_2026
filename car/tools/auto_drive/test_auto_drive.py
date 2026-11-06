@@ -1327,7 +1327,8 @@ def t73_case(case, cfg, root):
             with running(cfg, root / direction, values=current, env=env, setup=setup, no_yolo=False,
                          yolo_schedule=((1, mode),)) as r:
                 if case == 't73_encoder_turning':
-                    t73_add_feed(r)
+                    # Rẽ theo quãng: encoder giữ mốc0 tới khi bắt đầu rẽ rồi mới tiến đều.
+                    t73_add_feed(r); r.t73_progress = False
                 else:
                     t57_feed(r)
                 r.boot()
@@ -1360,6 +1361,8 @@ def t73_case(case, cfg, root):
                          'Chưa bám làn trước lỗi cảm biến', 'setup')
                 else:
                     t68a_turn(r, go_mark, started[0], direction)
+                    if case == 't73_encoder_turning':
+                        r.t73_base, r.t73_origin, r.t73_progress = r.t57_odo, td.now_ms(), True
                 if case == 't73_default_enable':
                     # T73–5,6: chứng minh bật thật bằng hành vi rẽ khi YAML bỏ khóa.
                     default_value(r.text(), 'turn_enable', 1); repo_value('turn_enable', 1)
@@ -3565,6 +3568,7 @@ def selftest():
                 yield run
             with patch('{}.running'.format(__name__), fault_running), \
                     patch('{}.t73_add_feed'.format(__name__)), \
+                    patch('{}.t68a_turn'.format(__name__), side_effect=lambda run, *a, **k: (setattr(run, 't57_odo', 30), run.of('state')[-1])[1]), \
                     patch.object(td, 'now_ms', return_value=100), \
                     patch.object(os, 'kill', create=True, side_effect=lambda *args: runs[-1].stop()):
                 call = lambda: t73_add_case('t73_fault_stop_order', None, Path('synthetic'))
