@@ -19,6 +19,7 @@ struct ControlParams {
     double pair_max_shift_frac, pair_merge_frac;
     int kd_filter_ms;
     int obstacle_action, work_barrier_action;
+    double work_barrier_y2_frac;
     double obstacle_hole_frac, obstacle_pass_cm;
     int start_wait_green, vote_window, vote_min, green_frames;
     double red_conf_min, green_conf_min, off_conf_min;

@@ -30,7 +30,7 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, barrier_near; };
+    struct Vote { int64_t ms; bool red, green, barrier_near, barrier_seen; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;

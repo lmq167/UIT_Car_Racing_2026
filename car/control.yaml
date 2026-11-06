@@ -32,6 +32,7 @@ pair_max_shift_frac: 0.25 # Dịch ngang tối đa của một vạch giữa hai
 pair_merge_frac: 0.08 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt
 kd_filter_ms: 0 # Hằng thời gian lọc đạo hàm sai số, ms; 0 = tắt
 work_barrier_action: 0 # Rào công trình: 0 = tắt, 1 = rẽ trái khi hộp gần đủ phiếu
+work_barrier_y2_frac: 0.65 # Đáy hộp rào (theo chiều cao ảnh) tối thiểu để bắt đầu rẽ; nhỏ hơn thì rẽ sớm hơn
 obstacle_action: 0 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_frac: 0.10 # Tỉ lệ lỗ tối thiểu trong mặt đường để bỏ phiếu vật cản
 obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml

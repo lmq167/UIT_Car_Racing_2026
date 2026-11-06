@@ -39,7 +39,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; barrier_turn_=false; barrier_done_=false;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) {
-        for(auto &vote:votes_) vote.barrier_near=false;
+        for(auto &vote:votes_) vote.barrier_near=false, vote.barrier_seen=false;
         return;
     }
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false;
@@ -64,7 +64,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false,barrier_near=false,barrier_ready=false; double red_x=0; int barriers_now=0;
+    bool red=false,green=false,off=false,barrier_near=false,barrier_seen=false,barrier_ready=false,barrier_slow=false; double red_x=0; int barriers_now=0;
     const auto &batch=input.detections;
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
@@ -88,21 +88,26 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
-            else if(double(b.y)+b.height>=0.70*720) barrier_near=true;
+            else {  // giảm tốc từ 0,10 chiều cao ảnh trước ngưỡng rẽ; hộp xa hơn không tính
+                const double bottom=double(b.y)+b.height;
+                if(bottom>=(params.work_barrier_y2_frac-0.10)*720) barrier_seen=true;
+                if(bottom>=params.work_barrier_y2_frac*720) barrier_near=true;
+            }
         }
         if(!fresh || red || off || !green) green_run_=0;
         if(batch.frame_id>last_frame_) {
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,barrier_near});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,barrier_near,barrier_seen});
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0,barriers=0;
-        for(const auto &v:votes_) { reds+=v.red; greens+=v.green; barriers+=v.barrier_near; }
+        int reds=0,greens=0,barriers=0,seen=0;
+        for(const auto &v:votes_) { reds+=v.red; greens+=v.green; barriers+=v.barrier_near; seen+=v.barrier_seen; }
+        barrier_slow=params.work_barrier_action==1 && seen>=params.vote_min;
         barriers_now=barriers;
         barrier_ready=params.work_barrier_action==1 && barriers>=params.vote_min;
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
@@ -207,6 +212,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
         }
         plan.debug.speed_cms=plan.cmd.cms;
+    }
+    if(barrier_slow && result.debug.state=="BAM_LAN") {  // rào đã xác nhận: giảm tốc trước khi rẽ
+        plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms}); plan.debug.speed_cms=plan.cmd.cms;
     }
     if(params.obstacle_action==2 || params.work_barrier_action==1) {
         if(result.debug.state!="BAM_LAN") {

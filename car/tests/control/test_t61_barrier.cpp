@@ -26,7 +26,7 @@ struct Rig {
     int64_t now=1000;
     uint64_t frame=0;
     Rig() {
-        p.work_barrier_action=1; p.start_wait_green=0; p.right_lost_ms=0;
+        p.work_barrier_action=1; p.work_barrier_y2_frac=0.70; p.start_wait_green=0; p.right_lost_ms=0;
         p.obstacle_pass_cm=10;
         in.mask=Mask(); in.yolo_enabled=true; in.go=true;
         send(false); in.go=false;
@@ -77,6 +77,38 @@ void Params(const char *yaml, const char *temporary) {
         try { p.Validate(); } catch(const std::exception &) { rejected=true; }
         Check(rejected,"Validate bỏ qua miền khóa rào");
     }
+}
+void YTwo(const char *yaml, const char *temporary) {
+    struct Cleanup { const char *path; ~Cleanup() { std::remove(path); } } cleanup{temporary};
+    std::ostringstream report;
+    Check(ControlParams().work_barrier_y2_frac==0.65,"Mặc định struct y2 sai");
+    Check(ControlParams::Load(yaml,report).work_barrier_y2_frac==0.65,"Mặc định YAML y2 sai");
+    auto load=[&](const std::string &body) {
+        { std::ofstream out(temporary); out << "%YAML:1.0\n---\n" << body << '\n'; }
+        return ControlParams::Load(temporary,report);
+    };
+    Check(load("work_barrier_y2_frac: 0.3").work_barrier_y2_frac==0.3,"Biên dưới y2");
+    Check(load("work_barrier_y2_frac: 0.95").work_barrier_y2_frac==0.95,"Biên trên y2");
+    for(const auto *value:{"0.29","0.96","abc","[1]",".Nan"}) {
+        bool rejected=false;
+        try { load(std::string("work_barrier_y2_frac: ")+value); } catch(const std::exception &) { rejected=true; }
+        Check(rejected,"Chấp nhận y2 sai kiểu/miền");
+    }
+    // ngưỡng đổi được: 0,65 -> hộp có đáy 468 kích hoạt, 467 không; hộp xa chỉ giảm tốc
+    { Rig r; r.p.work_barrier_y2_frac=0.65;
+      for(int n=0;n<6;++n) Check(r.send(true,467).reason!="RE_TRAI","Đáy dưới ngưỡng vẫn rẽ");
+      Plan plan; for(int n=0;n<r.p.vote_min;++n) plan=r.send(true,468);
+      Check(plan.reason=="RE_TRAI","Đáy đúng ngưỡng không rẽ"); }
+    { Rig r; r.p.cruise_cms=10; r.p.max_speed_cms=10; Plan plan;
+      for(int n=0;n<r.p.vote_min+2;++n) plan=r.send(true,440);
+      Check(plan.reason!="RE_TRAI" && plan.state==PlannerState::BAM_LAN && plan.cmd.cms<=r.p.approach_cms,
+            "Rào xa đã xác nhận phải giảm tốc, chưa rẽ");
+      Rig far; far.p.cruise_cms=10; far.p.max_speed_cms=10; Plan f;
+      for(int n=0;n<far.p.vote_min+2;++n) f=far.send(true,400);
+      Check(f.cmd.cms>far.p.approach_cms,"Hộp quá xa vẫn giảm tốc");
+      Rig off; off.p.cruise_cms=10; off.p.max_speed_cms=10; off.p.work_barrier_action=0; Plan q;
+      for(int n=0;n<off.p.vote_min+2;++n) q=off.send(true,440);
+      Check(q.cmd.cms>off.p.approach_cms,"Khóa 0 vẫn giảm tốc"); }
 }
 void Votes() {
     for(int invalid=0;invalid<11;++invalid) {
@@ -171,7 +203,7 @@ void Disabled() {
 int main(int argc, char **argv) {
     try {
         Check(argc==3,"Cần control.yaml và YAML tạm");
-        Params(argv[1],argv[2]); Votes(); Turn(); Disabled();
+        Params(argv[1],argv[2]); YTwo(argv[1],argv[2]); Votes(); Turn(); Disabled();
         std::cout << "PASS T61\n"; return 0;
     } catch(const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }
