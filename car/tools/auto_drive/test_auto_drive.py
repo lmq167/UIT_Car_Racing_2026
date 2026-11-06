@@ -1303,10 +1303,11 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
         return batches if len(batches) >= run.values.get('vote_min', 3) else None
     if early_votes:
         first = len(run.events())
-        run.inject('yolo_resume')
+        run.inject('yolo_throw_off')
         run.wait(lambda: enough(fresh_since, first), 3, 'Thiếu phiếu thử trước 1000 ms')
         run.frames(3, lane_only)
-    run.inject('yolo_stall')
+    # Stall giữ cả model/mask; chỉ ngắt phiếu để không kích hoạt dừng mặt nạ cũ.
+    run.inject('yolo_throw_on')
     age = run.values.get('det_max_age_ms', 500)
     last = max((b[2] for b in detection_batches(run.events())), default=fresh_since - age - 1)
     need(last + age < fresh_since + 1000,
@@ -1318,7 +1319,7 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
     # Giữ nguyên quãng đã đủ: phiếu trước khi hồi không được tự khởi động lại rẽ.
     run.frames(3, lane_only)
     first = len(run.events())
-    resumed = run.inject('yolo_resume')
+    resumed = run.inject('yolo_throw_off')
     if not early_votes:
         # Fixture idle chỉ có biển từ frame120; lô rỗng trước đó không phải phiếu biển.
         def idle_sign():
@@ -3723,7 +3724,8 @@ def selftest():
             event = (self.clock, 'inject', '0 ' + command, False)
             self.es.append(event)
             if command.startswith('yolo_'):
-                self.yolo = command == 'yolo_resume'
+                assert command in ('yolo_throw_on', 'yolo_throw_off'), 'Hồi cảm biến làm stall model/mask'
+                self.yolo = command == 'yolo_throw_off'
                 self.resumes += int(self.yolo)
             return event
         def tick(self):
