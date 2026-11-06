@@ -31,6 +31,8 @@ pair_mode: 0 # Chọn cặp vạch: 0 = như cũ, 1 = cặp bao quanh xe giữ l
 pair_max_shift_frac: 0.25 # Dịch ngang tối đa của một vạch giữa hai hàng liền nhau, theo chiều rộng mặt nạ
 pair_merge_frac: 0.08 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt
 kd_filter_ms: 0 # Hằng thời gian lọc đạo hàm sai số, ms; 0 = tắt
+work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
+work_barrier_y2_frac: 0.65 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_frac: 0.10 # Tỉ lệ lỗ tối thiểu trong mặt đường để bỏ phiếu vật cản
 obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml

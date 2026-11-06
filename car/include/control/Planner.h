@@ -33,7 +33,7 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, left=false, right=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
@@ -47,6 +47,7 @@ private:
     int64_t red_ms_=-1, wait_since_ms_=-1;
     double red_x_=0;
     bool red_latched_=false, start_cleared_=false;
+    bool barrier_done_=false; // Đã rẽ vì rào: bỏ qua rào tới khi hết phiếu rào (qua cả Space/G).
     bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;
     PlannerState state_=PlannerState::CHO_SAN_SANG;
