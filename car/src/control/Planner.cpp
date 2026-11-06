@@ -171,7 +171,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         barrier_slow=barriers_seen>=params.vote_min;
         if(!barriers_seen) barrier_done_=false;
         // Rào gần đủ phiếu: rẽ trái ngay bằng máy rẽ IMU (vòng kín theo yaw), chốt quyết định tới hết rẽ.
-        if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !turn_direction_ && !barrier_done_ && !rb_holding_ &&
+        if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_present &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min) {
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true;
             turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
