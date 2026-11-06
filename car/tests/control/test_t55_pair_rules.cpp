@@ -208,7 +208,7 @@ void Unit(const std::string &name) {
     LaneController c;
     if(name=="single_right") AllPairs(Step(c,Uniform(p,{0.55}),p),0,0.55,0.275);
     else if(name=="single_left") AllPairs(Step(c,Uniform(p,{0.45}),p),0.45,1,0.725);
-    else if(name=="empty") AllPairs(Step(c,Uniform(p,{}),p),-1,1,0.8);
+    else if(name=="empty") AllPairs(Step(c,Uniform(p,{}),p),-1,1,1-0.4/4);
     else if(name=="exact") AllPairs(Step(c,Uniform(p,{0.25,0.5,0.9}),p),0.25,0.5,0.375);
     else if(name=="near_previous" || name=="near_other" || name=="near_none" ||
             name=="reset" || name=="stale" || name=="invalid_reset" || name=="outside") {

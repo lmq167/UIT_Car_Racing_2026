@@ -151,9 +151,22 @@ void CheckMask(const std::vector<Frame> &frames) {
         const auto mask=Mask(frame.rows,p);
         const auto r=Step(c,mask,frame.ms,p);
         Check(r.debug.rows.size()==frame.rows.size(),"Thiếu debug hàng quét");
-        bool ok=std::isfinite(r.debug.e) && std::abs(r.debug.e-frame.e)<=0.02;
+        auto expected=frame.rows;
+        double weighted=0, total=0;
+        for(size_t i=0;i<expected.size();++i) if(expected[i].valid) {
+            auto &row=expected[i];
+            const double right=std::lround(row.right*mask.cols);
+            // T65c: suy tâm từ mép phải bị cắt, giữ nguyên tọa độ log gốc.
+            if(row.left<0 && right/mask.cols>=p.right_clip_frac) {
+                row.center=right/mask.cols-p.lane_width_frac[i]/4;
+                weighted+=p.row_weights[i]*2*(row.center-frame.rows[i].center);
+            }
+            total+=p.row_weights[i];
+        }
+        const double expectedError=total>0 ? std::max(-1.0,std::min(1.0,frame.e+weighted/total)) : frame.e;
+        bool ok=std::isfinite(r.debug.e) && std::abs(r.debug.e-expectedError)<=0.02;
         for(size_t i=0;i<frame.rows.size();++i) {
-            const bool rowOk=RowMatches(r.debug.rows[i],frame.rows[i],mask.cols);
+            const bool rowOk=RowMatches(r.debug.rows[i],expected[i],mask.cols);
             rowMatched+=rowOk; ++totalRows; ok=ok && rowOk;
         }
         if(ok) ++matched;
