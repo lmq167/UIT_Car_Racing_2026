@@ -84,7 +84,7 @@ void Params(const std::string& path) {
             Check(rejected==(value<low[i] || value>high[i]),std::string("Sai miền YAML ")+names[i]);
         }
     }
-    p.turn_steer_deg=p.steer_max_deg+1;
+    p.steer_max_deg=30; p.turn_steer_deg=p.steer_max_deg+1;
     p.turn_enable=1;
     bool rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }
     Check(rejected,"Validate phải từ chối góc rẽ quá trần khi bật rẽ");

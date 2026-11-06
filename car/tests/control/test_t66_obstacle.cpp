@@ -69,7 +69,7 @@ void Params(const char *yaml, const char *temporary) {
     struct Cleanup { const char *p; ~Cleanup() { std::remove(p); } } cleanup{temporary};
     std::ostringstream report;
     const auto defaults=ControlParams::Load(yaml,report);
-    Check(defaults.obstacle_action==0 && defaults.obstacle_hole_frac==0.10 && defaults.obstacle_pass_cm==40,"Mặc định YAML");
+    Check(defaults.obstacle_action==2 && defaults.obstacle_hole_frac==0.10 && defaults.obstacle_pass_cm==40,"Mặc định YAML");
     Check(report.str().find("obstacle_action =")==std::string::npos &&
           report.str().find("obstacle_hole_frac =")==std::string::npos &&
           report.str().find("obstacle_pass_cm =")==std::string::npos,"YAML thiếu khóa mới");
@@ -78,7 +78,7 @@ void Params(const char *yaml, const char *temporary) {
         return ControlParams::Load(temporary,report);
     };
     const auto missing=load("{}");
-    Check(missing.obstacle_action==0 && missing.obstacle_hole_frac==0.10,"Mặc định khi thiếu khóa");
+    Check(missing.obstacle_action==2 && missing.obstacle_hole_frac==0.10,"Mặc định khi thiếu khóa");
     for(bool action:{false,true}) {
         auto invalid=missing;
         if(action) invalid.obstacle_action=3; else invalid.obstacle_hole_frac=0.01;

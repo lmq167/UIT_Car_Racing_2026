@@ -199,6 +199,7 @@ void WriteGolden(const std::vector<Frame> &frames, const std::string &path) {
 // T55 §4.1: tắt cả hai luật phải khớp bản fab24d1 tới 1e-9 từng khung.
 void Disabled(const std::vector<Frame> &frames) {
     ControlParams p; p.right_lost_ms=0;
+    p.max_speed_cms=10; p.cruise_cms=8; p.steer_max_deg=30; p.slow_per_deg=0.1;
     const auto results=Replay(frames,p);
     std::ifstream in(std::string(T55_FIXTURE_DIR)+"/lane_golden_fab24d1.csv");
     std::string line;

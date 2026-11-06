@@ -16,6 +16,7 @@ struct Rig {
     uint64_t id=0;
 
     Rig() {
+        p.obstacle_action=0;
         in.yolo_enabled=true;
         in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0));
         for (int y=0; y<60; ++y) {

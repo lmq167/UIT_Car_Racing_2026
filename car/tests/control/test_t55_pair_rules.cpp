@@ -121,6 +121,7 @@ void PrintRows(const ControlResult &r, const cv::Mat &mask, const ControlParams 
 // T55c-test §1: dựng mask đúng như T55a, so toàn bộ đầu ra golden fab24d1 tới 1e-9.
 void Off() {
     ControlParams p; p.right_lost_ms=0;
+    p.max_speed_cms=10; p.cruise_cms=8; p.steer_max_deg=30; p.slow_per_deg=0.1;
     Check(p.pair_mode==0,"pair_mode mặc định phải là 0");
     std::ifstream fixture(std::string(T55_FIXTURE_DIR)+"/lane_run_7675_31p5_39p9.csv");
     std::ifstream golden(std::string(T55_FIXTURE_DIR)+"/lane_golden_fab24d1.csv");

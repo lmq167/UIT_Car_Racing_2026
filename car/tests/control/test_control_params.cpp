@@ -26,6 +26,10 @@ int main(int argc, char **argv) {
         std::ostringstream report;
         const auto sample=control::ControlParams::Load(argv[1],report);
         const control::ControlParams defaults;
+        Check(defaults.cruise_cms==15 && defaults.steer_max_deg==40 && defaults.max_speed_cms==15 &&
+              defaults.obstacle_action==2,"Mặc định thi phải là 15/40/15/2");
+        Check(std::abs(defaults.slow_per_deg-1.0/6)<1e-9,"Mặc định giảm tốc phải cho khoảng 10 cm/s ở góc 30 độ, cruise 15");
+        Check(defaults.record_every_n==5,"Mặc định ghi ảnh vẫn là mỗi 5 khung");
         std::ostringstream a,b; sample.PrintTable(a); defaults.PrintTable(b);
         Check(a.str()==b.str(),"control.yaml mẫu phải đúng toàn bộ mặc định L2");
         Check(report.str().find("(mặc định)")==std::string::npos,"Mẫu đủ khóa, không dùng mặc định ngầm");
@@ -46,12 +50,16 @@ int main(int argc, char **argv) {
             Reject([&] { load(body,header); },key,context+'\"');
         };
         const auto missing=load("kp: 42.\n");
-        Check(missing.kp==42 && missing.cruise_cms==8 && missing.scan_rows==defaults.scan_rows,"Thiếu khóa phải dùng mặc định");
-        Check(missing.max_speed_cms==10 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
-              "Thiếu khóa tốc độ phải giữ mặc định 10/8/5/4/4");
-        Check(report.str().find("cruise_cms = 8 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
+        Check(missing.kp==42 && missing.cruise_cms==15 && missing.scan_rows==defaults.scan_rows,"Thiếu khóa phải dùng mặc định");
+        Check(missing.max_speed_cms==15 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
+              "Thiếu khóa tốc độ phải giữ mặc định 15/15/5/4/4");
+        Check(report.str().find("cruise_cms = 15 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
         Check(report.str().find("kp = 42 độ (mặc định)")==std::string::npos,"Khóa đã nạp không được báo mặc định");
         for(bool header:{false,true}) {
+            const auto race=load("cruise_cms: 15\nmax_speed_cms: 15\nsteer_max_deg: 40\n",header);
+            Check(race.cruise_cms==15 && race.max_speed_cms==15 && race.steer_max_deg==40,"Phải nhận tốc độ 15 và góc 40");
+            for(int value:{0,1,5,40})
+                Check(load("record_every_n: "+std::to_string(value)+"\n",header).record_every_n==value,"Phải nhận tắt ghi ảnh và nhịp ghi hợp lệ");
             const auto cap20=load("max_speed_cms: 20\ncruise_cms: 20\napproach_cms: 10\nmin_cms: 10\nlost_cms: 10\n",header);
             Check(cap20.max_speed_cms==20 && cap20.cruise_cms==20 && cap20.approach_cms==10 &&
                   cap20.min_cms==10 && cap20.lost_cms==10,"Phải nhận trần 20 và giữ biên 10 của approach/min/lost");
@@ -108,7 +116,8 @@ int main(int argc, char **argv) {
             {"off_box_min_area_frac: 1.1\n","off_box_min_area_frac"},
             {"unknown: 1\n","unknown"}, {"lane_width_px: [100]\n","lane_width_px"},
             {"kp: .Nan\n","kp"}, {"kd: .Inf\n","kd"}, {"kp: -1\n","kp"},
-            {"steer_max_deg: 41\n","steer_max_deg"}, {"max_speed_cms: 21\n","max_speed_cms"},
+            {"steer_max_deg: 41\n","steer_max_deg"}, {"steer_max_deg: 40.1\n","steer_max_deg"},
+            {"cruise_cms: 16\nmax_speed_cms: 15\n","cruise_cms"}, {"max_speed_cms: 21\n","max_speed_cms"},
             {"max_speed_cms: 20.1\n","max_speed_cms"},
             {"max_speed_cms: 20\ncruise_cms: 20.1\n","cruise_cms"},
             {"max_speed_cms: 20\ncruise_cms: 21\n","cruise_cms"},
@@ -119,6 +128,8 @@ int main(int argc, char **argv) {
             {"max_speed_cms: 20\ncruise_cms: 20\nmin_cms: 15\n","min_cms"},
             {"max_speed_cms: 20\ncruise_cms: 20\nlost_cms: 15\n","lost_cms"},
             {"control_period_ms: 19\n","control_period_ms"}, {"regain_frames: 3.5\n","regain_frames"},
+            {"record_every_n: -1\n","record_every_n"}, {"record_every_n: 41\n","record_every_n"},
+            {"record_every_n: 0.5\n","record_every_n"},
             {"cruise_cms: \"8\"\n","cruise_cms"}, {"kp: []\n","kp"},
             {"kp:\n","kp"}, {"scan_rows: []\n","scan_rows"},
             {"scan_rows: [0, 0.6, 0.4]\n","scan_rows"}, {"scan_rows: [1, 0.6, 0.4]\n","scan_rows"},
@@ -128,8 +139,8 @@ int main(int argc, char **argv) {
             {"lane_width_frac: [0,0.5,0.4]\n","lane_width_frac"},
             {"lane_width_frac: [1.1,0.5,0.4]\n","lane_width_frac"},
             {"min_valid_rows: 4\n","min_valid_rows"},
-            {"lost_stop_ms: 200\n","lost_stop_ms"}, {"min_cms: 9\n","min_cms"},
-            {"max_speed_cms: 7\n","cruise_cms"}, {"lost_cms: 9\nmax_speed_cms: 8\n","lost_cms"},
+            {"lost_stop_ms: 200\n","lost_stop_ms"}, {"min_cms: 9\ncruise_cms: 8\n","min_cms"},
+            {"max_speed_cms: 7\n","cruise_cms"}, {"lost_cms: 9\nmax_speed_cms: 8\ncruise_cms: 8\n","lost_cms"},
             {"right_lost_ms: 199\n","right_lost_ms"}, {"right_lost_ms: 2001\n","right_lost_ms"},
             {"right_lost_ms: -1\n","right_lost_ms"}, {"right_lost_ms: 500.5\n","right_lost_ms"},
             {"right_clip_frac: 0.89\n","right_clip_frac"}, {"right_clip_frac: 1.01\n","right_clip_frac"},
@@ -138,6 +149,9 @@ int main(int argc, char **argv) {
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");
+        invalid=defaults; invalid.record_every_n=0; invalid.Validate();
+        invalid.record_every_n=-1;
+        Reject([&] { invalid.Validate(); },"record_every_n");
         invalid=defaults; invalid.row_weights={1e308,1e308,0};
         Reject([&] { invalid.Validate(); },"row_weights");
         const auto zeroSpeed=load("max_speed_cms: 0\ncruise_cms: 0\nmin_cms: 0\nlost_cms: 0\napproach_cms: 5\n");
