@@ -117,6 +117,21 @@ void Case(const std::string& name) {
             auto plan=r.edge(); plan=r.edge();
             Check(control::StateName(plan.state)==std::string("BAM_LAN"),"Sai luật phiếu "+mode);
         }
+    } else if (name=="obstacle_stop_no_turn") {
+        // Đang DUNG_VAT_CAN (obstacle_action 1) thì mép mặt nạ mở không được bắt đầu rẽ.
+        Rig r; r.p.obstacle_action=1; r.arm();
+        r.mask(60,140);
+        for (int y=24;y<57;++y) for (int x=90;x<120;++x) r.in.mask.at<unsigned char>(y,x)=0;
+        control::Plan plan;
+        for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
+        Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0,"Thiết lập phải DUNG_VAT_CAN");
+        for (int i=0;i<4;++i) {
+            r.mask(0,140);
+            for (int y=24;y<57;++y) for (int x=90;x<120;++x) r.in.mask.at<unsigned char>(y,x)=0;
+            r.now+=40; plan=r.step();
+            Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0 && plan.cmd.deg==0,
+                  "Đang dừng vật cản không được rẽ");
+        }
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);

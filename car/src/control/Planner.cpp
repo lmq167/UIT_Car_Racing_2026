@@ -206,7 +206,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
         lane_.Reset(); returning=true;
     }
-    if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO) {
+    if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
+       state_!=PlannerState::DUNG_VAT_CAN) {
         if(!mask_fresh) {
             ClearTurn(); state_=PlannerState::BAM_LAN;
         } else if(turning_ && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg) {

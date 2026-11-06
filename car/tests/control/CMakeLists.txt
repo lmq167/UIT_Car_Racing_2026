@@ -129,6 +129,9 @@ foreach(scenario signs votes j1 arm_distance yaw command disabled LOI_CAM_BIEN
     add_test(NAME acc_t57_${scenario} COMMAND test_t57_turn ${scenario})
     set_tests_properties(acc_t57_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
+# Hồi quy: đang dừng vật cản thì không bắt đầu rẽ (ca unit, không thuộc bộ chấp nhận).
+add_test(NAME test_t57_obstacle_stop_no_turn COMMAND test_t57_turn obstacle_stop_no_turn)
+set_tests_properties(test_t57_obstacle_stop_no_turn PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME acc_t57_params COMMAND test_t57_turn params ${CMAKE_CURRENT_BINARY_DIR}/t57_params.yaml)
 set_tests_properties(acc_t57_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 
