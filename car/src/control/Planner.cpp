@@ -66,7 +66,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         input.sensor_ms<0 || input.sensor_ms>now_ms || now_ms-input.sensor_ms>200;
     bool entered_wait=false, released=false, barrier_slow=false;
     if(input.stop) {
-        ClearTurn(); sent_angle_=0; command_ms_=-1;
+        ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
@@ -269,6 +269,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(std::abs(input.odo_cm-arm_odo_)>params.turn_arm_cm) { ClearTurn(); cancelled=true; }
             // Bắt đầu rẽ theo quãng encoder kể từ lúc biển đủ phiếu; đang né/về làn thì chờ bám làn thường.
             else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning && !rb_holding_ &&
+                    !(rb_in_pass_ && !rb_losing_) &&  // còn đủ phiếu vòng xuyến thì chưa rẽ (đảo phía trước)
                     std::abs(input.odo_cm-arm_odo_)>=params.turn_start_cm) {
                 turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
                 turn_ms_=progress_ms_=now_ms;
