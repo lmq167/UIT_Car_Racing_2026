@@ -42,6 +42,10 @@ CASES += ['t57_disabled_equivalence', 't57_open_imu', 't57_open_imu_drift',
           't57_transient_imu_armed', 't57_transient_encoder_armed',
           't57_transient_imu_turning', 't57_transient_encoder_turning',
           't57_transient_idle', 't57_csv_imu', 't57_csv_encoder', 't57_csv_both']
+CASES += ['t62_hold_170', 't62_hold_200', 't62_green_approach',
+          't62_reset_space', 't62_reset_go', 't62_reset_image',
+          't62_stop_089', 't62_stop_090', 't62_stop_091',
+          't62_stop_flicker', 't62_no_light', 't62_green_latch']
 CASES += ['t71_defaults', 't71_steer_40', 't71_steer_40_1', 't71_cruise_15',
           't71_cruise_16', 't71_motor_cap', 't71_curve_30',
           't72_zero_valid', 't72_negative_rejected', 't72_zero_keeps_text', 't72_reload_0_to_5',
@@ -71,6 +75,7 @@ for _light in ('red', 'green', 'off'):
 YOLO_BOXES = dict(empty=[], green=[('green', 800)], off=[('off', 800)],
                   red_mid=[('red', 800)], red_edge=[('red', 1152)],
                   red_089=[('red', 0.89 * 1280)], red_095=[('red', 0.95 * 1280)],
+                  red_091=[('red', 0.91 * 1280)],
                   red_050=[('red', 0.50 * 1280)], red_085=[('red', 0.85 * 1280)],
                   red_green=[('red', 1152), ('green', 800)])
 BOUNDS = {
@@ -1552,9 +1557,179 @@ def t73_add_case(case, cfg, root):
             del YOLO_BOXES[mode]
 
 
+def t62_window(events, rows, since, until, speed, reason):
+    """T62 mục 4: kiểm cả lệnh motor cuối và CSV, không nhận đoạn rỗng là đạt."""
+    motors = [e for e in events if since <= e[0] < until and e[1] == 'motor_speed' and not e[3]]
+    samples = [row for row in rows if since <= float(row['t_ms']) < until]
+    need(len(motors) >= 2 and len(samples) >= 2, 'Thiếu mẫu trong cửa sổ T62', 't62_window')
+    need(all(abs(e[2] - speed) < 1e-6 for e in motors),
+         'Motor không giữ {}: {}'.format(speed, motors), 't62_window')
+    need(all(row['reason'] == reason and row['planner_state'] == 'BAM_LAN'
+             and abs(float(row['sent_speed_cms']) - speed) < 1e-6 for row in samples),
+         'CSV sai reason/trạng thái/tốc độ trong cửa sổ T62', 't62_window')
+
+
+def t62_next_red(run, delta):
+    # Không có đồng hồ giả: dùng tuổi khung thật, hậu kiểm captured_ms thay vì ngủ cố định.
+    previous = detection_batches(run.events())[-1]
+    run.wait(lambda: float(str(run.of('frame')[-1][2]).split()[1]) >= previous[2] + delta,
+             3, 'Chưa tới khung cho lô đỏ kế tiếp')
+    mark = len(run.events())
+    run.inject('yolo_throw_off')
+    run.wait(lambda: detection_batches(run.events()[mark:]), 3, 'Thiếu lô đỏ kế tiếp')
+    run.inject('yolo_throw_on')
+    batches = [b for b in detection_batches(run.events()) if b[0] >= mark]
+    need(len(batches) == 1 and delta <= batches[0][2] - previous[2] <= delta + 120,
+         'Lịch lô không đạt Δ={} ms: {}'.format(delta, batches), 'setup')
+    return batches[0]
+
+
+def t62_case(case, cfg, root):
+    # T62v2 mục 4 + T62 gốc mục 4: không đổi ngưỡng, bỏ khóa để kiểm mặc định x2=0,90.
+    values = dict(YOLO_VALUES, turn_enable=0, start_wait_green=0,
+                  cruise_cms=15, max_speed_cms=15, kp=0)
+    del values['red_stop_x_frac']
+    if case == 't62_no_light':
+        # Không đèn: cả YOLO rỗng và --no-yolo giữ cùng lệnh làn thẳng.
+        outputs = []
+        for disabled in (False, True):
+            with running(cfg, root / str(disabled), values=values, no_yolo=disabled,
+                         yolo_schedule=None if disabled else ((1, 'empty'),)) as r:
+                r.boot(); r.go(); speed_is(r, 15)
+                mark = len(r.events()); r.frames(8)
+                commands = [e for e in r.events()[mark:] if e[1] in ('motor_speed', 'servo_angle') and not e[3]]
+                need(commands and all(e[2] == (15 if e[1] == 'motor_speed' else 0) for e in commands),
+                     'Không đèn đổi lệnh làn thẳng', 't62_no_light')
+                need(not any(e[2] in ('TIEP_CAN_DEN_DO', 'DUNG_DEN_DO', 'DEN_XANH')
+                             for e in r.of('reason', mark)), 'Không đèn có reason đèn', 't62_no_light')
+                outputs.append(set((e[1], e[2]) for e in commands)); r.finish()
+        need(outputs[0] == outputs[1], 'YOLO rỗng khác --no-yolo', 't62_no_light')
+        return
+    if case.startswith('t62_stop_') and case != 't62_stop_flicker':
+        # Biên mép phải x2/W: tâm cả ba hộp đều dưới 0,90; chỉ x2 quyết định dừng.
+        mode = {'089': 'red_089', '090': 'red_edge', '091': 'red_091'}[case[-3:]]
+        with running(cfg, root, values=values, no_yolo=False,
+                     yolo_schedule=((1, 'empty'), (120, mode))) as r:
+            r.boot(); r.go(); mark = len(r.events())
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước hộp biên', 'setup')
+            if case.endswith('089'):
+                r.wait(lambda: any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason', mark)),
+                       25, '0,89 không vào tiếp cận')
+                since = external_stamp_ms(); r.frames(10)
+                t62_window(r.events(), r.rows(), since, external_stamp_ms(), 5, 'TIEP_CAN_DEN_DO')
+                need(not any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)), '0,89 vẫn chốt đỏ')
+            else:
+                end = red_stop(r, 120, mark); r.frames(8, lambda: held(r, end))
+            r.finish()
+        return
+    if case == 't62_stop_flicker':
+        # Leader: chốt GIỮ NGUYÊN, chỉ khi lô mới đủ phiếu; approach không thay phiếu dừng.
+        values['yolo_every_n'] = 1
+        with running(cfg, root, values=values, no_yolo=False,
+                     yolo_schedule=((1, 'empty'), (120, 'red_mid'), (123, 'empty'), (126, 'red_edge'))) as r:
+            r.boot(); r.go(); mark = len(r.events())
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước phiếu nhấp nháy', 'setup')
+            r.wait(lambda: last_detection_frame(r.events()) >= 128, 25, 'Chưa đủ phiếu tại lô mới')
+            batches = phase_batches(r, 120, 129, 9)
+            need([b[1] for b in batches] == list(range(120, 129))
+                 and batches[-1][2] - batches[2][2] < 500,
+                 'Lịch phiếu nhấp nháy thiếu khung/đỏ đã hết tươi', 'setup')
+            need(not any(motor_zero(e) for e in r.events()[batches[0][0]:batches[-1][0]]),
+                 'Chốt trước lô 128 đủ ba phiếu', 't62_stop_votes')
+            t62_window(r.events(), r.rows(), batches[5][3] + 20, batches[-1][3], 5, 'TIEP_CAN_DEN_DO')
+            stopped(r, batches[-1][3], 220, mark=batches[-1][0] + 1)
+            r.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)), 3, 'Không chốt tại lô đủ phiếu')
+            end = stop_tail(r, batches[-1][3], batches[-1][0] + 1)
+            r.frames(8, lambda: held(r, end)); r.finish()
+        return
+    if case in ('t62_green_approach', 't62_green_latch'):
+        # T58 qua hợp đồng A40b/A43/A44: chốt đỏ chỉ mở bằng ba xanh mới liên tiếp.
+        latched = case.endswith('latch')
+        schedule = ((1, 'empty'), (120, 'red_edge' if latched else 'red_mid'))
+        schedule += (((180, 'empty'), (240, 'off'), (300, 'green'), (306, 'empty'), (360, 'green'))
+                     if latched else ((300, 'green'),))
+        with running(cfg, root, values=values, no_yolo=False, yolo_schedule=schedule) as r:
+            r.boot(); r.go(); mark = len(r.events())
+            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ tiền đề đỏ/xanh', 'setup')
+            if latched:
+                end = red_stop(r, 120, mark)
+                phase_reached(r, 330, end)
+                need(last_detection_frame(r.events()) < 360, 'Bỏ lỡ xanh bị ngắt', 'setup')
+                phase_batches(r, 300, 306, 2)
+                green_release(r, 360, end)
+            else:
+                r.wait(lambda: any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason', mark)),
+                       25, 'Chưa tiếp cận trước xanh')
+                since = external_stamp_ms()
+                r.wait(lambda: last_detection_frame(r.events()) >= 306, 25, 'Thiếu ba xanh')
+                greens = phase_batches(r, 300, 309, 3)
+                t62_window(r.events(), r.rows(), since + 20, greens[2][3], 5, 'TIEP_CAN_DEN_DO')
+                r.wait(lambda: any(e[2] == 15 and not e[3] for e in r.of('motor_speed', greens[2][0] + 1)),
+                       3, 'Đủ xanh không thả approach')
+            speed_is(r, 15); r.finish()
+        return
+    # Giữ tiếp cận qua phiếu hết tuổi; tiêm lỗi YOLO giữ camera/mask tươi như A30c.
+    with running(cfg, root, values=values, no_yolo=False,
+                 yolo_schedule=((1, 'empty'), (120, 'red_mid'), (600, 'empty'))) as r:
+        r.boot(); r.go()
+        need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước tiếp cận', 'setup')
+        r.wait(lambda: any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason')),
+               25, 'Chưa xác nhận tiếp cận')
+        r.inject('yolo_throw_on'); since = external_stamp_ms() + 20
+        delta = 170 if case.endswith('170') else 200
+        for _ in range(3):
+            t62_next_red(r, delta)
+        last = detection_batches(r.events())[-1]
+        # Lô tới trễ thêm150ms tạo cửa sổ thiếu phiếu dài hơn một vòng điều khiển.
+        r.wait(lambda: float(str(r.of('frame')[-1][2]).split()[1]) >= last[2] + delta + 150,
+               3, 'Chưa tới pha lô trễ')
+        until = external_stamp_ms()
+        recent = detection_batches(r.events())[-5:]
+        need(until - last[2] < 500 and sum(0 <= until - b[2] <= 500 for b in recent) < 3,
+             'Chưa tạo được thiếu phiếu khi đỏ còn tươi', 'setup')
+        t62_window(r.events(), r.rows(), since, until, 5, 'TIEP_CAN_DEN_DO')
+        if case.startswith('t62_reset_'):
+            # Space/G: không có lô mới và chưa hết tuổi đỏ, tránh việc tự xác nhận lại.
+            if case.endswith('space'):
+                space(r)
+            if case.endswith('image'):
+                mark = len(r.events()); event = r.inject('camera_pause_600ms')
+                stopped(r, event[0], 700, mark=mark)
+                r.wait(lambda: any(e[2] == 'MAT_ANH' for e in r.of('reason', mark)), 3, 'Thiếu MAT_ANH')
+                end = stop_tail(r, event[0], mark)
+                r.wait(lambda: any(float(str(e[2]).split()[1]) > event[0] + 500 for e in r.of('mask', mark)),
+                       3, 'Ảnh chưa hồi phục')
+                r.frames(5, lambda: held(r, end))
+                r.wait(lambda: int(str(r.of('frame')[-1][2]).split()[0]) >= 600, 25, 'Chưa tới lô rỗng')
+                r.inject('yolo_throw_off')
+                r.wait(lambda: last_detection_frame(r.events()) >= 600, 3, 'Thiếu lô rỗng tươi')
+            mark = len(r.events()); r.go()
+            r.wait(lambda: len([e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3]]) >= 2,
+                   3, 'G mới vẫn mang kẹp approach')
+            if not case.endswith('image'):
+                first = next(e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3])
+                need(first[0] - last[2] < 500 and detection_batches(r.events())[-1] == last,
+                     'Reset chỉ được quan sát sau khi đỏ hết tuổi/lô mới', 'setup')
+            r.finish(); return
+        # Lô rỗng tươi tách hết tuổi đỏ khỏi MAT_YOLO cũng kẹp5.
+        r.inject('yolo_throw_off')
+        r.wait(lambda: last_detection_frame(r.events()) >= 600, 25, 'Chưa tới pha rỗng')
+        reds = [b for b in detection_batches(r.events()) if 120 <= b[1] < 600]
+        last = reds[-1]
+        r.wait(lambda: any(float(row['t_ms']) > last[2] + 500 and row['reason'] == 'BAM_LAN'
+                           and float(row['sent_speed_cms']) == 15 for row in r.rows()),
+               5, 'Đỏ cuối quá500ms không thả về15')
+        t62_window(r.events(), r.rows(), since, last[2] + 500, 5, 'TIEP_CAN_DEN_DO')
+        need(any(last[2] + 400 <= e[0] < last[2] + 500 and e[1] == 'motor_speed' and e[2] == 5
+                 for e in r.events()), 'Thiếu mẫu sát hạn đỏ cuối', 't62_window')
+        speed_is(r, 15); r.finish()
+
+
 def test_case(case, cfg, root):
     if case in T73_ADDED_CASES:
         return t73_add_case(case, cfg, root)
+    if case.startswith('t62_'):
+        return t62_case(case, cfg, root)
     if case.startswith('t71_'):
         return t71_case(case, cfg, root)
     if case.startswith('t72_'):
@@ -3150,7 +3325,7 @@ def selftest():
     assert len(CASES) == len(set(CASES))
     cmake = (HERE / 'tests.cmake').read_text(encoding='utf-8')
     for case in CASES:
-        if case.startswith(('t71_', 't72_', 't73_')):
+        if case.startswith(('t62_', 't71_', 't72_', 't73_')):
             assert re.search(r'\b' + re.escape(case) + r'\b', cmake), 'Chưa đăng ký ' + case
     assert green_release(SyntheticRun(events), 3, 0)[1] == 9
     # Không nhận lô có ảnh chụp trước G dù công bố sau G.
