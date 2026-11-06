@@ -228,7 +228,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
-                            plan.state==control::PlannerState::DUNG_DEN_DO || !input.enabled) goPending=false;
+                            plan.state==control::PlannerState::DUNG_DEN_DO ||
+                            plan.state==control::PlannerState::DUNG_VAT_CAN || !input.enabled) goPending=false;
                         if (input.enabled && hooks.overridePending.load()) {
                             plan.cmd={hooks.overrideCms.load(),hooks.overrideDeg.load()};
                             hooks.overridePending=false;

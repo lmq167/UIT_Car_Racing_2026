@@ -3,6 +3,25 @@
 #include <cmath>
 
 namespace control {
+namespace {
+double HoleFraction(const cv::Mat &mask, double *centroid_col_frac) {
+    *centroid_col_frac=std::nan("");
+    if(mask.empty() || mask.type()!=CV_8UC1) return 0;
+    int64_t holes=0, total=0, columns=0;
+    for(int y=int(0.40*mask.rows); y<int(0.95*mask.rows); ++y) {
+        const auto *row=mask.ptr<unsigned char>(y);
+        int first=0,last=mask.cols-1;
+        while(first<mask.cols && row[first]==0) ++first;
+        while(last>first && row[last]==0) --last;
+        if(first>=last) continue;
+        total+=last-first+1;
+        for(int x=first; x<=last; ++x) if(row[x]==0) { ++holes; columns+=x; }
+    }
+    if(holes) *centroid_col_frac=double(columns)/holes/mask.cols;
+    return total ? double(holes)/total : 0;
+}
+}
+
 const char *StateName(PlannerState state) {
     switch(state) {
         case PlannerState::CHO_SAN_SANG: return "CHO_SAN_SANG";
@@ -10,11 +29,13 @@ const char *StateName(PlannerState state) {
         case PlannerState::DUNG: return "DUNG";
         case PlannerState::CHO_DEN_XUAT_PHAT: return "CHO_DEN_XUAT_PHAT";
         case PlannerState::DUNG_DEN_DO: return "DUNG_DEN_DO";
+        case PlannerState::DUNG_VAT_CAN: return "DUNG_VAT_CAN";
     }
     return "DUNG";
 }
 void Planner::Reset(bool preserve_lights) {
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
+    obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false;
@@ -93,6 +114,29 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(released) reason_="DEN_XANH";
         else if(state_==PlannerState::BAM_LAN && red_fresh && reds>=params.vote_min) reason_="TIEP_CAN_DEN_DO";
         else if(state_==PlannerState::BAM_LAN) reason_="BAM_LAN";
+    }
+    if(params.obstacle_action==1 &&
+       (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
+        if(mask_fresh && input.mask_ms!=last_mask_ms_) {
+            last_mask_ms_=input.mask_ms;
+            double centroid=0;
+            const double fraction=HoleFraction(input.mask,&centroid);
+            const bool obstacle=fraction>=params.obstacle_hole_frac && centroid>=0.35 && centroid<=0.85;
+            obstacle_votes_.push_back(obstacle);
+            while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
+            if(state_==PlannerState::BAM_LAN &&
+               std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
+                state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
+            } else if(state_==PlannerState::DUNG_VAT_CAN) {
+                obstacle_clear_run_=obstacle ? 0 : obstacle_clear_run_+1;
+                if(obstacle_clear_run_>=params.vote_window) {
+                    state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset();
+                    obstacle_votes_.clear(); obstacle_clear_run_=0;
+                }
+            }
+        }
+    } else {
+        obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     }
     plan.state=state_;
     if(state_!=PlannerState::BAM_LAN) {
