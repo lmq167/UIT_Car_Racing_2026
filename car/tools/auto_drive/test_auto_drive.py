@@ -42,6 +42,13 @@ CASES += ['t57_disabled_equivalence', 't57_open_imu', 't57_open_imu_drift',
           't57_transient_imu_armed', 't57_transient_encoder_armed',
           't57_transient_imu_turning', 't57_transient_encoder_turning',
           't57_transient_idle', 't57_csv_imu', 't57_csv_encoder', 't57_csv_both']
+CASES += ['t71_defaults', 't71_steer_40', 't71_steer_40_1', 't71_cruise_15',
+          't71_cruise_16', 't71_motor_cap', 't71_curve_30',
+          't72_zero_valid', 't72_negative_rejected', 't72_zero_keeps_text', 't72_reload_0_to_5',
+          't73_default_enable', 't73_init_imu_fail', 't73_init_drift_fail', 't73_reload_no_imu',
+          't73_imu_turning', 't73_encoder_turning', 't73_stale_imu_turning',
+          't73_stale_encoder_turning', 't73_imu_lane', 't73_encoder_lane',
+          't73_g_reopens_dung', 't73_lost_image_turning', 't73_stale_mask_turning']
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -72,7 +79,7 @@ BOUNDS = {
     'lane_width_max_ratio': (1.4, 1, 3, ''), 'center_offset_frac': (0, -0.5, 0.5, ''),
     'min_valid_rows': (1, 1, 5, ''), 'lost_hold_ms': (300, 0, 2000, 'ms'),
     'lost_stop_ms': (800, 0, 3000, 'ms'), 'regain_frames': (3, 1, 20, ''),
-    'record_every_n': (5, 1, 40, ''), 'yolo_every_n': (3, 1, 10, '')}
+    'record_every_n': (5, 0, 40, ''), 'yolo_every_n': (3, 1, 10, '')}
 VECTORS = {'scan_rows': [0.85, 0.65, 0.45], 'row_weights': [0.5, 0.3, 0.2],
            'lane_width_frac': [0.70, 0.55, 0.40]}
 CSV_FIELDS = ('t_ms frame_id image_age_ms mask_age_ms det_age_ms planner_state '
@@ -328,7 +335,18 @@ class Run(td.Run):
 
 @contextmanager
 def running(cfg, root, **kwargs):
+    case = getattr(cfg, 'case', '')
+    legacy_defaults = None
+    if (case.startswith('A') or case == 'B5') and not (case == 'A08' and not kwargs.get('values')):
+        # T71: các ca cũ giữ cấu hình cũ tường minh, ca mặc định thật vẫn dùng YAML rỗng.
+        legacy_defaults = dict(cruise_cms=8, max_speed_cms=10, steer_max_deg=30,
+                               slow_per_deg=0.1, turn_enable=0, obstacle_action=0)
+        values = dict(legacy_defaults)
+        values.update(kwargs.get('values') or {})
+        kwargs['values'] = values
     run = Run(cfg, root, **kwargs)
+    if legacy_defaults is not None:
+        run.legacy_defaults = legacy_defaults
     try:
         yield run
     except BaseException:
@@ -588,7 +606,11 @@ def inspect_detections(run):
 
 
 def patch_yaml(run, values):
-    run.control.write_text(values if isinstance(values, str) else yaml_text(values), encoding='utf-8')
+    if not isinstance(values, str):
+        control = dict(getattr(run, 'legacy_defaults', {}))
+        control.update(values)
+        values = yaml_text(control)
+    run.control.write_text(values, encoding='utf-8')
 
 
 def reload(run, expected):
@@ -1084,7 +1106,249 @@ def t57_case(case, cfg, root):
             YOLO_BOXES[mode] = previous
 
 
+def t71_cap(events):
+    # T71–5/T73–6: kiểm cả lệnh gửi lỗi, ngoài trần cứng chung 20/40.
+    cap(events)
+    need(all(abs(e[2]) <= 15 for e in events if e[1] == 'motor_speed'),
+         'Motor vượt max_speed_cms=15', 't71_cap')
+
+
+def default_value(text, key, value):
+    pattern = r'\b' + re.escape(key) + r'\b\s*[:=|]?\s*([-+\d.eE]+)'
+    need(any('(mặc định)' in line and re.search(pattern, line) and
+             float(re.search(pattern, line).group(1)) == value for line in text.splitlines()),
+         'Bảng mặc định thiếu/sai ' + key, 't71_default')
+
+
+def repo_value(key, value):
+    text = (HERE.parent.parent / 'control.yaml').read_text(encoding='utf-8')
+    found = re.search(r'^' + re.escape(key) + r':\s*([-+\d.eE]+)', text, re.MULTILINE)
+    need(found and float(found.group(1)) == value, 'control.yaml sai ' + key, 't71_default')
+
+
+def t71_case(case, cfg, root):
+    # T71–5: mặc định lấy từ giao diện công bố; không đọc ControlParams.
+    if case == 't71_defaults':
+        with running(cfg, root) as r:
+            t57_feed(r); r.boot(); r.finish()
+            for key, value in (('cruise_cms', 15), ('max_speed_cms', 15),
+                               ('steer_max_deg', 40), ('obstacle_action', 2)):
+                default_value(r.text(), key, value); repo_value(key, value)
+        return
+    values = dict(turn_enable=0, start_wait_green=0, cruise_cms=15, max_speed_cms=15,
+                  steer_max_deg=40, slow_per_deg=0, kd=0)
+    if case in ('t71_steer_40_1', 't71_cruise_16'):
+        values.update({'steer_max_deg': 40.1} if case.endswith('40_1') else {'cruise_cms': 16})
+        with running(cfg, root, values=values) as r:
+            reject(r); t71_cap(r.events())
+        return
+    if case == 't71_curve_30':
+        # T71–3: góc 30° phải gần 10 cm/s, không khóa số slow_per_deg.
+        values.update(kp=200, steer_max_deg=30, center_offset_frac=0.3)
+        del values['slow_per_deg']
+        with running(cfg, root, values=values, schedule=((1, 'left'),)) as r:
+            r.boot(); started = r.go()
+            def curved():
+                return [row for row in r.rows() if float(row['t_ms']) >= started[0] and
+                        29.9 <= abs(float(row['requested_steer_deg'])) <= 30.01 and
+                        29.9 <= abs(float(row['sent_steer_deg'])) <= 30.01 and
+                        float(row['sent_speed_cms']) > 0]
+            r.wait(lambda: len(curved()) >= 3, 10, 'Chưa có ba mẫu góc yêu cầu 30 độ')
+            rows = curved()
+            need(all(9 <= float(row[key]) <= 11 for row in rows
+                     for key in ('requested_speed_cms', 'sent_speed_cms')),
+                 'Góc 30 độ không cho tốc độ khoảng 10 cm/s', 't71_curve')
+            need(all(any(e[1] == 'motor_speed' and not e[3] and
+                         abs(e[2] - float(row['sent_speed_cms'])) < 0.01 and
+                         abs(e[0] - float(row['t_ms'])) <= 50 for e in r.events()) for row in rows),
+                 'Tốc độ cua CSV không có lệnh motor tương ứng', 't71_curve')
+            r.finish(); t71_cap(r.events())
+        return
+    # T71–5: 40 nhận, 15/15 nhận; gây góc lớn hai chiều để kiểm trần lệnh.
+    modes = ('straight', 'left', 'right') if case == 't71_motor_cap' else ('straight',)
+    for mode in modes:
+        with running(cfg, root / mode, values=dict(values, kp=200), schedule=((1, mode),)) as r:
+            r.boot(); r.go(); r.frames(12, lambda: t71_cap(r.events()))
+            if mode == 'straight':
+                speed_is(r, 15)
+            else:
+                need(any(abs(e[2]) >= 20 for e in r.of('servo_angle') if not e[3]),
+                     'Chưa tạo được góc lớn để thử trần', 'setup')
+            r.finish(); t71_cap(r.events())
+
+
+def media_files(run):
+    return [p for p in run.session().rglob('*') if p.suffix.lower() in ('.jpg', '.jpeg', '.png')]
+
+
+def t72_case(case, cfg, root):
+    # T72–6: 0 hợp lệ; -1 bị từ chối trước khi chạm motor.
+    values = dict(record_every_n=-1 if case == 't72_negative_rejected' else 0,
+                  turn_enable=0, start_wait_green=0, slow_per_deg=0)
+    with running(cfg, root, values=values, no_yolo=False, yolo_schedule=((1, 'empty'),)) as r:
+        if case == 't72_negative_rejected':
+            reject(r); return
+        r.boot()
+        if case == 't72_zero_valid':
+            r.finish(); return
+        # T72–5,6: đối chiếu tệp thực, log văn bản vẫn tăng khi không có ảnh.
+        r.go(); r.frames(15)
+        r.wait(lambda: len(r.rows()) >= 3, 10, 'Tắt ảnh làm mất CSV điều khiển')
+        before_rows = len(r.rows())
+        need(not media_files(r), 'record=0 vẫn sinh ảnh/mặt nạ', 't72_media')
+        r.frames(6)
+        r.wait(lambda: len(r.rows()) > before_rows, 10, 'record=0 ngừng log văn bản')
+        space(r)
+        if case == 't72_reload_0_to_5':
+            # T72–6: R có sẵn chỉ áp trong DUNG; không thêm phím/cờ.
+            patch_yaml(r, dict(values, record_every_n=5)); reload(r, 'accepted')
+            r.go()
+            r.wait(lambda: list(r.session().rglob('*.jpg')) and list(r.session().rglob('*.png')),
+                   10, 'R từ 0 sang 5 không bắt đầu ghi ảnh')
+            r.frames(10); space(r)
+        r.finish()
+        need(len(r.rows()) > before_rows, 'R/ghi ảnh làm mất CSV điều khiển', 't72_media')
+        detection_log = r.session() / 'detections.csv'
+        need(detection_log.is_file() and len(detection_log.read_text(encoding='utf-8').splitlines()) > 1,
+             'Tắt ảnh làm mất detections.csv', 't72_media')
+        if case == 't72_zero_keeps_text':
+            need(not media_files(r), 'record=0 vẫn để lại ảnh/mặt nạ', 't72_media')
+        else:
+            inspect_images(r, every=5)
+
+
+def t73_lane_check(run, mark, lane_mark=None):
+    t71_cap(run.events())
+    need(not any(e[2] == 'DUNG' for e in run.of('state', mark)) and
+         not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in run.of('state', mark if lane_mark is None else lane_mark)),
+         'Lỗi cảm biến vẫn rẽ lại hoặc làm DUNG', 't73_lane')
+    need(not any(motor_zero(e) for e in run.events()[mark:]),
+         'Lỗi cảm biến làm motor dừng', 't73_lane')
+
+
+def t73_case(case, cfg, root):
+    values = dict(cruise_cms=15, max_speed_cms=15, steer_max_deg=40, slow_per_deg=0,
+                  kp=0, kd=0, turn_enable=1, start_wait_green=0, yolo_every_n=1,
+                  vote_min=1, mask_max_age_ms=1000, cmd_max_age_ms=500)
+    if case == 't73_g_reopens_dung':
+        # T73–3: bỏ chốt mọi DUNG, giữ dừng an toàn của lỗi điều khiển.
+        with running(cfg, root, values=values) as r:
+            t57_feed(r); r.boot(); r.go(); event = r.inject('controller_throw')
+            stopped(r, event[0], 150)
+            r.wait(lambda: any(e[0] >= event[0] and e[2] == 'LOI_DIEU_KHIEN' for e in r.of('reason')),
+                   10, 'Thiếu lý do dừng điều khiển')
+            r.frames(4); r.go(); r.frames(6); r.finish(); t71_cap(r.events())
+        return
+    init_fail = case in ('t73_init_imu_fail', 't73_init_drift_fail')
+    lane_fault = case in ('t73_imu_lane', 't73_encoder_lane')
+    both_directions = case in ('t73_imu_turning', 't73_encoder_turning')
+    for direction in (('left', 'right') if both_directions else ('left',)):
+        mode = 't73_' + direction
+        YOLO_BOXES[mode] = [(direction, 800)]
+        def setup(run):
+            rows = mask_rows('straight')
+            for row in rows:
+                edge = (max if direction == 'left' else min)(i for i, v in enumerate(row) if v)
+                for x in (range(edge) if direction == 'left' else range(edge + 1, len(row))):
+                    row[x] = 1
+            (run.root / 'straight.png').write_bytes(png_bytes(rows))
+            run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n' +
+                                ('3 yolo_stall\n' if lane_fault else ''), encoding='utf-8')
+            run.seq = 3 if lane_fault else 2
+        current = dict(values)
+        if case == 't73_default_enable':
+            del current['turn_enable']
+        if case == 't73_reload_no_imu':
+            current.update(turn_enable=0, cruise_cms=6)
+        if case == 't73_stale_mask_turning':
+            current.update(mask_max_age_ms=100, control_period_ms=20)
+        env = {'OPEN_FAIL': 'imu' if case == 't73_init_imu_fail' else 'imu_drift'} if init_fail else {}
+        try:
+            with running(cfg, root / direction, values=current, env=env, setup=setup, no_yolo=False,
+                         yolo_schedule=((1, mode),)) as r:
+                t57_feed(r); r.boot()
+                if lane_fault:
+                    r.wait(lambda: any(e[2] == '3 yolo_stall' for e in r.of('inject')),
+                           10, 'Thiếu ACK giữ biển trước G')
+                    need(not r.of('detections'), 'Biển tới trước lỗi BAM_LAN', 'setup')
+                if init_fail:
+                    # T73–1,6: init lỗi vẫn bám làn trước biển/mép hợp lệ.
+                    need('IMU LOI: KHONG RE' in r.text(), 'Thiếu cảnh báo IMU LOI: KHONG RE')
+                    need(len(r.of('motor_init')) == 1, 'Motor::Init không đúng một lần')
+                if case == 't73_reload_no_imu':
+                    # T73–4: khóa khác áp được dù chưa thể bật rẽ.
+                    space(r); patch_yaml(r, dict(current, turn_enable=1, cruise_cms=9))
+                    reload(r, 'accepted')
+                    need(not r.of('imu_init'), 'R tự khởi tạo IMU')
+                go_mark = len(r.events())
+                started = r.go(); mark = r.events().index(started)
+                if init_fail or case == 't73_reload_no_imu':
+                    r.wait(lambda: r.of('detections', go_mark), 10, 'Thiếu biển thử bỏ rẽ')
+                    r.frames(12, lambda: t73_lane_check(r, mark, go_mark))
+                    need(any(e[2] == 'BAM_LAN' for e in r.of('state')), 'Không bám làn')
+                    speed_is(r, 9 if case == 't73_reload_no_imu' else 15)
+                    r.finish(); continue
+                if lane_fault:
+                    # T73–2: BAM_LAN lỗi vẫn chạy, biển tới sau không được armed/rẽ.
+                    need(any(e[2] == 'BAM_LAN' for e in r.of('state', go_mark)),
+                         'Chưa bám làn trước lỗi cảm biến', 'setup')
+                else:
+                    r.wait(lambda: any(e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')
+                                       for e in r.of('state', go_mark)), 10, 'Chưa vào rẽ trước tác nhân')
+                if case == 't73_default_enable':
+                    # T73–5,6: chứng minh bật thật bằng hành vi rẽ khi YAML bỏ khóa.
+                    default_value(r.text(), 'turn_enable', 1); repo_value('turn_enable', 1)
+                    r.finish(); continue
+                mark = len(r.events())
+                if case == 't73_lost_image_turning':
+                    # T73–6: đường MAT_ANH không được biến thành hủy rẽ rồi chạy.
+                    event = r.inject('camera_pause_600ms'); end = stopped(r, event[0], 700, mark=mark)
+                    r.wait(lambda: any(e[2] == 'MAT_ANH' for e in r.of('reason', mark)), 10, 'Thiếu MAT_ANH')
+                    r.wait(lambda: any(float(str(e[2]).split()[1]) > event[0] + 500 for e in r.of('mask', mark)),
+                           10, 'Chưa có mask hồi phục')
+                    r.frames(4, lambda: no_motion(r, end)); r.finish(); continue
+                if case == 't73_stale_mask_turning':
+                    # T73–6: mask cũ vẫn motor0 trước servo0, chỉ hồi sau mask mới.
+                    r.inject('road_stall'); captured = float(str(r.of('mask')[-1][2]).split()[1])
+                    fresh_recovery(r, captured, 'mask', 320, 100, 'MAT_NAN_CU')
+                    r.finish(); continue
+                sensor = 'encoder' if 'encoder' in case else 'imu'
+                setattr(r, 't57_' + sensor, False)
+                if 'stale' not in case:
+                    r.inject(sensor + '_read_fail')
+                lane_mark = mark
+                if lane_fault:
+                    r.frames(4, lambda: t73_lane_check(r, mark))
+                    r.inject('yolo_resume')
+                    r.wait(lambda: r.of('detections', mark), 10, 'Chưa có biển mới sau lỗi BAM_LAN')
+                    r.frames(6, lambda: t73_lane_check(r, mark))
+                else:
+                    # T73–2,6: lỗi/cũ hủy rẽ về làn, không chốt DUNG.
+                    r.wait(lambda: any(e[2] == 'HUY_RE_CAM_BIEN' for e in r.of('reason', mark)) and
+                           any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
+                           3 + r.slack / 1000.0, 'Không hủy rẽ về BAM_LAN/HUY_RE_CAM_BIEN')
+                    # Cho phép lệnh rẽ cũ trước vòng phát hiện lỗi, cấm rẽ lại từ lúc về làn.
+                    lane_mark = next(i for i, e in enumerate(r.events()) if i >= mark and
+                                     e[1] == 'state' and e[2] == 'BAM_LAN')
+                t73_lane_check(r, mark, lane_mark)
+                # Mẫu tốt cùng biển/mép vẫn mới: rẽ phải bị tắt đến hết lượt.
+                setattr(r, 't57_' + sensor, True)
+                r.frames(12, lambda: t73_lane_check(r, mark, lane_mark))
+                need(any(e[2] > 0 and not e[3] for e in r.of('motor_speed', mark)), 'Không tiếp tục motor')
+                space(r); r.go(); recovery_mark = len(r.events())
+                r.frames(8, lambda: t73_lane_check(r, recovery_mark))
+                r.finish(); t71_cap(r.events())
+        finally:
+            del YOLO_BOXES[mode]
+
+
 def test_case(case, cfg, root):
+    if case.startswith('t71_'):
+        return t71_case(case, cfg, root)
+    if case.startswith('t72_'):
+        return t72_case(case, cfg, root)
+    if case.startswith('t73_'):
+        return t73_case(case, cfg, root)
     if case.startswith('t57_'):
         return t57_case(case, cfg, root)
     # A70 — T47l mục 1–2: thiếu riêng từng file, trước mọi tác động motor/servo.
@@ -1392,8 +1656,10 @@ def test_case(case, cfg, root):
                 r.boot(); r.frames(3); r.finish(); inspect_session(r)
                 if not values:
                     for key, (default, _, _, unit) in BOUNDS.items():
+                        default = dict(cruise_cms=15, max_speed_cms=15, steer_max_deg=40).get(key, default)
                         lines = [l for l in r.text().splitlines() if re.search(r'\b' + key + r'\b', l)]
-                        need(any('(mặc định)' in l and re.search(r'\b' + key + r'\b\s*[:=|]?\s*' + re.escape(str(default)) + r'(?![\d.])', l)
+                        need(any('(mặc định)' in l and (key == 'slow_per_deg' or
+                                 re.search(r'\b' + key + r'\b\s*[:=|]?\s*' + re.escape(str(default)) + r'(?![\d.])', l))
                                  and unit in l for l in lines), 'Bảng mặc định thiếu/sai ' + key)
                         if key in ('steer_max_deg', 'kp', 'kd'):
                             need(any('°' in l or 'độ' in l for l in lines), 'Thiếu đơn vị góc ' + key)
@@ -2263,6 +2529,22 @@ def selftest():
             assert error.tag == tag
         else:
             assert False, 'Bộ kiểm bỏ lọt ' + tag
+    # T71–T73: tự kiểm các bộ kiểm mới bằng cả mẫu hợp lệ và mẫu phải bị bắt.
+    for failed in (False, True):
+        t71_cap([(0, 'motor_speed', 15, failed), (1, 'servo_angle', -40, failed)])
+        fails(lambda: t71_cap([(0, 'motor_speed', 15.1, failed)]), 't71_cap')
+    default_value('cruise_cms: 15 (mặc định)', 'cruise_cms', 15)
+    for text in ('cruise_cms: 8 (mặc định)', 'cruise_cms: 15', 'other_cruise_cms: 15 (mặc định)'):
+        fails(lambda: default_value(text, 'cruise_cms', 15), 't71_default')
+    with tempfile.TemporaryDirectory(prefix='ucr-t72-selftest-') as tmp:
+        folder = Path(tmp)
+        run = SimpleNamespace(session=lambda: folder)
+        (folder / 'control_log.csv').write_text('log', encoding='utf-8')
+        assert not media_files(run)
+        (folder / 'frames').mkdir()
+        for name in ('frames/5.jpg', 'frames/5.png', 'frames/10.JPEG'):
+            (folder / name).write_bytes(b'image')
+        assert len(media_files(run)) == 3
     for kind, limit in (('motor_speed', 20), ('servo_angle', 40)):
         for sign in (-1, 1):
             for failed in (False, True):
@@ -2619,6 +2901,18 @@ def selftest():
             result = predicate()
             assert result, kwargs.get('message', 'Không đạt điều kiện tổng hợp')
             return result
+    lane_events = [(0, 'state', 'RE_TRAI', False), (1, 'motor_speed', 4, False),
+                   (2, 'state', 'BAM_LAN', False), (3, 'motor_speed', 15, False)]
+    t73_lane_check(SyntheticRun(lane_events), 0, 2)
+    fails(lambda: t73_lane_check(SyntheticRun(lane_events), 0), 't73_lane')
+    for bad in ((4, 'state', 'RE_PHAI', False), (4, 'state', 'DUNG', False),
+                (4, 'motor_speed', 0, False), (4, 'motor_emergency', 0, False)):
+        fails(lambda: t73_lane_check(SyntheticRun(lane_events + [bad]), 0, 2), 't73_lane')
+    assert len(CASES) == len(set(CASES))
+    cmake = (HERE / 'tests.cmake').read_text(encoding='utf-8')
+    for case in CASES:
+        if case.startswith(('t71_', 't72_', 't73_')):
+            assert re.search(r'\b' + re.escape(case) + r'\b', cmake), 'Chưa đăng ký ' + case
     assert green_release(SyntheticRun(events), 3, 0)[1] == 9
     # Không nhận lô có ảnh chụp trước G dù công bố sau G.
     since_events = [(100, 'detections', '1 89', False)] + events
@@ -2728,7 +3022,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: gitignore, P1/M7, YOLO, CLI/env, chốt đèn, A32, model T47l và log T57 (vết tổng hợp)')
+        print('PASS selftest: gitignore, P1/M7, YOLO, CLI/env, chốt đèn, A32, model T47l, log T57 và bộ kiểm T71–T73 (vết tổng hợp)')
         return
     if cfg.case == 'gitignore':
         check_gitignore()
