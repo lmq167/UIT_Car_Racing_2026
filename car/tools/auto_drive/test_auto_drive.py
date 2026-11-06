@@ -1652,7 +1652,7 @@ def t62_control_mark(run, batch, row):
     return stamp, command + 1
 
 
-def t62_next_red(run, delta, attempts=1):
+def t62_next_red(run, delta, attempts=3):
     # Không có đồng hồ giả: dùng tuổi khung thật, hậu kiểm captured_ms thay vì ngủ cố định.
     for _ in range(attempts):
         previous = detection_batches(run.events())[-1]
@@ -1781,7 +1781,7 @@ def t62_case(case, cfg, root):
         r.inject('yolo_throw_on'); since = external_stamp_ms() + 20
         delta = 170 if case.endswith('170') else 200
         for _ in range(3):
-            t62_next_red(r, delta, attempts=3 if case in ('t62_reset_space', 't62_hold_170') else 1)
+            t62_next_red(r, delta, attempts=3)
         last = detection_batches(r.events())[-1]
         if case == 't62_reset_space':
             t62_consumed(r, [last])
@@ -1839,18 +1839,21 @@ def t62_case(case, cfg, root):
 
 def a28_origin(rows, events):
     # Đồng hồ/góc phải cùng lệnh đã dùng mask hợp lệ, không lấy mask chỉ mới công bố.
-    valid = [row for row in rows if 0 < int(row['mask_id']) < 120]
+    valid = [i for i, row in enumerate(rows) if 0 < int(row['mask_id']) < 120]
     need(len(valid) >= 2, 'Thiếu lệnh làn hợp lệ trước mất làn', 'setup')
-    last = valid[-1]
+    last = rows[valid[-1]]
     angle = float(last['sent_steer_deg'])
     need(last['planner_state'] == 'BAM_LAN' and float(last['sent_speed_cms']) == 8 and angle != 0
-         and angle == float(valid[-2]['sent_steer_deg']),
+         and angle == float(rows[valid[-2]]['sent_steer_deg']),
          'Góc chưa ổn định trước mất làn', 'setup')
     need(0 <= float(last['image_age_ms']) <= 500
          and 0 <= float(last['mask_age_ms']) <= BOUNDS['mask_max_age_ms'][0]
          and 0 <= float(last['t_ms']) - float(last['command_ms']) <= BOUNDS['cmd_max_age_ms'][0],
          'Dữ liệu làn trước mất làn đã cũ', 'setup')
-    need(all(int(row['csv_dropped']) == 0 for row in rows), 'CSV rơi mất mốc tiêu thụ làn', 'setup')
+    # Rơi trước hai lệnh hợp lệ cuối không làm mất mốc của cửa sổ đang kiểm.
+    window = rows[valid[-2]:]
+    need(all(int(row['csv_dropped']) == int(window[0]['csv_dropped']) for row in window),
+         'CSV rơi mất mốc tiêu thụ làn', 'setup')
     mask = next((e for e in events if e[1] == 'mask' and int(str(e[2]).split()[0]) == int(last['mask_id'])), None)
     need(mask is not None, 'Thiếu mask của lệnh làn hợp lệ cuối', 'setup')
     captured = float(str(mask[2]).split()[1])
@@ -2419,8 +2422,11 @@ def test_case(case, cfg, root):
                                for row in r.rows()), 15, 'Chưa tiêu thụ làn lệch tâm trước mất làn', tag='setup')
             r.wait(lambda: any(e[2] == 'MAT_LAN' for e in r.of('reason')), 15, 'Không vào MAT_LAN trước phục hồi')
             need(int(str(r.of('mask')[-1][2]).split()[0]) < 300, 'Fixture không đủ thời gian mất làn', 'setup')
-            r.wait(lambda: any(int(str(e[2]).split()[0]) >= 305 for e in r.of('mask')), 20, 'Chưa phục hồi làn')
-            rows = r.rows()
+            def recovery_rows():
+                rows = r.rows()
+                return rows if (any(int(str(e[2]).split()[0]) >= 305 for e in r.of('mask'))
+                                and any(int(row['mask_id']) >= 305 for row in rows)) else None
+            rows = r.wait(recovery_rows, 20, 'Chưa có dòng CSV tiêu thụ làn phục hồi', tag='setup')
             last_valid, angle = a28_origin(rows, r.events())
             lost = [row for row in rows if 120 <= int(row['mask_id']) < 300]
             need(lost and all(row['reason'] not in ('MAT_ANH', 'MAT_NAN_CU')
@@ -3513,18 +3519,23 @@ def selftest():
         def rows(self):
             return [dict(det_frame_id=str(b[1]), det_captured_ms=str(b[2])) for b in detection_batches(self.es)]
     for delta in (170, 200):
-        retry = RedRetry([400, delta])
-        assert t62_next_red(retry, delta, attempts=3)[2] == 400 + delta and retry.attempts == 2
+        for gaps in ([400, delta], [400, 400, delta]):
+            retry = RedRetry(gaps)
+            assert t62_next_red(retry, delta)[2] == sum(gaps) and retry.attempts == len(gaps)
         retry = RedRetry([400, 400, 400])
         fails(lambda: t62_next_red(retry, delta, attempts=3), 'setup')
         assert retry.attempts == 3
     # Kiểm đường gọi thật: vòng ba lô không thay thế ba lần thử của từng lô.
-    with patch('{}.running'.format(__name__)) as start, \
-            patch('{}.t62_next_red'.format(__name__), side_effect=Failure('retry_probe', '')) as next_red:
-        run = start.return_value.__enter__.return_value
-        run.events.return_value = [(0, 'detections', '1 0', False)]
-        fails(lambda: t62_case('t62_hold_170', None, Path('synthetic')), 'retry_probe')
-        next_red.assert_called_once_with(run, 170, attempts=3)
+    for case in ('t62_hold_170', 't62_hold_200', 't62_reset_space', 't62_reset_go', 't62_reset_image'):
+        with patch('{}.running'.format(__name__)) as start, \
+                patch('{}.t62_next_red'.format(__name__)) as next_red, \
+                patch('{}.external_stamp_ms'.format(__name__), side_effect=[0, Failure('retry_probe', '')]):
+            run = start.return_value.__enter__.return_value
+            run.events.return_value = [(0, 'detections', '1 0', False)]
+            fails(lambda: t62_case(case, None, Path('synthetic')), 'retry_probe')
+            assert next_red.call_count == 3
+            assert all(args == (run, 170 if case.endswith('170') else 200) and kwargs == dict(attempts=3)
+                       for args, kwargs in next_red.call_args_list)
     # T73: chạy cả hai đường dừng; khác0 sau motor0 phải bị bắt dù cùng ms và đã trả0.
     class FaultStopRun(SyntheticRun):
         def __init__(self, bad):
@@ -3586,6 +3597,15 @@ def selftest():
     # Góc gửi âm và khác góc yêu cầu vẫn là tiền đề hợp lệ khi hai lệnh gửi đã ổn định.
     negative = dict(lane, sent_steer_deg='-4', requested_steer_deg='-4.25')
     assert a28_origin([negative, negative], masks) == (1000, -4)
+    counted = dict(negative, csv_dropped='1')
+    lost = dict(counted, mask_id='120')
+    recovered = dict(counted, mask_id='305')
+    window = [counted, counted, lost, lost, recovered]
+    assert a28_origin([lane] + window, masks) == (1000, -4)
+    for i in range(1, len(window)):
+        dropped = window[:i] + [dict(row, csv_dropped='2') for row in window[i:]]
+        fails(lambda: a28_origin(dropped, masks), 'setup')
+    fails(lambda: a28_origin([counted, dict(lost, mask_id='0', csv_dropped='2'), counted], masks), 'setup')
     with patch('{}.running'.format(__name__)) as start:
         run = start.return_value.__enter__.return_value
         run.rows.return_value = [negative, negative]
@@ -3594,6 +3614,29 @@ def selftest():
             raise Failure('origin_probe', '')
         run.wait.side_effect = first_lane
         fails(lambda: test_case('A28', None, Path('synthetic')), 'origin_probe')
+    # Mask đã công bố nhưng CSV chưa ghi: chờ trong đúng hạn sẵn có, không đo sớm.
+    for arrives in (False, True):
+        with patch('{}.running'.format(__name__)) as start, \
+                patch('{}.a28_origin'.format(__name__), side_effect=Failure('origin_probe', '')) as origin:
+            run = start.return_value.__enter__.return_value
+            run.rows.return_value = window[:2]
+            run.of.return_value = [(1100, 'mask', '299 1100', False)]
+            def csv_wait(predicate, seconds, *args, **kwargs):
+                if seconds != 20:
+                    return True
+                assert kwargs['tag'] == 'setup'
+                run.of.return_value = [(1200, 'mask', '305 1200', False)]
+                assert predicate() is None
+                if arrives:
+                    run.rows.return_value = window
+                return setup_wait(predicate, **kwargs)
+            run.wait.side_effect = csv_wait
+            fails(lambda: test_case('A28', None, Path('synthetic')), 'origin_probe' if arrives else 'setup')
+            assert run.wait.call_args[0][1] == 20
+            if arrives:
+                assert origin.call_args[0][0] is window
+            else:
+                origin.assert_not_called()
     fails(lambda: a28_origin([], masks), 'setup')
     fails(lambda: a28_origin([dict(lane, sent_steer_deg='11'), lane], masks), 'setup')
     fails(lambda: a28_origin([lane, dict(lane, csv_dropped='1')], masks), 'setup')
