@@ -6,6 +6,7 @@
 namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
+constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
 // Sai số góc gói về [-180, 180).
 double WrapDeg(double d) { d=std::fmod(d+180.0,360.0); if(d<0) d+=360.0; return d-180.0; }
 double HoleFraction(const cv::Mat &mask, double *centroid_col_frac) {
@@ -49,7 +50,7 @@ void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
-    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false;
+    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false; person_stop_=false;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
@@ -79,7 +80,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_seen=false,round=false; double red_x=0;
+    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_seen=false,round=false,people=false; double red_x=0;
     bool cancelled=false, sensor_cancelled=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
@@ -89,6 +90,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(params.turn_enable && !turn_fault_) {
         if(sensor_bad) fault();
         else if(turning_) {
+            // Đang dừng vì người đi bộ: không tính thời gian đứng vào hạn rẽ/kẹt.
+            if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) { turn_ms_+=now_ms-command_ms_; progress_ms_=now_ms; }
             if(std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm) fault();
             else if(now_ms-turn_ms_>params.turn_max_ms) fault();
             else if(std::abs(input.odo_cm-progress_odo_)>=1) { progress_odo_=input.odo_cm; progress_ms_=now_ms; }
@@ -98,6 +101,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const auto &batch=input.detections;
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
+    person_stop_=false;
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
         votes_.erase(std::remove_if(votes_.begin(),votes_.end(),[&](const Vote& vote) {
@@ -108,11 +112,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool signRight=d.class_name=="right" || d.class_name=="no_left";
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
+            const bool person=d.class_name=="people" || d.class_name=="person";
             double conf=0,area=0;
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
             else if(barrier || roundabout) conf=kBarrierConfMin;
+            else if(person) conf=kPersonConfMin;
             else if(!(params.turn_enable && !turn_direction_ && !turn_fault_ && (signLeft || signRight))) continue;
             const auto &b=d.box;
             if(d.captured_ms!=batch.captured_ms || !std::isfinite(d.confidence) || d.confidence<conf || d.confidence>1 ||
@@ -123,6 +129,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
             else if(roundabout) round=true;
+            else if(person) people=true;
             else if(barrier) {
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
@@ -136,17 +143,18 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people});
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_seen=0,rounds=0;
+        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_seen=0,rounds=0,persons=0;
         for(const auto &v:votes_) {
             reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_seen+=v.barrier_seen;
-            rounds+=v.round;
+            rounds+=v.round; persons+=v.person;
         }
+        person_stop_=persons>=params.vote_min;
         // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
         const bool rb_present=rounds>=params.vote_min;
         if(rb_present) {
@@ -274,8 +282,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
             std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
         command_ms_=now_ms;
-        plan.cmd={params.min_cms,sent_angle_}; plan.reason=StateName(state_);
-        plan.debug.state=plan.debug.reason=plan.reason;
+        plan.cmd={person_stop_ ? 0.0 : params.min_cms,sent_angle_}; plan.reason=person_stop_ ? "NGUOI_DI_BO" : StateName(state_);
+        plan.debug.state=StateName(state_); plan.debug.reason=plan.reason;
         plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=plan.cmd.cms;
         return plan;
     }
@@ -312,6 +320,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(barrier_slow && result.debug.state=="BAM_LAN") {  // thấy rào phía trước: giảm tốc trước khi rẽ
         plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms}); plan.debug.speed_cms=plan.cmd.cms;
     }
+    // Người đi bộ: dừng trước khi cộng quãng né (sent_cms_), state giữ nguyên (cả khi giữ hướng vòng xuyến).
+    const bool person_hold=person_stop_ && (result.debug.state=="BAM_LAN" || plan.state==PlannerState::GIU_HUONG);
+    if(person_hold) plan.cmd.cms=0;
     if(params.obstacle_action==2) {
         if(result.debug.state!="BAM_LAN") {
             if(swerve_!=Swerve::NONE) {
@@ -333,6 +344,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(cancelled) plan.reason=plan.debug.reason="HUY_RE";
     if(sensor_cancelled && result.debug.state=="BAM_LAN") plan.reason=plan.debug.reason="HUY_RE_CAM_BIEN";
+    if(person_hold) { plan.cmd.cms=0; plan.reason=plan.debug.reason="NGUOI_DI_BO"; plan.debug.speed_cms=0; }
     sent_angle_=plan.cmd.deg; command_ms_=now_ms;
     return plan;
 }
