@@ -35,6 +35,10 @@ private:
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
+    enum class Swerve { NONE, LEFT, PASS };
+    Swerve swerve_=Swerve::NONE;
+    double pass_cm_=0, sent_cms_=0;
+    int64_t swerve_ms_=-1;
     uint64_t last_frame_=0;
     int green_run_=0;
     int64_t red_ms_=-1, wait_since_ms_=-1;

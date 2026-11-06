@@ -36,6 +36,7 @@ const char *StateName(PlannerState state) {
 void Planner::Reset(bool preserve_lights) {
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false;
@@ -115,7 +116,17 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         else if(state_==PlannerState::BAM_LAN && red_fresh && reds>=params.vote_min) reason_="TIEP_CAN_DEN_DO";
         else if(state_==PlannerState::BAM_LAN) reason_="BAM_LAN";
     }
-    if(params.obstacle_action==1 &&
+    bool returning=false;
+    if(params.obstacle_action!=2 || state_!=PlannerState::BAM_LAN || entered_wait) {
+        swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+        if(params.obstacle_action==2) {
+            obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+        }
+    }
+    // shortcut: quãng theo lệnh gửi, cần encoder khi có phép đo quãng đường thực.
+    if(swerve_==Swerve::PASS && swerve_ms_>=0 && now_ms>swerve_ms_)
+        pass_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
+    if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
             last_mask_ms_=input.mask_ms;
@@ -126,9 +137,19 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
             if(state_==PlannerState::BAM_LAN &&
                std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
-                state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
+                if(params.obstacle_action==1) {
+                    state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
+                } else if(swerve_!=Swerve::LEFT) {
+                    swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0;
+                }
+            }
+            if(params.obstacle_action==2 && swerve_==Swerve::LEFT) {
+                obstacle_clear_run_=fraction>=params.obstacle_hole_frac*0.5 ? 0 : obstacle_clear_run_+1;
+                if(obstacle_clear_run_>=params.vote_window) {
+                    swerve_=Swerve::PASS; pass_cm_=0; obstacle_votes_.clear();
+                }
             } else if(state_==PlannerState::DUNG_VAT_CAN) {
-                obstacle_clear_run_=obstacle ? 0 : obstacle_clear_run_+1;
+                obstacle_clear_run_=fraction>=params.obstacle_hole_frac*0.5 ? 0 : obstacle_clear_run_+1;
                 if(obstacle_clear_run_>=params.vote_window) {
                     state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset();
                     obstacle_votes_.clear(); obstacle_clear_run_=0;
@@ -138,11 +159,16 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     } else {
         obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     }
+    if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
+        swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
+        lane_.Reset(); returning=true;
+    }
     plan.state=state_;
     if(state_!=PlannerState::BAM_LAN) {
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
     }
-    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,input.reference);
+    if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
+    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
         if(!fresh || reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
@@ -150,6 +176,17 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
         }
         plan.debug.speed_cms=plan.cmd.cms;
+    }
+    if(params.obstacle_action==2) {
+        if(result.debug.state!="BAM_LAN") {
+            swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0;
+            obstacle_votes_.clear(); last_mask_ms_=-1; plan.reference=input.reference;
+        } else if(swerve_!=Swerve::NONE || returning) {
+            if(!returning) plan.cmd.cms=std::min(plan.cmd.cms,params.approach_cms);
+            plan.reason=returning ? "VE_PHAI" : swerve_==Swerve::LEFT ? "NE_TRAI" : "NE_QUA";
+            plan.debug.reason=plan.reason; plan.debug.speed_cms=plan.cmd.cms;
+        }
+        sent_cms_=plan.cmd.cms; swerve_ms_=now_ms;
     }
     return plan;
 }
