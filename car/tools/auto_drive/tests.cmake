@@ -26,6 +26,9 @@ set(_auto_cases A01 A02 A03 A04 A05 A06 A07 A08 A09 A10 A11 A12 A13 A14 A15 A16 
     t57_transient_imu_armed t57_transient_encoder_armed
     t57_transient_imu_turning t57_transient_encoder_turning
     t57_transient_idle t57_csv_imu t57_csv_encoder t57_csv_both
+    t62_hold_170 t62_hold_200 t62_green_approach
+    t62_reset_space t62_reset_go t62_reset_image
+    t62_stop_089 t62_stop_090 t62_stop_091 t62_stop_flicker t62_no_light t62_green_latch
     t71_defaults t71_steer_40 t71_steer_40_1 t71_cruise_15 t71_cruise_16 t71_motor_cap t71_curve_30
     t72_zero_valid t72_negative_rejected t72_zero_keeps_text t72_reload_0_to_5
     t73_default_enable t73_init_imu_fail t73_init_drift_fail t73_reload_no_imu
