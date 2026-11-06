@@ -806,7 +806,7 @@ def t57_log(rows):
         need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
 
 
-def t57_fault_csv(rows, failed):
+def t57_fault_csv(rows, failed, odo=0):
     """Kiểm đúng mẫu lỗi trong lệnh, trước khi cấp lại mẫu tốt."""
     faults = [row for row in rows if row['reason'] == 'HUY_RE_CAM_BIEN']
     need(faults, 'CSV chưa có mẫu HUY_RE_CAM_BIEN', 't57_fault_csv')
@@ -816,7 +816,7 @@ def t57_fault_csv(rows, failed):
              'CSV hủy rẽ không bám làn trong giới hạn', 't57_fault_csv')
         for sensor, column in (('imu', 'yaw_deg'), ('encoder', 'odo_cm')):
             value = row[column]
-            need(value == '' if sensor in failed else value != '' and float(value) == 0,
+            need(value == '' if sensor in failed else value != '' and float(value) == (0 if sensor == 'imu' else odo),
                  'CSV sai ô {} của mẫu lỗi {}'.format(column, failed), 't57_fault_csv')
 
 
@@ -851,6 +851,27 @@ def t57_feed(run):
 
 def t57_wait(run, predicate, message):
     return run.wait(predicate, 10, message)
+
+
+def t68a_armed(run, mark, since):
+    """Giữ encoder tại mốc0 tới khi biển đủ phiếu; J1 không quyết định rẽ."""
+    def enough():
+        need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in run.of('state', mark)),
+             'Rẽ khi encoder chưa tới turn_start_cm', 't68a_start')
+        batches = [b for b in detection_batches(run.events()) if b[0] >= mark and
+                   b[2] > since and td.now_ms() - b[2] <= run.values.get('det_max_age_ms', 500)]
+        return len(batches) >= run.values.get('vote_min', 3)
+    need(getattr(run, 't57_odo', 0) == 0, 'Encoder phải giữ mốc0 trước đủ phiếu', 'setup')
+    run.wait(enough, 10, 'Chưa đủ phiếu biển tươi sau G')
+    run.frames(3, enough)
+
+
+def t68a_turn(run, mark, since, direction='left'):
+    t68a_armed(run, mark, since)
+    run.t57_odo = run.values.get('turn_start_cm', 30)
+    return run.wait(lambda: next((e for e in run.of('state', mark) if
+                    e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')), None),
+                    10, 'Chưa vào rẽ sau đủ phiếu và turn_start_cm')
 
 
 def t57_transient_window(stalled, resumed, created, observed=None, events=()):
@@ -900,20 +921,6 @@ def t57_case(case, cfg, root):
         # T73–4: R áp cruise=9 nhưng không tự init IMU/bật rẽ.
         return t73_case('t73_reload_no_imu', cfg, root)
     def setup(run):
-        rows = mask_rows('straight')
-        if not case.endswith('_armed') and case != 't57_transient_idle':
-            for row in rows:
-                end = max(i for i, value in enumerate(row) if value)
-                for x in range(end):
-                    row[x] = 1
-        (run.root / 'straight.png').write_bytes(png_bytes(rows))
-        if case == 't57_transient_idle' or case.endswith('_armed'):
-            opened = mask_rows('straight')
-            for row in opened:
-                end = max(i for i, value in enumerate(row) if value)
-                for x in range(end):
-                    row[x] = 1
-            (run.root / 'left.png').write_bytes(png_bytes(opened))
         run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
         run.seq = 2
 
@@ -932,7 +939,6 @@ def t57_case(case, cfg, root):
         for action in modes:
             with running(cfg, root / action, values=values,
                          setup=setup, no_yolo=False,
-                         schedule=((1, 'straight'), (120, 'left')) if idle or case.endswith('_armed') else ((1, 'straight'),),
                          yolo_schedule=((1, 'empty'), (120, mode)) if idle else ((1, mode),)) as r:
                 t57_feed(r); r.boot()
                 if case == 't57_init_ok_order':
@@ -944,18 +950,17 @@ def t57_case(case, cfg, root):
                          'Auto init ToF/gửi cấu hình ngoài Motor::Init', 't57_init')
                     r.t57_imu = r.t57_encoder = False
                     r.finish(); continue
-                mark = len(r.events()); r.key('G')
+                mark = len(r.events()); started = r.key('G')
                 if case.endswith('_armed') or idle:
                     t57_wait(r, lambda: any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
-                             'Mép đóng chưa bám làn')
+                             'Chưa bám làn trước turn_start_cm')
                     if not idle:
-                        t57_wait(r, lambda: r.of('detections', mark), 'Chưa có biển trái để armed')
+                        t68a_armed(r, mark, started[0])
                     r.frames(4)
                     need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', mark)),
-                         'Mép đóng vẫn vào rẽ', 'setup')
+                         'Chưa tới turn_start_cm vẫn vào rẽ', 'setup')
                 else:
-                    t57_wait(r, lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', mark)),
-                             'Không vào RE_TRAI trước tác nhân')
+                    t68a_turn(r, mark, started[0])
                 need(any(e[1] == 'motor_speed' and e[2] > 0 and not e[3] for e in r.events()[mark:]),
                      'Tiền đề chưa có lệnh chạy', 'setup')
                 mark = len(r.events())
@@ -994,6 +999,7 @@ def t57_case(case, cfg, root):
                     space(r); mark = len(r.events()); r.key('G')
                     t57_wait(r, lambda: any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
                              'Space/G không về bám làn')
+                    r.t57_odo += r.values.get('turn_start_cm', 30)
                     def no_old_turn():
                         need(not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', mark)),
                              'Space/G rẽ tiếp phiên cũ', 't57_reset')
@@ -1008,7 +1014,8 @@ def t57_case(case, cfg, root):
                     r.t57_imu = r.t57_encoder = False
                     sensor = action if idle else ('encoder' if '_encoder_' in case else 'imu')
                     event = r.inject(sensor + '_read_fail')
-                    r.inject('imu_sample 0 0' if sensor == 'imu' else 'encoder_sample 0')
+                    r.inject('imu_sample 0 0' if sensor == 'imu' else
+                             'encoder_sample {}'.format(getattr(r, 't57_odo', 0)))
                     need(len(r.of('command')) == before,
                          'Planner chưa dừng trong cửa sổ tiêm lỗi/hồi mẫu', 'setup')
                     r.t57_imu = r.t57_encoder = True
@@ -1023,12 +1030,12 @@ def t57_case(case, cfg, root):
                 elif case.startswith('t57_csv_'):
                     failed = ('imu', 'encoder') if case == 't57_csv_both' else (case[8:],)
                     # Hai giá trị riêng, khác 0 và khác mẫu hồi để bắt giữ số cũ.
-                    r.t57_yaw, r.t57_odo = 17, 23
+                    r.t57_yaw, r.t57_odo = 17, 53
                     t57_wait(r, lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != '' and
-                                            float(row['yaw_deg']) == 17 and float(row['odo_cm']) == 23
-                                            for row in r.rows()), 'Chưa có mẫu CSV tốt 17/23 trước lỗi')
-                    r.t57_yaw = r.t57_odo = 0
-                    r.inject('imu_sample 0 0'); r.inject('encoder_sample 0')
+                                            float(row['yaw_deg']) == 17 and float(row['odo_cm']) == 53
+                                            for row in r.rows()), 'Chưa có mẫu CSV tốt 17/53 trước lỗi')
+                    r.t57_yaw, r.t57_odo = 0, 54
+                    r.inject('imu_sample 0 0'); r.inject('encoder_sample 54')
                     if len(failed) == 2:
                         # Hai lỗi phải cùng vòng hủy rẽ, không để lỗi đầu kết thúc rẽ trước.
                         stalled = r.inject('controller_stall'); r.frames(2)
@@ -1055,9 +1062,9 @@ def t57_case(case, cfg, root):
                     rows = r.rows()
                     if len(failed) == 2:
                         for row in rows:
-                            if row['reason'] == 'HUY_RE_CAM_BIEN' and row['odo_cm'] == '0':
-                                row['odo_cm'] = ''  # mẫu đọc trước lệnh lỗi encoder: chấp nhận số tốt 0
-                    t57_fault_csv(rows, failed)
+                            if row['reason'] == 'HUY_RE_CAM_BIEN' and row['odo_cm'] != '' and float(row['odo_cm']) == 54:
+                                row['odo_cm'] = ''  # mẫu đọc trước lệnh lỗi encoder: chấp nhận số tốt 54
+                    t57_fault_csv(rows, failed, 54)
                 elif case == 't57_stale_imu':
                     r.t57_imu = False
                     stamp, limit = external_stamp_ms(), 400
@@ -1093,11 +1100,13 @@ def t57_case(case, cfg, root):
                              'Lỗi cảm biến làm motor không tiến', 't57_lane')
                     r.frames(4, lane_only); lane_only()
                     r.t57_imu = r.t57_encoder = True
-                    if idle or case.endswith('_armed'):
+                    if idle:
                         need(int(str(r.of('frame')[-1][2]).split()[0]) < 120,
-                             'Mép mở tới trước khi kiểm xong lỗi', 'setup')
+                             'Biển pha sau tới trước khi kiểm xong lỗi', 'setup')
                         r.wait(lambda: int(str(r.of('frame')[-1][2]).split()[0]) >= 126 and
-                               r.of('detections', mark), 10, 'Chưa có biển/mép mở sau lỗi')
+                               r.of('detections', mark), 10, 'Chưa có biển mới sau lỗi')
+                    if idle or case.endswith('_armed'):
+                        r.t57_odo = r.values.get('turn_start_cm', 30)
                     r.frames(12, lane_only); lane_only()
                     need(any(e[2] > 0 and not e[3] for e in r.of('motor_speed', mark)),
                          'Không có lệnh motor mới sau lỗi', 't57_lane')
@@ -1105,6 +1114,8 @@ def t57_case(case, cfg, root):
                     r.key('G'); r.frames(4, lane_only)
                     space(r); lane_mark = len(r.events()); started = r.go()
                     mark = r.events().index(started)
+                    r.frames(3, lane_only)
+                    r.t57_odo += r.values.get('turn_start_cm', 30)
                     r.frames(8, lane_only); lane_only()
                     space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
                 reasons = ('LOI_CAM_BIEN', 'CAM_BIEN_CU') if case.startswith('t57_transient_') else (reason,)
@@ -1272,12 +1283,6 @@ def t73_case(case, cfg, root):
         mode = 't73_' + direction
         YOLO_BOXES[mode] = [(direction, 800)]
         def setup(run):
-            rows = mask_rows('straight')
-            for row in rows:
-                edge = (max if direction == 'left' else min)(i for i, v in enumerate(row) if v)
-                for x in (range(edge) if direction == 'left' else range(edge + 1, len(row))):
-                    row[x] = 1
-            (run.root / 'straight.png').write_bytes(png_bytes(rows))
             run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n' +
                                 ('3 yolo_stall\n' if lane_fault else ''), encoding='utf-8')
             run.seq = 3 if lane_fault else 2
@@ -1298,7 +1303,7 @@ def t73_case(case, cfg, root):
                            10, 'Thiếu ACK giữ biển trước G')
                     need(not r.of('detections'), 'Biển tới trước lỗi BAM_LAN', 'setup')
                 if init_fail:
-                    # T73–1,6: init lỗi vẫn bám làn trước biển/mép hợp lệ.
+                    # T73–1,6: init lỗi vẫn bám làn khi có biển và đủ quãng.
                     need('IMU LOI: KHONG RE' in r.text(), 'Thiếu cảnh báo IMU LOI: KHONG RE')
                     need(len(r.of('motor_init')) == 1, 'Motor::Init không đúng một lần')
                 if case == 't73_reload_no_imu':
@@ -1310,6 +1315,8 @@ def t73_case(case, cfg, root):
                 started = r.go(); mark = r.events().index(started)
                 if init_fail or case == 't73_reload_no_imu':
                     r.wait(lambda: r.of('detections', go_mark), 10, 'Thiếu biển thử bỏ rẽ')
+                    r.frames(3)
+                    r.t57_odo = r.values.get('turn_start_cm', 30)
                     r.frames(12, lambda: t73_lane_check(r, mark, go_mark))
                     need(any(e[2] == 'BAM_LAN' for e in r.of('state')), 'Không bám làn')
                     speed_is(r, 9 if case == 't73_reload_no_imu' else 15)
@@ -1319,8 +1326,7 @@ def t73_case(case, cfg, root):
                     need(any(e[2] == 'BAM_LAN' for e in r.of('state', go_mark)),
                          'Chưa bám làn trước lỗi cảm biến', 'setup')
                 else:
-                    r.wait(lambda: any(e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')
-                                       for e in r.of('state', go_mark)), 10, 'Chưa vào rẽ trước tác nhân')
+                    t68a_turn(r, go_mark, started[0], direction)
                 if case == 't73_default_enable':
                     # T73–5,6: chứng minh bật thật bằng hành vi rẽ khi YAML bỏ khóa.
                     default_value(r.text(), 'turn_enable', 1); repo_value('turn_enable', 1)
@@ -1347,6 +1353,8 @@ def t73_case(case, cfg, root):
                     r.frames(4, lambda: t73_lane_check(r, mark))
                     r.inject('yolo_resume')
                     r.wait(lambda: r.of('detections', mark), 10, 'Chưa có biển mới sau lỗi BAM_LAN')
+                    r.frames(3)
+                    r.t57_odo = r.values.get('turn_start_cm', 30)
                     r.frames(6, lambda: t73_lane_check(r, mark))
                 else:
                     # T73–2,6: lỗi/cũ hủy rẽ về làn, không chốt DUNG.
@@ -1357,11 +1365,13 @@ def t73_case(case, cfg, root):
                     lane_mark = next(i for i, e in enumerate(r.events()) if i >= mark and
                                      e[1] == 'state' and e[2] == 'BAM_LAN')
                 t73_lane_check(r, mark, lane_mark)
-                # Mẫu tốt cùng biển/mép vẫn mới: rẽ phải bị tắt đến hết lượt.
+                # Mẫu tốt cùng biển/quãng vẫn hợp lệ: rẽ phải bị tắt đến hết lượt.
                 setattr(r, 't57_' + sensor, True)
                 r.frames(12, lambda: t73_lane_check(r, mark, lane_mark))
                 need(any(e[2] > 0 and not e[3] for e in r.of('motor_speed', mark)), 'Không tiếp tục motor')
                 space(r); r.go(); recovery_mark = len(r.events())
+                r.frames(3, lambda: t73_lane_check(r, recovery_mark))
+                r.t57_odo += r.values.get('turn_start_cm', 30)
                 r.frames(8, lambda: t73_lane_check(r, recovery_mark))
                 r.finish(); t71_cap(r.events())
         finally:
@@ -1431,14 +1441,7 @@ def t73_add_case(case, cfg, root):
         direction = 'right' if action == 'right' else 'left'
         mode = 't73_add_' + direction
         YOLO_BOXES[mode] = [(direction, 800)]
-        # Mép đóng giữ xe BAM_LAN đủ phiếu; mép mở dùng cùng ảnh như các ca T73 cũ.
         def setup(run):
-            opened = mask_rows('straight')
-            for row in opened:
-                edge = (max if direction == 'left' else min)(i for i, v in enumerate(row) if v)
-                for x in (range(edge) if direction == 'left' else range(edge + 1, len(row))):
-                    row[x] = 1
-            (run.root / ('left.png' if armed else 'straight.png')).write_bytes(png_bytes(opened))
             run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
             run.seq = 2
         current = dict(values)
@@ -1447,18 +1450,23 @@ def t73_add_case(case, cfg, root):
         try:
             with running(cfg, root / action, values=current, setup=setup, no_yolo=False,
                          env={'OPEN_FAIL': 'imu'} if init else {},
-                         schedule=((1, 'straight'), (120, 'left')) if armed else ((1, 'straight'),),
                          yolo_schedule=((1, mode),)) as r:
-                t73_add_feed(r); r.boot()
+                t73_add_feed(r)
+                r.t73_progress = False
+                r.boot()
                 if init:
                     # T73–1: init lỗi và R giữa phiên không được gọi Motor::Init lần hai.
                     need('IMU LOI: KHONG RE' in r.text(), 'Thiếu cảnh báo IMU lỗi')
                     need(len(r.of('motor_init')) == 1, 'Motor::Init sai số lần sau boot')
                     state_mark = len(r.events()); started = r.go(); mark = r.events().index(started)
+                    t68a_armed(r, state_mark, started[0])
+                    r.t57_odo = current.get('turn_start_cm', 30)
                     r.frames(8, lambda: t73_add_lane(r, mark, state_mark))
                     space(r); patch_yaml(r, dict(current, cruise_cms=9)); reload(r, 'accepted')
                     need(len(r.of('motor_init')) == 1, 'R gọi lại Motor::Init')
                     state_mark = len(r.events()); started = r.go(); mark = r.events().index(started)
+                    r.frames(3, lambda: t73_add_lane(r, mark, state_mark))
+                    r.t57_odo += current.get('turn_start_cm', 30)
                     r.frames(8, lambda: t73_add_lane(r, mark, state_mark)); speed_is(r, 9)
                     t73_add_lane(r, mark, state_mark)
                     r.t57_imu = r.t57_encoder = False
@@ -1467,17 +1475,10 @@ def t73_add_case(case, cfg, root):
                     continue
                 go_mark = len(r.events()); started = r.go()
                 if armed:
-                    # T73–2: đối chứng chứng minh cùng biển/ảnh có thể armed rồi rẽ.
-                    r.wait(lambda: len({int(str(e[2]).split()[0]) for e in r.of('detections', go_mark)
-                                       if started[0] <= float(str(e[2]).split()[1]) and
-                                       td.now_ms() - float(str(e[2]).split()[1]) <= 500}) >= 3,
-                           10, 'Thiếu ba phiếu biển tươi chụp sau G')
-                    r.frames(4)
-                    need(int(str(r.of('mask')[-1][2]).split()[0]) < 120,
-                         'Mép mở trước khi đủ phiếu/kiểm armed', 'setup')
-                    need(any(e[2] == 'BAM_LAN' for e in r.of('state', go_mark)) and
-                         not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', go_mark)),
-                         'Chưa có đoạn armed/BAM_LAN mép đóng', 'setup')
+                    # T73–2: cùng biển/ảnh, chỉ đối chứng mẫu tươi được rẽ khi đủ quãng.
+                    t68a_armed(r, go_mark, started[0])
+                    need(any(e[2] == 'BAM_LAN' for e in r.of('state', go_mark)),
+                         'Chưa có đoạn armed/BAM_LAN trước turn_start_cm', 'setup')
                     mark = r.events().index(started)
                     if action != 'control':
                         # Encoder không có dấu thời gian (chỉ IMU có sensor_ms): "encoder cũ" không quan sát được
@@ -1491,11 +1492,8 @@ def t73_add_case(case, cfg, root):
                             t73_add_lane(r, mark)
                             return td.now_ms() > stamp + 400 + r.slack
                         r.wait(stale_lane, 3, 'Cảm biến chưa quá cũ khi armed')
-                        need(int(str(r.of('mask')[-1][2]).split()[0]) < 120,
-                             'Mép đã mở trước khi kiểm xong cảm biến cũ', 'setup')
                         setattr(r, 't57_' + action, True)
-                    r.wait(lambda: int(str(r.of('mask')[-1][2]).split()[0]) >= 120,
-                           12, 'Chưa tới ảnh mép mở')
+                    r.t57_odo = current.get('turn_start_cm', 30)
                     if action == 'control':
                         r.wait(lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', go_mark)),
                                3, 'Đối chứng mẫu tươi không armed/rẽ', tag='setup')
@@ -1505,9 +1503,8 @@ def t73_add_case(case, cfg, root):
                              'Stale khi armed không tiếp tục motor')
                     r.t57_imu = r.t57_encoder = False
                     r.finish(); continue
-                turn = r.wait(lambda: next((e for e in r.of('state', go_mark) if
-                               e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')), None),
-                              10, 'Chưa vào rẽ trước tác nhân')
+                turn = t68a_turn(r, go_mark, started[0], direction)
+                r.t73_base, r.t73_origin, r.t73_progress = r.t57_odo, td.now_ms(), True
                 mark = len(r.events())
                 if case == 't73_turn_max_cm_exceeded':
                     # T73–2: vượt quãng đường, không dùng lỗi đọc/cảm biến cũ hay timeout.
@@ -1565,10 +1562,12 @@ def t73_add_case(case, cfg, root):
                     r.frames(4, lambda: no_motion(r, end))
                     r.t57_imu = r.t57_encoder = False
                     r.finish(); continue
-                # T73–2: hồi mẫu tốt và biển/mép mới vẫn vô hiệu rẽ, kể cả Space/G.
+                # T73–2: hồi mẫu tốt và biển/quãng mới vẫn vô hiệu rẽ, kể cả Space/G.
                 r.t73_base, r.t73_origin, r.t73_progress = r.t57_odo, td.now_ms(), True
                 r.frames(12, lambda: t73_add_lane(r, mark, lane_mark))
                 space(r); state_mark = len(r.events()); started = r.go(); recovery_mark = r.events().index(started)
+                r.frames(3, lambda: t73_add_lane(r, recovery_mark, state_mark))
+                r.t73_base, r.t73_origin = r.t57_odo + current.get('turn_start_cm', 30), td.now_ms()
                 r.frames(8, lambda: t73_add_lane(r, recovery_mark, state_mark))
                 r.t57_imu = r.t57_encoder = False
                 r.finish(); t71_cap(r.events())
@@ -3039,6 +3038,10 @@ def selftest():
                          yaw_deg='' if 'imu' in failed else '0',
                          odo_cm='' if 'encoder' in failed else '0')
         t57_fault_csv([fault_row], failed)
+        progressed = dict(fault_row, odo_cm='' if 'encoder' in failed else '54')
+        t57_fault_csv([progressed], failed, 54)
+        if 'encoder' not in failed:
+            fails(lambda: t57_fault_csv([fault_row], failed, 54), 't57_fault_csv')
         fails(lambda: t57_fault_csv([], failed), 't57_fault_csv')
         for column in ('yaw_deg', 'odo_cm'):
             bad = dict(fault_row)
@@ -3327,6 +3330,31 @@ def selftest():
             result = predicate()
             assert result, kwargs.get('message', 'Không đạt điều kiện tổng hợp')
             return result
+    # T68a: thiếu phiếu, phiếu trước G/cũ hoặc rẽ trước quãng đều phải bị bắt.
+    signs = [(1000, 'detections', '{} {}'.format(frame, 900 + frame), False) for frame in (1, 2, 3)]
+    def turn_probe(events, direction='left'):
+        run = SyntheticRun(list(events))
+        run.t57_odo = 0
+        run.values['vote_min'] = 3
+        run.frames = lambda count, check: [check() for _ in range(count)]
+        def wait(predicate, *args, **kwargs):
+            if run.t57_odo == 30:
+                run.es.append((1001, 'state', 'RE_TRAI' if direction == 'left' else 'RE_PHAI', False))
+            result = predicate()
+            need(result, 'Không đủ điều kiện tổng hợp T68a', 't68a_wait')
+            return result
+        run.wait = wait
+        return run
+    with patch.object(td, 'now_ms', return_value=1000):
+        for direction in ('left', 'right'):
+            probe = turn_probe(signs, direction)
+            turn = t68a_turn(probe, 0, 900, direction)
+            assert probe.t57_odo == 30 and turn[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')
+        for bad in (signs[:2], [(1000, 'detections', '1 900', False)] + signs[1:],
+                    [(1000, 'detections', '{} {}'.format(frame, frame), False) for frame in (1, 2, 3)]):
+            fails(lambda: t68a_turn(turn_probe(bad), 0, 900), 't68a_wait')
+        fails(lambda: t68a_turn(turn_probe(signs + [(1000, 'state', 'RE_TRAI', False)]), 0, 900),
+              't68a_start')
     lane_events = [(0, 'state', 'RE_TRAI', False), (1, 'motor_speed', 4, False),
                    (2, 'state', 'BAM_LAN', False), (3, 'motor_speed', 15, False)]
     t73_lane_check(SyntheticRun(lane_events), 0, 2)
@@ -3465,7 +3493,7 @@ def main():
     cfg = parser.parse_args()
     if cfg.selftest:
         selftest()
-        print('PASS selftest: gitignore, P1/M7, YOLO, CLI/env, chốt đèn, A32, model T47l, log T57 và bộ kiểm T71–T73 (vết tổng hợp)')
+        print('PASS selftest: gitignore, P1/M7, YOLO, CLI/env, chốt đèn, A32, model T47l, log T57 và bộ kiểm T68a/T71–T73 (vết tổng hợp)')
         return
     if cfg.case == 'gitignore':
         check_gitignore()

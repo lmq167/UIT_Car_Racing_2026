@@ -125,7 +125,9 @@ target_compile_options(test_t57_turn PRIVATE -Wall -Wextra)
 foreach(scenario signs votes j1 arm_distance yaw command disabled LOI_CAM_BIEN
         CAM_BIEN_CU sensor_invalid RE_QUA_CM RE_QUA_MS KET_RE red fault_red mask_stale
         low_conf_armed space_during_turn nonfinite_sensor
-        armed_sensor_fault armed_red red_release_after_turn_red sign_while_turning after_turn_lane)
+        armed_sensor_fault armed_red red_release_after_turn_red sign_while_turning after_turn_lane
+        t68_signs t68_no_sign t68_red_hold t68_start_distance t68_arm_distance
+        t68_conflict t68_avoidance t68_hold_heading)
     add_test(NAME acc_t57_${scenario} COMMAND test_t57_turn ${scenario})
     set_tests_properties(acc_t57_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
@@ -138,6 +140,8 @@ add_test(NAME test_t68b_roundabout COMMAND test_t57_turn roundabout)
 set_tests_properties(test_t68b_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME acc_t57_params COMMAND test_t57_turn params ${CMAKE_CURRENT_BINARY_DIR}/t57_params.yaml)
 set_tests_properties(acc_t57_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+add_test(NAME acc_t57_t68_params COMMAND test_t57_turn t68_params ${CMAKE_CURRENT_BINARY_DIR}/t68_params.yaml)
+set_tests_properties(acc_t57_t68_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 
 add_executable(test_t58_vote_release test_t58_vote_release.cpp)
 target_link_libraries(test_t58_vote_release PRIVATE ucr_control)
