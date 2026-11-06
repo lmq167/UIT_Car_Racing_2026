@@ -179,6 +179,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(params.obstacle_action==2) {
         if(result.debug.state!="BAM_LAN") {
+            if(swerve_!=Swerve::NONE) {
+                state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
+                swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+                obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+                plan=Plan{}; plan.reference=input.reference; plan.state=state_; plan.reason=reason_;
+                plan.debug.state=StateName(state_); plan.debug.reason=reason_;
+                return plan;
+            }
             swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0;
             obstacle_votes_.clear(); last_mask_ms_=-1; plan.reference=input.reference;
         } else if(swerve_!=Swerve::NONE || returning) {

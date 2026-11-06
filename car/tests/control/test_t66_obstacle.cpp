@@ -144,18 +144,55 @@ void SwerveTests() {
             Check(r.planner.Step(r.in,r.now,r.p).reason=="MAT_ANH","Mất ảnh khi né"); }
         if(cancel==2) r.planner.Reset(true);
         if(cancel==3) { r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
-            auto plan=r.step(); Check(plan.reason.find("MAT_LAN")==0 && plan.reference==LaneRef::RIGHT,"Mất làn không hủy né"); }
+            auto plan=r.step();
+            Check(plan.state==PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0 &&
+                  plan.reason=="MAT_LAN_NE" && plan.reference==LaneRef::RIGHT &&
+                  plan.debug.state=="DUNG" && plan.debug.reason=="MAT_LAN_NE" &&
+                  plan.debug.speed_cms==0 && plan.debug.angle_deg==0,"Mất làn khi né phải dừng hẳn"); }
         r.in.mask=Mask(0,0);
-        if(cancel<2) {
+        if(cancel!=2) for(int n=0;n<r.p.regain_frames+2;++n) {
             const auto stopped=r.step();
             Check(stopped.state==PlannerState::DUNG && stopped.cmd.cms==0 && stopped.cmd.deg==0 &&
                   stopped.reference==LaneRef::RIGHT,"Hủy né tự chạy trước G mới");
+            if(cancel==3) Check(stopped.reason=="MAT_LAN_NE","Mất lý do chốt mất làn né");
         }
-        r.in.go=cancel!=3;
+        r.in.go=true;
         auto plan=r.step(); r.in.go=false;
+        Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+              plan.reason=="BAM_LAN" && plan.cmd.cms>0,"G mới không bám lại RIGHT");
         for(int n=0;n<r.p.regain_frames+1;++n) plan=r.step();
         Check(plan.reference==LaneRef::RIGHT && plan.reason=="BAM_LAN","Hủy pha giữ tham chiếu trái");
         r.left();
+    }
+    for(bool passing:{false,true}) for(bool stale:{false,true}) {
+        Rig r; if(passing) r.pass(); else r.left();
+        if(stale) r.now+=r.p.mask_max_age_ms;
+        else { r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0)); r.now+=r.p.lost_stop_ms; }
+        const auto plan=r.step(!stale);
+        Check(plan.state==PlannerState::DUNG && plan.reason=="MAT_LAN_NE" &&
+              plan.cmd.cms==0 && plan.cmd.deg==0 && plan.reference==LaneRef::RIGHT,
+              "MAT_LAN/MAT_NAN_CU khi né phải dừng hẳn");
+    }
+    { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); double distance=0;
+      while(distance+plan.cmd.cms*0.05<r.p.obstacle_pass_cm-1e-9) {
+          distance+=plan.cmd.cms*0.05; plan=r.step();
+      }
+      r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0)); plan=r.step();
+      Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+            plan.reason=="MAT_LAN" && plan.cmd.cms==0 && plan.cmd.deg==0,
+            "Đã đủ quãng về phải không được chốt MAT_LAN_NE"); }
+    for(int action:{0,1,2}) {
+        Rig r; r.p.obstacle_action=action; LaneController expected;
+        expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,LaneRef::RIGHT);
+        for(int n=0;n<30;++n) {
+            r.in.mask=n<2 || n>=20 ? Mask(0,0) : cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
+            const auto plan=r.step();
+            const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,LaneRef::RIGHT);
+            Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+                  plan.cmd.cms==lane.cmd.cms && plan.cmd.deg==lane.cmd.deg &&
+                  plan.reason==lane.debug.reason && plan.debug.state==lane.debug.state,
+                  "Mất làn ngoài pha né/action 0/1 đổi hành vi cũ");
+        }
     }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); double distance=0;
       for(int n=0;n<100;++n) {
