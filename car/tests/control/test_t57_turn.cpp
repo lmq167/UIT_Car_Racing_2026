@@ -83,20 +83,46 @@ void TurnUnavailable(Rig& r) {
     r.mask(60,140); r.in.detections={};
     for (bool left:{true,false}) {
         r.arm(left?"left":"right"); r.advance(r.p.turn_start_cm/2);
-        Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Lỗi cảm biến phải bỏ rẽ hết phiên");
+        Check(r.advance(r.p.turn_start_cm/2).state==control::PlannerState::BAM_LAN,"Cảm biến chưa khả dụng không được rẽ");
     }
 }
-void RecoveredSensor(Rig& r) {
+void RecoveredSensor(Rig& r, int64_t fresh_ms=-1) {
     r.in.sensor_ok=true; r.in.yaw_deg=0; r.in.odo_cm=0;
-    TurnUnavailable(r);
-    r.in.stop=true; ++r.now; Check(r.step().cmd.cms==0,"Space vẫn phải dừng"); r.in.stop=false;
-    r.in.go=true; ++r.now; Check(r.step().cmd.cms>0,"Space/G vẫn cho xe chạy"); r.in.go=false;
-    TurnUnavailable(r);
-    for (bool preserve:{false,true}) {
-        r.planner.Reset(preserve); r.in.go=true; ++r.now;
-        Check(r.step().cmd.cms>0,"Reset/G vẫn cho xe chạy"); r.in.go=false;
-        TurnUnavailable(r);
+    r.mask(60,140); r.in.detections={};
+    if (fresh_ms<0) { fresh_ms=++r.now; r.step(); }
+    for (int reset=-1;reset<2;++reset) {
+        Rig resumed=r;
+        if (reset<0) {
+            resumed.in.stop=true; ++resumed.now; Check(resumed.step().cmd.cms==0,"Space vẫn phải dừng"); resumed.in.stop=false;
+            resumed.in.go=true; ++resumed.now; Check(resumed.step().cmd.cms>0,"Space/G vẫn cho xe chạy"); resumed.in.go=false;
+        } else {
+            resumed.planner.Reset(reset!=0); resumed.in.go=true; ++resumed.now;
+            Check(resumed.step().cmd.cms>0,"Reset/G vẫn cho xe chạy"); resumed.in.go=false;
+        }
+        TurnUnavailable(resumed);
     }
+    TurnUnavailable(r);
+    r.in.odo_cm+=r.p.turn_start_cm;
+    Check(r.now<fresh_ms+999,"Thiết lập phải còn trong cửa sổ hồi cảm biến");
+    while (r.now+40<fresh_ms+999) {
+        const auto plan=r.send({"left"});
+        Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
+              "Chưa tươi liên tục 1000 ms thì đủ phiếu/quãng vẫn không rẽ");
+    }
+    r.now=fresh_ms+999;
+    Check(r.step().state==control::PlannerState::BAM_LAN,"Tươi 999 ms vẫn chưa được rẽ");
+    ++r.now; r.in.detections={};
+    Check(r.step().state==control::PlannerState::BAM_LAN,"Đủ 1000 ms không khôi phục lần rẽ/biển cũ");
+    for (int i=0;i<r.p.vote_min;++i) {
+        Check(r.send({"left"}).state==control::PlannerState::BAM_LAN,"Biển mới phải chờ đủ quãng");
+        if (i<r.p.vote_min-1)
+            Check(r.advance(r.p.turn_start_cm).state==control::PlannerState::BAM_LAN,"Chưa đủ phiếu mới sau hồi thì không rẽ");
+    }
+    Check(r.advance(r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"Biển mới chưa đủ quãng không rẽ");
+    const auto plan=r.advance(1);
+    Check(plan.state==control::PlannerState::RE_TRAI,"Biển mới đủ phiếu/quãng sau 1000 ms phải rẽ");
+    Check(plan.cmd.cms>0 && plan.cmd.cms<=r.p.max_speed_cms && std::abs(plan.cmd.deg)<=r.p.steer_max_deg,
+          "Biển mới sau 1000 ms phải rẽ với lệnh trong giới hạn");
 }
 
 // T57_design:3,17: sáu mặc định, hai biên hợp lệ, ngoài miền và quan hệ góc.
@@ -397,7 +423,15 @@ void Case(const std::string& name) {
             const auto plan=startup.step();
             Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
                   "Cảm biến lỗi khởi động vẫn bám làn");
-            TurnUnavailable(startup); RecoveredSensor(startup);
+            TurnUnavailable(startup);
+            startup.in.stop=true; ++startup.now; Check(startup.step().cmd.cms==0,"Space vẫn dừng khi IMU lỗi khởi động"); startup.in.stop=false;
+            startup.in.go=true; ++startup.now; Check(startup.step().cmd.cms>0,"Space/G vẫn chạy khi IMU lỗi khởi động"); startup.in.go=false;
+            TurnUnavailable(startup);
+            for (bool preserve:{false,true}) {
+                startup.planner.Reset(preserve); startup.in.go=true; ++startup.now;
+                Check(startup.step().cmd.cms>0,"Reset/G vẫn chạy khi IMU lỗi khởi động"); startup.in.go=false;
+                TurnUnavailable(startup);
+            }
             Rig fresh; fresh.turn();
             for (bool stale_image:{false,true}) {
                 Rig ignored; ignored.planner.Reset(false);
@@ -455,6 +489,7 @@ void Case(const std::string& name) {
             kept.advance(kept.p.turn_start_cm/2); Check(control::StateName(kept.advance(kept.p.turn_start_cm/2).state)==std::string("RE_TRAI"),"Nhả đỏ còn armed khi trong quãng");
             for (bool release:{false,true}) {
                 Rig fault; fault.p.vote_window=fault.p.vote_min; fault.arm();
+                int64_t fresh_ms=-1;
                 for (int i=0;i<fault.p.vote_min;++i) plan=fault.send({"red"});
                 Check(plan.state==control::PlannerState::DUNG_DEN_DO,"Thiết lập phải giữ đỏ khi armed");
                 fault.in.odo_cm+=fault.p.turn_start_cm;
@@ -462,7 +497,7 @@ void Case(const std::string& name) {
                     fault.in.sensor_ok=false; ++fault.now; plan=fault.step();
                     Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
                           "Lỗi cảm biến khi giữ đỏ vẫn phải dừng đèn");
-                    fault.in.sensor_ok=true;
+                    fault.in.sensor_ok=true; fresh_ms=fault.now+40;
                 }
                 for (int i=0;i<fault.p.green_frames;++i) {
                     if (release && i==fault.p.green_frames-1) fault.in.sensor_ok=false;
@@ -470,7 +505,7 @@ void Case(const std::string& name) {
                 }
                 Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
                       "Lỗi khi giữ hoặc nhả đỏ phải về bám làn, không bắt đầu rẽ");
-                RecoveredSensor(fault);
+                RecoveredSensor(fault,fresh_ms);
             }
         }
     } else if (name=="sign_while_turning") {
@@ -556,7 +591,7 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) plan=r.send({"red"});
         Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,"Đỏ khi rẽ phải dừng đèn");
     } else {
-        // T73: lỗi cảm biến bỏ rẽ hết phiên, không chốt dừng bám làn.
+        // Q9/TAM: lỗi cảm biến hủy rẽ tạm, tươi liên tục 1000 ms thì biển mới rẽ được.
         Rig r; r.turn(); const auto start=r.now;
         std::string reason=name;
         if (name=="fault_red") { for (int i=1;i<r.p.vote_min;++i) r.send({"red"}); reason="LOI_CAM_BIEN"; }
@@ -593,14 +628,15 @@ void Case(const std::string& name) {
             }
             return;
         }
+        int64_t fresh_ms=-1;
         if (name=="fault_red") {
             Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
                   "Đỏ đủ phiếu vẫn thắng lỗi cảm biến");
-            r.in.sensor_ok=true;
+            r.in.sensor_ok=true; fresh_ms=r.now+40;
             for (int i=0;i<r.p.vote_window+r.p.green_frames;++i) plan=r.send({"green"});
             Check(plan.state==control::PlannerState::BAM_LAN,"Đủ xanh vẫn mở chốt đỏ sau lỗi cảm biến");
         } else Cancelled(plan,r.p);
-        RecoveredSensor(r);
+        RecoveredSensor(r,fresh_ms);
         if (name=="RE_QUA_CM" || name=="RE_QUA_MS") {
             Rig limit; limit.turn(); limit.in.yaw_deg=limit.p.turn_yaw_deg;
             if (name=="RE_QUA_CM") { limit.in.odo_cm+=limit.p.turn_max_cm+0.01; ++limit.now; }
