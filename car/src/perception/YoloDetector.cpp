@@ -50,25 +50,35 @@ YoloInfo::YoloInfo(const std::string &path) {
     const auto root=file.root();
     for(const auto &entry:std::vector<std::pair<const char*,const char*>>{
         {"task","detection"},{"color_order","RGB"},{"layout","NCHW"},
-        {"input_dtype","float32"},{"resize","letterbox"},
-        {"output_type","cxcywh_pixels_and_class_probabilities"},
-        {"box_format","cxcywh"},{"box_units","input_pixels"}})
+        {"input_dtype","float32"},
+        {"output_type","cxcywh_pixels_and_class_probabilities"}})
         Require(Text(root,entry.first)==entry.second,entry.first);
+    // D2 ghi hợp đồng tiền xử lý trong resize và letterbox_1280x720.
+    const bool export_d2=Text(root,"resize")=="letterbox: cv2.resize INTER_AREA giữ tỉ lệ, đệm 114, căn giữa";
+    Require(export_d2 || Text(root,"resize")=="letterbox","resize");
+    for(const auto &entry:std::vector<std::pair<const char*,const char*>>{
+        {"box_format","cxcywh"},{"box_units","input_pixels"}})
+        if(!export_d2 || !root[entry.first].empty())
+            Require(Text(root,entry.first)==entry.second,entry.first);
     for(const char *key:{"preprocessing_in_model","dynamic","objectness","nms_in_model"})
         Flag(root,key,false);
-    for(const char *key:{"scores_are_probabilities","nms_class_aware"}) Flag(root,key,true);
-    Require(root["num_classes"].isInt() && int(root["num_classes"])==9,"num_classes");
-    const std::set<std::string> expected{
+    Flag(root,"nms_class_aware",true);
+    if(!export_d2 || !root["scores_are_probabilities"].empty()) Flag(root,"scores_are_probabilities",true);
+    Require(root["num_classes"].isInt(),"num_classes");
+    num_classes=int(root["num_classes"]);
+    Require(num_classes==9 || num_classes==10,"num_classes phải là 9 hoặc 10");
+    std::set<std::string> expected{
         "red","green","off","left","right","no_left","no_right","round_barrier","work_barrier"};
+    if(num_classes==10) expected.insert("parking");
     const auto classes=root["class_names"];
-    Require(classes.isSeq() && classes.size()==9,"class_names");
+    Require(classes.isSeq() && classes.size()==size_t(num_classes),"class_names");
     std::set<std::string> found;
     for(const auto &item:classes) {
         Require(item.isString(),"class_names");
         class_names.push_back(std::string(item));
         found.insert(class_names.back());
     }
-    Require(found==expected,"class_names phải đủ đúng 9 tên, không trùng");
+    Require(found==expected,"class_names phải đủ tên lớp theo num_classes, không trùng");
     const auto hw=Integers(root,"input_hw",2);
     if(!root["source_image_hw"].empty())
         Require(Integers(root,"source_image_hw",2)==std::vector<int>({720,1280}),"source_image_hw");
@@ -77,9 +87,9 @@ YoloInfo::YoloInfo(const std::string &path) {
     input=cv::Size(hw[1],hw[0]);
     Require(Integers(root,"input_shape",4)==std::vector<int>({1,3,hw[0],hw[1]}),"input_shape");
     const auto shape=Integers(root,"output_shape",3);
-    Require(shape[0]==1 && shape[1]==13 && shape[2]>0,"output_shape");
+    Require(shape[0]==1 && shape[1]==4+num_classes && shape[2]>0,"output_shape phải là [1,4+num_classes,N], N > 0");
     candidates=shape[2];
-    Require(size_t(candidates)<=std::numeric_limits<size_t>::max()/13/sizeof(float),"output_shape quá lớn");
+    Require(size_t(candidates)<=std::numeric_limits<size_t>::max()/size_t(4+num_classes)/sizeof(float),"output_shape quá lớn");
     input_name=Text(root,"input_name"); output_name=Text(root,"output_name");
     Require(input_name!=output_name,"tên binding trùng nhau");
     Require(root["opset"].isInt() && int(root["opset"])==12,"opset");
@@ -91,10 +101,12 @@ YoloInfo::YoloInfo(const std::string &path) {
     Require(conf>=0 && conf<=1 && iou>=0 && iou<=1,"conf_threshold/nms_iou");
     conf_threshold=float(conf); nms_iou=float(iou);
     const auto lb=root["letterbox"];
-    Require(lb.isMap(),"letterbox");
-    Flag(lb,"auto",false); Flag(lb,"center",true); Flag(lb,"scaleup",true);
-    Require(lb["padding_value"].isInt() && int(lb["padding_value"])==114,"letterbox.padding_value");
-    Require(lb["stride"].isInt() && int(lb["stride"])==32,"letterbox.stride");
+    if(!export_d2 || !lb.empty()) {
+        Require(lb.isMap(),"letterbox");
+        Flag(lb,"auto",false); Flag(lb,"center",true); Flag(lb,"scaleup",true);
+        Require(lb["padding_value"].isInt() && int(lb["padding_value"])==114,"letterbox.padding_value");
+        Require(lb["stride"].isInt() && int(lb["stride"])==32,"letterbox.stride");
+    }
     letterbox_scale=std::min(input.height/720.0,input.width/1280.0);
     resized=cv::Size(PythonRound(1280*letterbox_scale),PythonRound(720*letterbox_scale));
     Require(resized.width>0 && resized.height>0,"letterbox resized_wh");
@@ -103,6 +115,7 @@ YoloInfo::YoloInfo(const std::string &path) {
     pad_top=PythonRound(dy-0.1); pad_bottom=PythonRound(dy+0.1);
     // Notebook không ghi phép đổi này; nếu file có ghi thì phải khớp phép tính chuẩn.
     const auto transform=root["letterbox_1280x720"];
+    if(export_d2) Require(transform.isMap(),"letterbox_1280x720");
     if(!transform.empty()) {
         Require(transform.isMap(),"letterbox_1280x720");
         Require(std::abs(Number(transform,"scale")-letterbox_scale)<1e-12,"letterbox_1280x720.scale");
@@ -136,7 +149,7 @@ std::vector<Detection> YoloDetector::Decode(const float *out) const {
     std::vector<Candidate> candidates;
     for(size_t i=0;i<n;++i) {
         int best=0;
-        for(int c=0;c<9;++c) {
+        for(int c=0;c<info_.num_classes;++c) {
             const float score=out[(4+c)*n+i];
             Require(score>=0 && score<=1,"xác suất ngoài [0,1]");
             if(score>out[(4+best)*n+i]) best=c;
@@ -152,7 +165,7 @@ std::vector<Detection> YoloDetector::Decode(const float *out) const {
         return a.score>b.score;
     });
     std::vector<bool> kept(candidates.size(),false);
-    for(int cls=0;cls<9;++cls) {
+    for(int cls=0;cls<info_.num_classes;++cls) {
         std::vector<cv::Rect2d> boxes;
         std::vector<float> scores;
         std::vector<size_t> positions;

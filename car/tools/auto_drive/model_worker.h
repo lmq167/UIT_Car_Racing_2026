@@ -88,7 +88,7 @@ public:
             const auto has=[&](const std::string& pattern) { return std::regex_search(meta,std::regex(pattern)); };
             if (meta.back()!='\n' || !has("['\"]descr['\"]\\s*:\\s*['\"]<f4['\"]") ||
                 !has("['\"]fortran_order['\"]\\s*:\\s*False") ||
-                !has("['\"]shape['\"]\\s*:\\s*\\(\\s*1\\s*,\\s*13\\s*,\\s*"+
+                !has("['\"]shape['\"]\\s*:\\s*\\(\\s*1\\s*,\\s*"+std::to_string(4+info.num_classes)+"\\s*,\\s*"+
                      std::to_string(info.candidates)+"\\s*,?\\s*\\)"))
                 throw std::runtime_error("Tensor phải là <f4 C-order [1,4+nc,N] khớp metadata");
             if (bytes.size()-10-header!=info.OutputElements()*sizeof(float)) throw std::runtime_error("Sai số byte tensor");
@@ -129,7 +129,7 @@ inline void validateYoloEngine(const std::string& path,const perception::YoloInf
         if (engine->getBindingDataType(i)!=nvinfer1::DataType::kFLOAT ||
             engine->getBindingFormat(i)!=nvinfer1::TensorFormat::kLINEAR || engine->isShapeBinding(i) ||
             !engine->isExecutionBinding(i) || d.nbDims!=(input ? 4 : 3) || d.d[0]!=1 ||
-            d.d[1]!=(input ? 3 : 13) || d.d[2]!=(input ? info.input.height : info.candidates) ||
+            d.d[1]!=(input ? 3 : 4+info.num_classes) || d.d[2]!=(input ? info.input.height : info.candidates) ||
             (input && d.d[3]!=info.input.width)) throw std::runtime_error("Shape/kiểu engine YOLO không khớp metadata");
     }
 }

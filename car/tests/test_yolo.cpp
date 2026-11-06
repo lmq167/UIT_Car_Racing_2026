@@ -1,4 +1,6 @@
 #include "perception/YoloDetector.h"
+#define UCR_AUTO_TEST_HOOKS 1
+#include "../tools/auto_drive/model_worker.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -53,11 +55,45 @@ struct FakeEngine : perception::IInferEngine {
         called=true;
     }
 };
+void WorkerShape(const perception::YoloInfo &info,int channels,bool accepted) {
+    char path[]="ucr_yolo_worker_XXXXXX";
+    const int fd=mkstemp(path);
+    Check(fd>=0,"Không tạo được CSV tạm"); close(fd);
+    const std::string tensor=std::string(path)+".npy";
+    struct Cleanup {
+        std::string csv,tensor;
+        ~Cleanup() { std::remove(csv.c_str()); std::remove(tensor.c_str()); }
+    } cleanup{path,tensor};
+    { std::ofstream csv(path); csv<<"frame_id,tensor\n1,"<<tensor<<'\n';
+      Check(bool(csv),"Không ghi được CSV tạm"); }
+    std::string header="{'descr': '<f4', 'fortran_order': False, 'shape': (1, "+
+        std::to_string(channels)+", "+std::to_string(info.candidates)+"), }";
+    header.append((16-(10+header.size()+1)%16)%16,' '); header+='\n';
+    const char length[]={static_cast<char>(header.size()%256),static_cast<char>(header.size()/256)};
+    const std::vector<float> values(size_t(channels)*info.candidates,0);
+    { std::ofstream npy(tensor,std::ios::binary);
+      npy.write("\x93NUMPY\x01\x00",8); npy.write(length,2); npy<<header;
+      npy.write(reinterpret_cast<const char*>(values.data()),values.size()*sizeof(float));
+      Check(bool(npy),"Không ghi được tensor tạm"); }
+    bool loaded=false;
+    try {
+        auto_drive::FakeYoloEngine engine(path,info);
+        std::vector<float> output(info.OutputElements(),-1);
+        engine.Infer(nullptr,output.data());
+        Check(output==values,"Engine giả phải trả đúng tensor");
+        loaded=true;
+    } catch(const std::runtime_error &error) {
+        if (accepted) throw;
+        Check(std::string(error.what())=="Tensor phải là <f4 C-order [1,4+nc,N] khớp metadata",
+              "Phải từ chối ngay tại kiểm tra shape");
+    }
+    Check(loaded==accepted,"Kết quả nạp tensor không khớp số lớp metadata");
+}
 }
 
 int main() {
     try {
-        char path[]="/tmp/ucr_yolo_XXXXXX";
+        char path[]="ucr_yolo_XXXXXX";
         const int fd=mkstemp(path);
         Check(fd>=0,"Không tạo được file tạm"); close(fd);
         struct Cleanup { const char *path; ~Cleanup() { std::remove(path); } } cleanup{path};
@@ -68,6 +104,59 @@ int main() {
         const auto json=Metadata();
         const auto info=load(json);
         const perception::YoloDetector yolo(info);
+
+        Check(info.num_classes==9 && info.OutputElements()==52,"Kích thước 9 lớp sai");
+        auto json10=Changed(json,"\"work_barrier\"]","\"work_barrier\",\"parking\"]");
+        json10=Changed(json10,"\"num_classes\":9","\"num_classes\":10");
+        json10=Changed(json10,"[1,13,4]","[1,14,4]");
+        const auto info10=load(json10);
+        Check(info10.num_classes==10 && info10.OutputElements()==56,"Kích thước 10 lớp sai");
+        WorkerShape(info,13,true);
+        WorkerShape(info10,14,true);
+        WorkerShape(info,14,false);
+        WorkerShape(info10,13,false);
+        const perception::YoloDetector yolo10(info10);
+        std::vector<float> out10(info10.OutputElements(),0);
+        Box(out10,0,50,105,50,30,9,0.9f);
+        Box(out10,1,50,105,50,30,9,0.8f);
+        Box(out10,2,50,105,50,30,8,0.7f);
+        auto decoded10=yolo10.Decode(out10.data());
+        Check(decoded10.size()==2 && decoded10[0].class_name=="parking" &&
+              decoded10[1].class_name=="work_barrier","Giải mã/NMS lớp thứ 10 sai");
+        auto swapped10=Changed(json10,"\"red\"","\"parking\"");
+        swapped10=Changed(swapped10,"\"parking\"]","\"red\"]");
+        const perception::YoloDetector reordered10(load(swapped10));
+        Check(reordered10.Decode(out10.data())[0].class_name=="red","10 lớp phải ánh xạ theo tên");
+        out10[(4+9)*4]=1.01f;
+        Reject([&] { yolo10.Decode(out10.data()); });
+        out10[(4+9)*4]=0.9f;
+        FakeEngine fake10; fake10.result=out10;
+        Check(yolo10.Infer(cv::Mat(720,1280,CV_8UC3,cv::Scalar(0,0,0)),fake10).size()==2 &&
+              fake10.called,"Engine giả 10 lớp sai");
+        auto d2=Changed(json10,"\"resize\":\"letterbox\"",
+            "\"resize\":\"letterbox: cv2.resize INTER_AREA giữ tỉ lệ, đệm 114, căn giữa\"");
+        d2=Changed(d2,"\"box_format\":\"cxcywh\",\"box_units\":\"input_pixels\",","");
+        d2=Changed(d2,"\"scores_are_probabilities\":true,","");
+        d2=Changed(d2,"\"letterbox\":{\"auto\":false,\"center\":true,\"padding_value\":114,\"scaleup\":true,\"stride\":32},",
+            "\"letterbox_1280x720\":{\"scale\":0.325,\"resized_wh\":[416,234],\"pad_left\":0,\"pad_top\":11},");
+        d2=Changed(d2,"[320,320]","[256,416]");
+        d2=Changed(d2,"[1,3,320,320]","[1,3,256,416]");
+        d2=Changed(d2,"[1,14,4]","[1,14,2184]");
+        const auto d2info=load(d2);
+        Check(d2info.OutputElements()==30576 && d2info.pad_top==11 &&
+              d2info.resized==cv::Size(416,234),"Metadata dạng D2 sai");
+        Reject([&] { load(Changed(d2,"\"pad_top\":11","\"pad_top\":12")); });
+        for(const auto &metadata:{json,json10}) {
+            for(const auto &bad:{std::string("0"),std::string("-1"),std::string("9.5"),
+                                 std::string("\"10\""),std::string("11"),std::string("2147483647")})
+                Reject([&] { load(Changed(metadata,metadata==json ? "\"num_classes\":9" : "\"num_classes\":10",
+                    "\"num_classes\":"+bad)); });
+            Reject([&] { load(Changed(metadata,"\"num_classes\":","\"missing_num_classes\":")); });
+        }
+        Reject([&] { load(Changed(json10,"[1,14,4]","[1,13,4]")); });
+        Reject([&] { load(Changed(json10,"\"num_classes\":10","\"num_classes\":9")); });
+        Reject([&] { load(Changed(json10,"\"parking\"","\"red\"")); });
+
         Near(info.letterbox_scale,0.25);
         Check(info.resized==cv::Size(320,180) && info.pad_left==0 && info.pad_right==0 &&
               info.pad_top==70 && info.pad_bottom==70,"Scale/pad 320 sai");
