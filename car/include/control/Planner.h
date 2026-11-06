@@ -6,7 +6,7 @@
 namespace control {
 constexpr int kStaleImageMs = 500;
 constexpr const char* kMissingImageReason = "MAT_ANH";
-enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN, RE_TRAI, RE_PHAI };
+enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN, RE_TRAI, RE_PHAI, GIU_HUONG };
 const char *StateName(PlannerState state);
 struct PlannerInput {
     cv::Mat mask;
@@ -33,7 +33,7 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
@@ -47,6 +47,12 @@ private:
     int64_t red_ms_=-1, wait_since_ms_=-1;
     double red_x_=0;
     bool red_latched_=false, start_cleared_=false;
+    // Vòng xuyến: lần qua = từ lúc đủ phiếu round_barrier tới khi mất phiếu liên tục rb_lost_cm.
+    // Bộ đếm chỉ về 0 khi khởi động chương trình (Quân đặt lại xe ở điểm xuất phát).
+    bool rb_in_pass_=false, rb_losing_=false, rb_hold_spent_=false;
+    int rb_passes_=0, rb_pending_=0;
+    double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0;
+    int64_t rb_hold_ms_=-1;
     bool barrier_done_=false; // Đã rẽ vì rào: bỏ qua rào tới khi hết phiếu rào (qua cả Space/G).
     bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;
