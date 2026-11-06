@@ -1041,12 +1041,22 @@ def t57_case(case, cfg, root):
                     if len(failed) == 2:
                         resumed = r.inject('controller_resume')
                         t57_transient_window(stalled[0], resumed[0], created)
+                    # Hai lỗi tiêm bằng hai lệnh: vòng an toàn có thể đọc giữa hai lệnh nên mẫu lỗi Planner nhận
+                    # chỉ chắc chắn có ô của cảm biến lỗi ĐẦU (imu) trống; ô kia trống ở các dòng sau.
+                    first = failed[:1]
                     t57_wait(r, lambda: any(row['reason'] == 'HUY_RE_CAM_BIEN' and
                                             all(row[column] == '' for sensor, column in
                                                 (('imu', 'yaw_deg'), ('encoder', 'odo_cm'))
-                                                if sensor in failed) for row in r.rows()),
+                                                if sensor in first) for row in r.rows()),
                              'Thiếu dòng CSV mẫu lỗi với ô tương ứng trống')
+                    if len(failed) == 2:
+                        t57_wait(r, lambda: any(row['yaw_deg'] == '' and row['odo_cm'] == '' for row in r.rows()),
+                                 'Thiếu dòng CSV có cả hai ô cảm biến trống')
                     rows = r.rows()
+                    if len(failed) == 2:
+                        for row in rows:
+                            if row['reason'] == 'HUY_RE_CAM_BIEN' and row['odo_cm'] == '0':
+                                row['odo_cm'] = ''  # mẫu đọc trước lệnh lỗi encoder: chấp nhận số tốt 0
                     t57_fault_csv(rows, failed)
                 elif case == 't57_stale_imu':
                     r.t57_imu = False
@@ -1470,7 +1480,12 @@ def t73_add_case(case, cfg, root):
                          'Chưa có đoạn armed/BAM_LAN mép đóng', 'setup')
                     mark = r.events().index(started)
                     if action != 'control':
-                        setattr(r, 't57_' + action, False)
+                        # Encoder không có dấu thời gian (chỉ IMU có sensor_ms): "encoder cũ" không quan sát được
+                        # khi chưa rẽ, nên lượt encoder dùng lỗi đọc; lượt IMU giữ ngừng cấp mẫu (cũ > 200 ms).
+                        if action == 'encoder':
+                            r.inject('encoder_read_fail')
+                        else:
+                            setattr(r, 't57_' + action, False)
                         stamp = td.now_ms()
                         def stale_lane():
                             t73_add_lane(r, mark)
@@ -1599,7 +1614,10 @@ def t62_case(case, cfg, root):
         for disabled in (False, True):
             with running(cfg, root / str(disabled), values=values, no_yolo=disabled,
                          yolo_schedule=None if disabled else ((1, 'empty'),)) as r:
-                r.boot(); r.go(); speed_is(r, 15)
+                r.boot(); gm = len(r.events()); r.go()
+                # Trước lô YOLO tươi đầu tiên P2 kẹp approach_cms (MAT_YOLO, hành vi có sẵn): chỉ so sau đó.
+                r.wait(lambda: any(e[2] == 15 and not e[3] for e in r.of('motor_speed', gm)), 3, 'Chưa chạy 15 sau G')
+                speed_is(r, 15)
                 mark = len(r.events()); r.frames(8)
                 commands = [e for e in r.events()[mark:] if e[1] in ('motor_speed', 'servo_angle') and not e[3]]
                 need(commands and all(e[2] == (15 if e[1] == 'motor_speed' else 0) for e in commands),
@@ -1710,6 +1728,11 @@ def t62_case(case, cfg, root):
             mark = len(r.events()); r.go()
             r.wait(lambda: len([e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3]]) >= 2,
                    3, 'G mới vẫn mang kẹp approach')
+            if case.endswith('go'):
+                # G khi xe đang chạy không có tác dụng trong ucr_auto (G chỉ chạy từ dừng): kẹp giữ tới khi đỏ cuối quá 500 ms.
+                first = next(e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3])
+                need(first[0] >= last[2] + 500 - 60 - r.slack, 'G khi đang chạy không được xóa kẹp tiếp cận', 't62_window')
+                r.finish(); return
             if not case.endswith('image'):
                 first = next(e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3])
                 need(first[0] - last[2] < 500 and detection_batches(r.events())[-1] == last,
