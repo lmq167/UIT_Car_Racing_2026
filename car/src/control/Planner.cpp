@@ -52,6 +52,7 @@ void Planner::Reset(bool preserve_lights) {
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false; person_stop_=false;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
+    sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
@@ -86,7 +87,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     auto fault=[&]() {
         sensor_cancelled=turning_;
         if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
-        ClearTurn(); turn_fault_=true;
+        ClearTurn(); turn_fault_=true; rb_pending_=0;  // không để rẽ vòng xuyến chờ bắn muộn sau khi hồi
     };
     // Lỗi cảm biến/rẽ chỉ tạm: cảm biến tươi liên tục >= 1 s thì cho rẽ lại (IMU lỗi lúc khởi động luôn sensor_ok sai nên không hồi).
     if(params.turn_enable && turn_fault_) {

@@ -400,6 +400,23 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) plan=r.send({"left"},0.9f);
         r.in.odo_cm+=r.p.turn_start_cm+1; plan=r.step();
         Check(plan.state==control::PlannerState::RE_TRAI,"Cảm biến tươi lại 1 s thì phải rẽ được");
+    } else if (name=="roundabout_fault_drops_pending") {
+        // Lỗi cảm biến sau lần qua 1 bỏ luôn lượt rẽ vòng xuyến đang chờ; hồi lỗi rồi không rẽ muộn sai chỗ.
+        Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
+        auto rb=[&](bool seen) {
+            r.now+=40;
+            std::vector<control::Detection> items;
+            if (seen) items.push_back({"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now});
+            r.in.detections={items,r.now,++r.frame};
+            return r.step();
+        };
+        control::Plan plan;
+        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
+        for (int i=0;i<40;++i) { r.in.odo_cm+=1; plan=rb(false); }  // hết lần qua 1, chờ rb_turn1_cm
+        r.now+=40; r.in.sensor_ms=r.now-300; r.step(true,false);      // một mẫu cũ
+        for (int i=0;i<30;++i) plan=rb(false);                        // 1,2 s tươi, đứng yên
+        for (int i=0;i<150;++i) { r.in.odo_cm+=1; plan=rb(false);
+            Check(plan.state==control::PlannerState::BAM_LAN,"Không rẽ vòng xuyến muộn sau khi hồi lỗi"); }
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
