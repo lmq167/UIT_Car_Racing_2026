@@ -192,6 +192,13 @@ void Case(const std::string& name) {
         r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0)); r.in.yaw_deg=25;
         for (int i=0;i<12;++i) plan=rb(true);
         Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.deg<0 && plan.cmd.cms>0,"Mất làn trong lần qua phải giữ hướng (lái phải về yaw0)");
+        r.now+=40; r.in.detections={{{"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now},{"work_barrier",cv::Rect2f(600,500,80,60),0.9f,r.now}},r.now,++r.frame};
+        plan=r.step(); r.now+=40; r.in.detections.frame_id=++r.frame; r.in.detections.captured_ms=r.now;
+        for (auto& d:r.in.detections.items) d.captured_ms=r.now;
+        plan=r.step(); r.now+=40; r.in.detections.frame_id=++r.frame; r.in.detections.captured_ms=r.now;
+        for (auto& d:r.in.detections.items) d.captured_ms=r.now;
+        plan=r.step();
+        Check(plan.state==control::PlannerState::GIU_HUONG,"Đang giữ hướng thì rào không bắt đầu rẽ");
         r.in.yaw_deg=10+360; plan=rb(true); Check(std::abs(plan.cmd.deg)<=std::abs(r.p.rb_yaw_kp*15)+1,"Gói góc 360");
         r.in.yaw_deg=10; r.mask(60,140);
         for (int i=0;i<6;++i) plan=rb(true);

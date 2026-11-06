@@ -134,6 +134,7 @@ void ControlParams::Validate() const {
     Require(vote_min<=vote_window,"vote_min / vote_window");
     // Chỉ ràng buộc khi bật rẽ: yaml cũ có steer_max_deg nhỏ vẫn nạp được lúc rẽ tắt.
     Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
+    Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
     Require(right_lost_ms==0 || (right_lost_ms>=200 && right_lost_ms<=2000),"right_lost_ms");

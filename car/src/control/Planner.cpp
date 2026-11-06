@@ -51,6 +51,7 @@ void Planner::Reset(bool preserve_lights) {
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false; person_stop_=false;
+    rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
@@ -158,7 +159,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
         const bool rb_present=rounds>=params.vote_min;
         if(rb_present) {
-            if(!rb_in_pass_) { rb_in_pass_=true; rb_yaw0_=input.yaw_deg; rb_hold_spent_=false; rb_hold_ms_=-1; }
+            if(!rb_in_pass_) { rb_in_pass_=true; rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false; }
             rb_losing_=false;
         } else if(rb_in_pass_) {
             if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
@@ -170,14 +171,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         barrier_slow=barriers_seen>=params.vote_min;
         if(!barriers_seen) barrier_done_=false;
         // Rào gần đủ phiếu: rẽ trái ngay bằng máy rẽ IMU (vòng kín theo yaw), chốt quyết định tới hết rẽ.
-        if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !turn_direction_ && !barrier_done_ &&
+        if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !turn_direction_ && !barrier_done_ && !rb_holding_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min) {
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true;
             turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
             turn_ms_=progress_ms_=now_ms; state_=PlannerState::RE_TRAI;
         }
         // Ngã T không biển sau vòng xuyến: đi thêm rb_turn1/2_cm rồi rẽ; còn phiếu round_barrier thì không rẽ.
-        if(rb_pending_ && params.turn_enable && !turn_fault_ && !turn_direction_ && !rb_present &&
+        if(rb_pending_ && params.turn_enable && !turn_fault_ && !turn_direction_ && !rb_present && !rb_holding_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE &&
            std::abs(input.odo_cm-rb_after_odo_)>=(rb_pending_==1 ? params.rb_turn1_cm : params.rb_turn2_cm)) {
             turn_direction_=rb_pending_; arm_odo_=input.odo_cm; rb_pending_=0;
@@ -230,7 +231,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool obstacle=fraction>=params.obstacle_hole_frac && centroid>=0.35 && centroid<=0.85;
             obstacle_votes_.push_back(obstacle);
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
-            if(state_==PlannerState::BAM_LAN &&
+            if(state_==PlannerState::BAM_LAN && !rb_holding_ &&
                std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
                 if(params.obstacle_action==1) {
                     state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
@@ -267,7 +268,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         } else if(!turning_) {
             if(std::abs(input.odo_cm-arm_odo_)>params.turn_arm_cm) { ClearTurn(); cancelled=true; }
             // Bắt đầu rẽ theo quãng encoder kể từ lúc biển đủ phiếu; đang né/về làn thì chờ bám làn thường.
-            else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning &&
+            else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning && !rb_holding_ &&
                     std::abs(input.odo_cm-arm_odo_)>=params.turn_start_cm) {
                 turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
                 turn_ms_=progress_ms_=now_ms;
@@ -296,11 +297,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
-    if(rb_in_pass_ && result.debug.state!="BAM_LAN" && mask_fresh && swerve_==Swerve::NONE &&
+    rb_holding_=false;
+    if(rb_in_pass_ && result.debug.state!="BAM_LAN" && result.debug.state!="MAT_NAN_CU" && mask_fresh && swerve_==Swerve::NONE &&
        params.turn_enable && !turn_fault_ && !sensor_bad && std::isfinite(rb_yaw0_) && !rb_hold_spent_) {
-        if(rb_hold_ms_<0) { rb_hold_ms_=now_ms; rb_hold_odo_=input.odo_cm; }
         if(std::abs(input.odo_cm-rb_hold_odo_)>params.rb_hold_max_cm) rb_hold_spent_=true;
         else {
+            rb_holding_=true;
             const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
                 params.rb_yaw_kp*WrapDeg(rb_yaw0_-input.yaw_deg)));
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
@@ -309,7 +311,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG";
             plan.debug.state=plan.debug.reason="GIU_HUONG"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
         }
-    } else if(result.debug.state=="BAM_LAN") rb_hold_ms_=-1;
+    }
     if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
         if(!fresh || reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
         if(result.debug.state=="BAM_LAN") {
@@ -321,7 +323,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms}); plan.debug.speed_cms=plan.cmd.cms;
     }
     // Người đi bộ: dừng trước khi cộng quãng né (sent_cms_), state giữ nguyên (cả khi giữ hướng vòng xuyến).
-    const bool person_hold=person_stop_ && (result.debug.state=="BAM_LAN" || plan.state==PlannerState::GIU_HUONG);
+    const bool person_hold=person_stop_;
     if(person_hold) plan.cmd.cms=0;
     if(params.obstacle_action==2) {
         if(result.debug.state!="BAM_LAN") {

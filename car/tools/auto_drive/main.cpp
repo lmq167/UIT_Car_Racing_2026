@@ -249,7 +249,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         auto plan=planner.Step(pi,now,*input.params);
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
                             plan.state==control::PlannerState::DUNG_DEN_DO ||
-                            plan.state==control::PlannerState::DUNG_VAT_CAN || (input.params->turn_enable && (plan.state==control::PlannerState::RE_TRAI ||
+                            plan.state==control::PlannerState::DUNG_VAT_CAN || plan.state==control::PlannerState::GIU_HUONG ||
+                            (input.params->turn_enable && (plan.state==control::PlannerState::RE_TRAI ||
                              plan.state==control::PlannerState::RE_PHAI ||
                              (plan.state==control::PlannerState::DUNG && plan.reason!="SPACE"))) || !input.enabled) goPending=false;
                         if (input.enabled && hooks.overridePending.load()) {
