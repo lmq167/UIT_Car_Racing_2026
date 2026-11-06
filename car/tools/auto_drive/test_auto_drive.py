@@ -1725,14 +1725,16 @@ def t62_case(case, cfg, root):
                 r.wait(lambda: int(str(r.of('frame')[-1][2]).split()[0]) >= 600, 25, 'Chưa tới lô rỗng')
                 r.inject('yolo_throw_off')
                 r.wait(lambda: last_detection_frame(r.events()) >= 600, 3, 'Thiếu lô rỗng tươi')
-            mark = len(r.events()); r.go()
+            mark = len(r.events())
+            if case.endswith('go'):
+                # G khi xe đang chạy không có tác dụng trong ucr_auto (G chỉ chạy từ dừng): kẹp tiếp cận giữ nguyên.
+                r.go(); r.frames(2)
+                sent = [e[2] for e in r.of('motor_speed', mark) if not e[3]]
+                need(sent and all(v == 5 for v in sent), 'G khi đang chạy đổi kẹp tiếp cận: ' + repr(sent), 't62_window')
+                r.finish(); return
+            r.go()
             r.wait(lambda: len([e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3]]) >= 2,
                    3, 'G mới vẫn mang kẹp approach')
-            if case.endswith('go'):
-                # G khi xe đang chạy không có tác dụng trong ucr_auto (G chỉ chạy từ dừng): kẹp giữ tới khi đỏ cuối quá 500 ms.
-                first = next(e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3])
-                need(first[0] >= last[2] + 500 - 60 - r.slack, 'G khi đang chạy không được xóa kẹp tiếp cận', 't62_window')
-                r.finish(); return
             if not case.endswith('image'):
                 first = next(e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3])
                 need(first[0] - last[2] < 500 and detection_batches(r.events())[-1] == last,
