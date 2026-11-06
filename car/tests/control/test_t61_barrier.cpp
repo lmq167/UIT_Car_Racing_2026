@@ -40,7 +40,7 @@ struct Rig {
         in.detections={}; in.detections.frame_id=++frame;
         in.detections.captured_ms=now+50;
         if(barrier) in.detections.items.push_back(
-            {"work_barrier",cv::Rect2f(100,bottom-100,100,100),confidence,now+50});
+            {"work_barrier",cv::Rect2f(600,bottom-100,100,100),confidence,now+50});
         return step();
     }
     Plan turn() {
@@ -109,6 +109,15 @@ void YTwo(const char *yaml, const char *temporary) {
       Rig off; off.p.cruise_cms=10; off.p.max_speed_cms=10; off.p.work_barrier_action=0; Plan q;
       for(int n=0;n<off.p.vote_min+2;++n) q=off.send(true,440);
       Check(q.cmd.cms>off.p.approach_cms,"Khóa 0 vẫn giảm tốc"); }
+    for(int side=0;side<2;++side) {  // tâm hộp lệch ngang: 0,86 (phải) và 0,14 (trái) không rẽ; 0,57 rẽ
+        Rig r; Plan plan; float x=side==0 ? 1050.f : 90.f;
+        for(int n=0;n<r.p.vote_min+3;++n) {
+            r.in.detections={}; r.in.detections.frame_id=++r.frame; r.in.detections.captured_ms=r.now+50;
+            r.in.detections.items.push_back({"work_barrier",cv::Rect2f(x,404,100,100),0.9f,r.now+50});
+            plan=r.step();
+            Check(plan.reason!="RE_TRAI","Rào lệch ngang vẫn rẽ");
+        }
+    }
 }
 void Votes() {
     for(int invalid=0;invalid<11;++invalid) {
@@ -116,7 +125,7 @@ void Votes() {
         for(int n=0;n<12;++n) {
             r.in.detections={}; r.in.detections.frame_id=++r.frame;
             r.in.detections.captured_ms=r.now+50;
-            Detection d{"work_barrier",cv::Rect2f(100,404,100,100),0.5f,r.now+50};
+            Detection d{"work_barrier",cv::Rect2f(600,404,100,100),0.5f,r.now+50};
             if(invalid==0) d.box.y=403.99f;
             if(invalid==1) d.confidence=0.499f;
             if(invalid==2) d.confidence=1.01f;

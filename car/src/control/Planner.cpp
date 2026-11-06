@@ -91,7 +91,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else {  // giảm tốc từ 0,10 chiều cao ảnh trước ngưỡng rẽ; hộp xa hơn không tính
                 const double bottom=double(b.y)+b.height;
                 if(bottom>=(params.work_barrier_y2_frac-0.10)*720) barrier_seen=true;
-                if(bottom>=params.work_barrier_y2_frac*720) barrier_near=true;
+                // Rào lệch ngang quá (tâm ngoài 0,25-0,75 bề rộng ảnh) không nằm phía trước: không rẽ (log 1793955267: lần rẽ thứ 2 ở cx 0,86).
+                const double center=(double(b.x)+b.width/2)/1280.0;
+                if(bottom>=params.work_barrier_y2_frac*720 && center>=0.25 && center<=0.75) barrier_near=true;
             }
         }
         if(!fresh || red || off || !green) green_run_=0;
