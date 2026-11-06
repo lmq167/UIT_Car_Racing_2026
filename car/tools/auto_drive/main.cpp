@@ -426,7 +426,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 stats.loop_p95_ms=percentile95(values);
                 if (stats.loop_p95_ms>2*params->control_period_ms) {
                     if (!highSince) highSince=now;
-                    if (now-highSince>=5000 && now-lastAdapt>=5000 && every<40) {
+                    if (every>0 && now-highSince>=5000 && now-lastAdapt>=5000 && every<40) {
                         every=std::min(40,every*2); lastAdapt=now; highSince=now;
                         writer->offerStatistics(stats,every,true);
                     }
@@ -434,7 +434,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             }
             if (model.frame.id && model.frame.id!=lastImage) {
                 lastImage=model.frame.id;
-                if (model.frame.id%every==0) writer->tryImage(model);
+                if (every>0 && model.frame.id%every==0) writer->tryImage(model);
             }
             if (newCommand || forceLog) {
                 const bool applied=commandFresh && enabled && maskFresh && commandMaskFresh && latch.empty() && !forceLog;
@@ -460,7 +460,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             drive::PreviewState ps;
             std::snprintf(ps.state,sizeof(ps.state),"%s",state.c_str());
             ps.cmd_speed=speed; ps.cmd_steer=angle; ps.frame_age_ms=image<0 ? -1 : now-image;
-            ps.images=frameCount; ps.recording=writer->imagesEnabled;
+            ps.images=frameCount; ps.recording=every>0 && writer->imagesEnabled;
             preview.publishState(ps);
             if (debugData) {
                 const bool withRows=command.params && !command.plan.debug.rows.empty();

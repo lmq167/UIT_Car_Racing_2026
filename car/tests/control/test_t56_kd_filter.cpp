@@ -105,7 +105,7 @@ cv::Mat FixtureMask(const std::string &json, const ControlParams &p) {
     return mask;
 }
 void Golden(const std::string &path) {
-    const auto p=Load(path,"kd_filter_ms: 0\nright_lost_ms: 0\npair_mode: 0\n");
+    const auto p=Load(path,"kd_filter_ms: 0\nright_lost_ms: 0\npair_mode: 0\nmax_speed_cms: 10\ncruise_cms: 8\nsteer_max_deg: 30\nslow_per_deg: 0.1\n");
     Check(p.kd_filter_ms==0,"YAML tắt lọc phải nạp đúng 0");
     std::ifstream frames(std::string(T56_FIXTURE_DIR)+"/lane_run_7675_31p5_39p9.csv");
     std::ifstream golden(std::string(T56_FIXTURE_DIR)+"/lane_golden_fab24d1.csv");

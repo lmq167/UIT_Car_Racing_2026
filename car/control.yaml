@@ -4,12 +4,12 @@ control_period_ms: 50 # Chu kỳ điều khiển, ms
 mask_max_age_ms: 300 # Tuổi mặt nạ tối đa, ms
 cmd_max_age_ms: 200 # Tuổi lệnh tối đa, ms
 det_max_age_ms: 500 # Tuổi phát hiện tối đa, ms (P2)
-max_speed_cms: 10 # Trần tốc độ, cm/s
-cruise_cms: 8 # Tốc độ thẳng, cm/s
+max_speed_cms: 15 # Trần tốc độ, cm/s
+cruise_cms: 15 # Tốc độ thẳng, cm/s
 min_cms: 4 # Tốc độ tối thiểu khi bám làn, cm/s
 lost_cms: 4 # Tốc độ giai đoạn giữ khi mất làn, cm/s
-slow_per_deg: 0.1 # Mức giảm tốc theo góc, cm/s/độ
-steer_max_deg: 30 # Trần góc lái, độ; dương là trái
+slow_per_deg: 0.1666666667 # Mức giảm tốc theo góc, cm/s/độ
+steer_max_deg: 40 # Trần góc lái, độ; dương là trái
 steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
 kp: 30 # Hệ số tỉ lệ, độ
 kd: 2 # Hệ số vi phân, độ.s
@@ -23,7 +23,7 @@ min_valid_rows: 1 # Số hàng hợp lệ tối thiểu
 lost_hold_ms: 300 # Hạn giữ tốc độ khi mất làn, ms
 lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
 regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
-record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung
+record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi ảnh
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
 right_clip_frac: 0.99 # Ngưỡng vạch phải sát mép theo chiều rộng mặt nạ
 right_lost_ms: 500 # Hạn mất vạch phải, ms; 0 = tắt
@@ -31,7 +31,7 @@ pair_mode: 0 # Chọn cặp vạch: 0 = như cũ, 1 = cặp bao quanh xe giữ l
 pair_max_shift_frac: 0.25 # Dịch ngang tối đa của một vạch giữa hai hàng liền nhau, theo chiều rộng mặt nạ
 pair_merge_frac: 0.08 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt
 kd_filter_ms: 0 # Hằng thời gian lọc đạo hàm sai số, ms; 0 = tắt
-obstacle_action: 0 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
+obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_frac: 0.10 # Tỉ lệ lỗ tối thiểu trong mặt đường để bỏ phiếu vật cản
 obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml
 start_wait_green: 1 # Chờ xanh khi xuất phát, 1

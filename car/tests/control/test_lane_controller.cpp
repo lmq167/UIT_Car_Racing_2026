@@ -18,6 +18,7 @@ cv::Mat Lines(int h, int w, const std::vector<int> &xs) {
 }
 control::ControlParams Params() {
     control::ControlParams p;
+    p.max_speed_cms=10; p.cruise_cms=8; p.slow_per_deg=0.1; p.obstacle_action=0;
     p.scan_rows={0.8,0.5,0.2}; p.row_weights={0.5,0.3,0.2};
     p.lane_width_frac={0.4,0.4,0.4}; p.kd=0; p.steer_rate_dps=1000;
     return p;

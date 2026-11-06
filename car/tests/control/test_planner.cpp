@@ -12,6 +12,7 @@ struct Rig {
     int64_t now=0;
     uint64_t id=0;
     Rig() {
+        p.max_speed_cms=10; p.cruise_cms=8; p.obstacle_action=0;
         in.yolo_enabled=true;
         in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0));
         for(int y=0;y<60;++y) { in.mask.at<unsigned char>(y,60)=2; in.mask.at<unsigned char>(y,140)=2; }
