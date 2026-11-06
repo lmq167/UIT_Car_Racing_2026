@@ -49,6 +49,11 @@ CASES += ['t71_defaults', 't71_steer_40', 't71_steer_40_1', 't71_cruise_15',
           't73_imu_turning', 't73_encoder_turning', 't73_stale_imu_turning',
           't73_stale_encoder_turning', 't73_imu_lane', 't73_encoder_lane',
           't73_g_reopens_dung', 't73_lost_image_turning', 't73_stale_mask_turning']
+T73_ADDED_CASES = ['t73_turn_max_cm_exceeded', 't73_turn_max_ms_exceeded',
+                   't73_stuck_turning', 't73_stale_armed_lane',
+                   't73_motor_init_once_imu_fail', 't73_fault_stop_order',
+                   't73_fault_then_lost_image']
+CASES += T73_ADDED_CASES
 YOLO_CLASSES = ['red', 'green', 'off', 'left', 'right', 'no_left', 'no_right',
                 'round_barrier', 'work_barrier']
 YOLO_VALUES = dict(start_wait_green=1, vote_window=5, vote_min=3,
@@ -1344,7 +1349,212 @@ def t73_case(case, cfg, root):
             del YOLO_BOXES[mode]
 
 
+def t73_add_feed(run):
+    """Mẫu luôn mới; encoder tiến 5 cm/s trừ khi ca chủ động gây kẹt/vượt ngưỡng."""
+    original = run.wait
+    run.t73_origin, run.t73_base, run.t73_progress = td.now_ms(), 0, True
+    def wait(predicate, *args, **kwargs):
+        def poll():
+            if run.t73_progress:
+                run.t57_odo = run.t73_base + (td.now_ms() - run.t73_origin) * 0.005
+            return predicate()
+        return original(poll, *args, **kwargs)
+    run.wait = wait
+    t57_feed(run)
+
+
+def t73_add_lane(run, mark, lane_mark=None):
+    t73_lane_check(run, mark, lane_mark)
+    need(all(e[3] or e[2] > 0 for e in run.of('motor_speed', mark)),
+         'Hủy rẽ gửi motor không tiến', 't73_add_lane')
+
+
+def t73_add_cancel(run, mark, seconds=3):
+    run.wait(lambda: any(e[2] == 'HUY_RE_CAM_BIEN' for e in run.of('reason', mark)) and
+             any(e[2] == 'BAM_LAN' for e in run.of('state', mark)),
+             seconds + run.slack / 1000.0, 'Không hủy rẽ về BAM_LAN/HUY_RE_CAM_BIEN')
+    lane_mark = next(i for i, e in enumerate(run.events()) if i >= mark and
+                     e[1] == 'state' and e[2] == 'BAM_LAN')
+    run.wait(lambda: any(e[2] > 0 and not e[3] for e in run.of('motor_speed', lane_mark)),
+             3, 'Không có lệnh motor tiến mới sau hủy rẽ')
+    t73_add_lane(run, mark, lane_mark)
+    return lane_mark
+
+
+def t73_add_fresh(run, start, end):
+    """Không cho stale cảm biến làm ca giới hạn/kẹt đạt nhầm."""
+    for sensor in ('imu', 'encoder'):
+        stamps = [e[0] for e in run.of('inject') if not e[3] and e[0] <= end and
+                  len(str(e[2]).split()) >= 3 and str(e[2]).split()[1] == sensor + '_sample']
+        before = [stamp for stamp in stamps if stamp <= start]
+        need(before, 'Thiếu mẫu {} trước khi rẽ'.format(sensor), 'setup')
+        window = [before[-1]] + [stamp for stamp in stamps if stamp > start] + [end]
+        need(all(0 <= b - a <= 200 for a, b in zip(window, window[1:])),
+             'Mẫu {} quá cũ trong ca giới hạn/kẹt'.format(sensor), 'setup')
+
+
+def t73_add_case(case, cfg, root):
+    values = dict(cruise_cms=15, max_speed_cms=15, steer_max_deg=40, slow_per_deg=0,
+                  kp=0, kd=0, turn_enable=1, turn_yaw_deg=80, turn_steer_deg=25,
+                  turn_arm_cm=80, turn_max_cm=70, turn_max_ms=8000,
+                  start_wait_green=0, yolo_every_n=1, vote_window=5, vote_min=3,
+                  mask_max_age_ms=1000, cmd_max_age_ms=500, control_period_ms=20)
+    armed = case == 't73_stale_armed_lane'
+    init = case == 't73_motor_init_once_imu_fail'
+    modes = ('left', 'right')
+    if armed:
+        modes = ('control', 'imu', 'encoder')
+    elif case == 't73_fault_stop_order':
+        modes = ('space', 'term')
+    elif init or case == 't73_fault_then_lost_image':
+        modes = ('left',)
+    for action in modes:
+        direction = 'right' if action == 'right' else 'left'
+        mode = 't73_add_' + direction
+        YOLO_BOXES[mode] = [(direction, 800)]
+        # Mép đóng giữ xe BAM_LAN đủ phiếu; mép mở dùng cùng ảnh như các ca T73 cũ.
+        def setup(run):
+            opened = mask_rows('straight')
+            for row in opened:
+                edge = (max if direction == 'left' else min)(i for i, v in enumerate(row) if v)
+                for x in (range(edge) if direction == 'left' else range(edge + 1, len(row))):
+                    row[x] = 1
+            (run.root / ('left.png' if armed else 'straight.png')).write_bytes(png_bytes(opened))
+            run.ctrl.write_text('1 imu_sample 0 0\n2 encoder_sample 0\n', encoding='utf-8')
+            run.seq = 2
+        current = dict(values)
+        if case == 't73_turn_max_ms_exceeded':
+            current['turn_max_ms'] = 1000
+        try:
+            with running(cfg, root / action, values=current, setup=setup, no_yolo=False,
+                         env={'OPEN_FAIL': 'imu'} if init else {},
+                         schedule=((1, 'straight'), (120, 'left')) if armed else ((1, 'straight'),),
+                         yolo_schedule=((1, mode),)) as r:
+                t73_add_feed(r); r.boot()
+                if init:
+                    # T73–1: init lỗi và R giữa phiên không được gọi Motor::Init lần hai.
+                    need('IMU LOI: KHONG RE' in r.text(), 'Thiếu cảnh báo IMU lỗi')
+                    need(len(r.of('motor_init')) == 1, 'Motor::Init sai số lần sau boot')
+                    state_mark = len(r.events()); started = r.go(); mark = r.events().index(started)
+                    r.frames(8, lambda: t73_add_lane(r, mark, state_mark))
+                    space(r); patch_yaml(r, dict(current, cruise_cms=9)); reload(r, 'accepted')
+                    need(len(r.of('motor_init')) == 1, 'R gọi lại Motor::Init')
+                    state_mark = len(r.events()); started = r.go(); mark = r.events().index(started)
+                    r.frames(8, lambda: t73_add_lane(r, mark, state_mark)); speed_is(r, 9)
+                    t73_add_lane(r, mark, state_mark)
+                    r.t57_imu = r.t57_encoder = False
+                    r.finish()
+                    need(len(r.of('motor_init')) == 1, 'Motor::Init không đúng một lần cả phiên')
+                    continue
+                go_mark = len(r.events()); started = r.go()
+                if armed:
+                    # T73–2: đối chứng chứng minh cùng biển/ảnh có thể armed rồi rẽ.
+                    r.wait(lambda: len({int(str(e[2]).split()[0]) for e in r.of('detections', go_mark)
+                                       if started[0] <= float(str(e[2]).split()[1]) and
+                                       td.now_ms() - float(str(e[2]).split()[1]) <= 500}) >= 3,
+                           10, 'Thiếu ba phiếu biển tươi chụp sau G')
+                    r.frames(4)
+                    need(int(str(r.of('mask')[-1][2]).split()[0]) < 120,
+                         'Mép mở trước khi đủ phiếu/kiểm armed', 'setup')
+                    need(any(e[2] == 'BAM_LAN' for e in r.of('state', go_mark)) and
+                         not any(e[2] in ('RE_TRAI', 'RE_PHAI') for e in r.of('state', go_mark)),
+                         'Chưa có đoạn armed/BAM_LAN mép đóng', 'setup')
+                    mark = r.events().index(started)
+                    if action != 'control':
+                        setattr(r, 't57_' + action, False)
+                        stamp = td.now_ms()
+                        def stale_lane():
+                            t73_add_lane(r, mark)
+                            return td.now_ms() > stamp + 400 + r.slack
+                        r.wait(stale_lane, 3, 'Cảm biến chưa quá cũ khi armed')
+                        need(int(str(r.of('mask')[-1][2]).split()[0]) < 120,
+                             'Mép đã mở trước khi kiểm xong cảm biến cũ', 'setup')
+                        setattr(r, 't57_' + action, True)
+                    r.wait(lambda: int(str(r.of('mask')[-1][2]).split()[0]) >= 120,
+                           12, 'Chưa tới ảnh mép mở')
+                    if action == 'control':
+                        r.wait(lambda: any(e[2] == 'RE_TRAI' for e in r.of('state', go_mark)),
+                               3, 'Đối chứng mẫu tươi không armed/rẽ', tag='setup')
+                    else:
+                        r.frames(12, lambda: t73_add_lane(r, mark))
+                        need(any(e[2] > 0 and not e[3] for e in r.of('motor_speed', mark)),
+                             'Stale khi armed không tiếp tục motor')
+                    r.t57_imu = r.t57_encoder = False
+                    r.finish(); continue
+                turn = r.wait(lambda: next((e for e in r.of('state', go_mark) if
+                               e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')), None),
+                              10, 'Chưa vào rẽ trước tác nhân')
+                mark = len(r.events())
+                if case == 't73_turn_max_cm_exceeded':
+                    # T73–2: vượt quãng đường, không dùng lỗi đọc/cảm biến cũ hay timeout.
+                    need(td.now_ms() - turn[0] < 1000, 'Quá chậm trước mẫu vượt quãng đường', 'setup')
+                    r.t73_base = r.t57_odo + current['turn_max_cm'] + 10
+                    r.t73_origin = td.now_ms()
+                    r.inject('encoder_sample {}'.format(r.t73_base))
+                    lane_mark = t73_add_cancel(r, mark)
+                elif case == 't73_turn_max_ms_exceeded':
+                    # T73–2: encoder tăng chậm, yaw chưa đạt đích; cấm hủy trước timer.
+                    baseline = r.t57_odo
+                    lane_mark = t73_add_cancel(r, mark)
+                    cancelled = next(e for e in r.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN')
+                    need(cancelled[0] >= turn[0] + current['turn_max_ms'] - current['control_period_ms'],
+                         'Hủy rẽ trước turn_max_ms (có thể bị kẹt/cảm biến cũ)', 't73_timer')
+                    need(0 < r.t57_odo - baseline < current['turn_max_cm'],
+                         'Encoder không tăng chậm dưới turn_max_cm', 'setup')
+                elif case == 't73_stuck_turning':
+                    # T73–2, leader chốt: số đo đứng nhưng timestamp luôn mới, hủy trước timer.
+                    r.t73_progress = False
+                    fixed = r.t57_odo
+                    lane_mark = t73_add_cancel(r, mark, (current['turn_max_ms'] - 1000) / 1000.0)
+                    cancelled = next(e for e in r.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN')
+                    need(r.t57_odo == fixed and cancelled[0] < turn[0] + current['turn_max_ms'],
+                         'Ca kẹt bị che bởi quá quãng đường/thời gian', 't73_stuck')
+                else:
+                    # T73–6: chỉ thử đường dừng sau khi lỗi đã hủy rẽ và motor vẫn tiến.
+                    r.t57_imu = False; r.inject('imu_read_fail')
+                    lane_mark = t73_add_cancel(r, mark)
+                    r.t57_imu = True
+                if case in ('t73_turn_max_cm_exceeded', 't73_turn_max_ms_exceeded', 't73_stuck_turning'):
+                    cancelled = next(e for e in r.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN')
+                    t73_add_fresh(r, turn[0], cancelled[0])
+                if case == 't73_fault_stop_order':
+                    r.frames(4, lambda: t73_add_lane(r, mark, lane_mark))
+                    stop_mark = len(r.events())
+                    if action == 'space':
+                        event = r.key(' '); end = stopped(r, event[0], 150, mark=stop_mark)
+                        r.frames(4, lambda: no_motion(r, end))
+                        r.t57_imu = r.t57_encoder = False
+                        r.finish()
+                    else:
+                        r.t57_imu = r.t57_encoder = False
+                        stamp = external_stamp_ms(); os.kill(r.process.pid, signal.SIGTERM)
+                        end = stopped(r, stamp, 1000, mark=stop_mark); r.exited(); no_motion(r, end)
+                    continue
+                if case == 't73_fault_then_lost_image':
+                    r.frames(4, lambda: t73_add_lane(r, mark, lane_mark))
+                    stop_mark = len(r.events()); event = r.inject('camera_pause_600ms')
+                    end = stopped(r, event[0], 700, mark=stop_mark)
+                    r.wait(lambda: any(e[2] == 'MAT_ANH' for e in r.of('reason', stop_mark)),
+                           3, 'Thiếu MAT_ANH sau lỗi cảm biến')
+                    r.wait(lambda: any(float(str(e[2]).split()[1]) > event[0] + 500
+                                      for e in r.of('mask', stop_mark)), 10, 'Chưa có ảnh hồi phục')
+                    r.frames(4, lambda: no_motion(r, end))
+                    r.t57_imu = r.t57_encoder = False
+                    r.finish(); continue
+                # T73–2: hồi mẫu tốt và biển/mép mới vẫn vô hiệu rẽ, kể cả Space/G.
+                r.t73_base, r.t73_origin, r.t73_progress = r.t57_odo, td.now_ms(), True
+                r.frames(12, lambda: t73_add_lane(r, mark, lane_mark))
+                space(r); state_mark = len(r.events()); started = r.go(); recovery_mark = r.events().index(started)
+                r.frames(8, lambda: t73_add_lane(r, recovery_mark, state_mark))
+                r.t57_imu = r.t57_encoder = False
+                r.finish(); t71_cap(r.events())
+        finally:
+            del YOLO_BOXES[mode]
+
+
 def test_case(case, cfg, root):
+    if case in T73_ADDED_CASES:
+        return t73_add_case(case, cfg, root)
     if case.startswith('t71_'):
         return t71_case(case, cfg, root)
     if case.startswith('t72_'):
@@ -2590,6 +2800,19 @@ def selftest():
     feed.t57_encoder = False; feed.commands[:] = []
     feed.wait(lambda: True)
     assert not feed.commands
+    # T73 bổ sung: cấp encoder tăng đều, rồi giữ nguyên số đo nhưng vẫn cấp mẫu mới.
+    with patch.object(td, 'now_ms', return_value=1000) as clock:
+        feed = SensorFeed(); t73_add_feed(feed)
+        clock.return_value = 1200
+        feed.wait(lambda: True)
+        assert feed.commands == ['imu_sample 0 0', 'encoder_sample 1.0']
+        feed.t73_progress = False; feed.commands[:] = []; clock.return_value = 1400
+        feed.wait(lambda: True)
+        assert feed.commands == ['imu_sample 0 0', 'encoder_sample 1.0']
+        feed.t73_base, feed.t73_origin, feed.t73_progress = 81, 1400, True
+        feed.commands[:] = []; clock.return_value = 1600
+        feed.wait(lambda: True)
+        assert feed.commands == ['imu_sample 0 0', 'encoder_sample 82.0']
     trace = [(763, 'state', 'BAM_LAN', False), (763, 'reason', 'HUY_RE_CAM_BIEN', False),
              (763, 'command', '12 763', False), (763, 'motor_speed', 15, False)]
     t57_transient_window(740, 760, 730)
@@ -2907,6 +3130,23 @@ def selftest():
     for bad in ((4, 'state', 'RE_PHAI', False), (4, 'state', 'DUNG', False),
                 (4, 'motor_speed', 0, False), (4, 'motor_emergency', 0, False)):
         fails(lambda: t73_lane_check(SyntheticRun(lane_events + [bad]), 0, 2), 't73_lane')
+    t73_add_lane(SyntheticRun(lane_events), 0, 2)
+    fails(lambda: t73_add_lane(SyntheticRun(lane_events + [(4, 'motor_speed', -1, False)]),
+                               0, 2), 't73_add_lane')
+    cancelled = lane_events[:3] + [(2, 'reason', 'HUY_RE_CAM_BIEN', False)] + lane_events[3:]
+    assert t73_add_cancel(SyntheticRun(cancelled), 0) == 2
+    for bad in ((4, 'state', 'RE_PHAI', False), (4, 'state', 'DUNG', False),
+                (4, 'motor_speed', 0, False), (4, 'motor_emergency', 0, False)):
+        fails(lambda: t73_add_cancel(SyntheticRun(cancelled + [bad]), 0), 't73_lane')
+    samples = [(stamp, 'inject', '{} {}_sample 0{}'.format(stamp, sensor, ' 0' if sensor == 'imu' else ''), False)
+               for stamp in (0, 200, 400) for sensor in ('imu', 'encoder')]
+    t73_add_fresh(SyntheticRun(samples), 0, 400)
+    fails(lambda: t73_add_fresh(SyntheticRun(samples), 0, 601), 'setup')
+    for sensor in ('imu', 'encoder'):
+        missing = [e for e in samples if sensor + '_sample' not in e[2]]
+        fails(lambda: t73_add_fresh(SyntheticRun(missing), 0, 400), 'setup')
+        gap = [e for e in samples if not (e[0] == 200 and sensor + '_sample' in e[2])]
+        fails(lambda: t73_add_fresh(SyntheticRun(gap), 0, 400), 'setup')
     assert len(CASES) == len(set(CASES))
     cmake = (HERE / 'tests.cmake').read_text(encoding='utf-8')
     for case in CASES:
