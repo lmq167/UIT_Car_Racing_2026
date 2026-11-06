@@ -838,6 +838,10 @@ def t57_feed(run):
                 feeding[0] = True
                 try:
                     t57_sample(run)
+                except td.Failure:
+                    # Ca đã cho chương trình thoát (phím E/tín hiệu) giữa hai lần bơm: bỏ mẫu, không phải lỗi.
+                    if run.process.poll() is None:
+                        raise
                 finally:
                     feeding[0] = False
             return predicate()
