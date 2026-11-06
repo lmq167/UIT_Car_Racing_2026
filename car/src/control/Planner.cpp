@@ -5,7 +5,9 @@
 
 namespace control {
 namespace {
-constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào như vật cản YOLO khác.
+constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
+// Sai số góc gói về [-180, 180).
+double WrapDeg(double d) { d=std::fmod(d+180.0,360.0); if(d<0) d+=360.0; return d-180.0; }
 double HoleFraction(const cv::Mat &mask, double *centroid_col_frac) {
     *centroid_col_frac=std::nan("");
     if(mask.empty() || mask.type()!=CV_8UC1) return 0;
@@ -34,6 +36,7 @@ const char *StateName(PlannerState state) {
         case PlannerState::DUNG_VAT_CAN: return "DUNG_VAT_CAN";
         case PlannerState::RE_TRAI: return "RE_TRAI";
         case PlannerState::RE_PHAI: return "RE_PHAI";
+        case PlannerState::GIU_HUONG: return "GIU_HUONG";
     }
     return "DUNG";
 }
@@ -76,7 +79,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_seen=false; double red_x=0;
+    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_seen=false,round=false; double red_x=0;
     bool cancelled=false, sensor_cancelled=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
@@ -104,11 +107,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool signLeft=d.class_name=="left" || d.class_name=="no_right";
             const bool signRight=d.class_name=="right" || d.class_name=="no_left";
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
+            const bool roundabout=d.class_name=="round_barrier";
             double conf=0,area=0;
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
-            else if(barrier) conf=kBarrierConfMin;
+            else if(barrier || roundabout) conf=kBarrierConfMin;
             else if(!(params.turn_enable && !turn_direction_ && !turn_fault_ && (signLeft || signRight))) continue;
             const auto &b=d.box;
             if(d.captured_ms!=batch.captured_ms || !std::isfinite(d.confidence) || d.confidence<conf || d.confidence>1 ||
@@ -118,6 +122,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
+            else if(roundabout) round=true;
             else if(barrier) {
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
@@ -131,15 +136,28 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round});
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_seen=0;
+        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_seen=0,rounds=0;
         for(const auto &v:votes_) {
             reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_seen+=v.barrier_seen;
+            rounds+=v.round;
+        }
+        // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
+        const bool rb_present=rounds>=params.vote_min;
+        if(rb_present) {
+            if(!rb_in_pass_) { rb_in_pass_=true; rb_yaw0_=input.yaw_deg; rb_hold_spent_=false; rb_hold_ms_=-1; }
+            rb_losing_=false;
+        } else if(rb_in_pass_) {
+            if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
+            else if(std::abs(input.odo_cm-rb_lost_odo_)>=params.rb_lost_cm) {
+                rb_in_pass_=rb_losing_=false; ++rb_passes_; rb_after_odo_=input.odo_cm;
+                rb_pending_=rb_passes_==1 ? 1 : rb_passes_==2 ? -1 : 0;  // lần 1 rẽ trái, lần 2 rẽ phải, sau đó không áp
+            }
         }
         barrier_slow=barriers_seen>=params.vote_min;
         if(!barriers_seen) barrier_done_=false;
@@ -150,9 +168,17 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
             turn_ms_=progress_ms_=now_ms; state_=PlannerState::RE_TRAI;
         }
+        // Ngã T không biển sau vòng xuyến: đi thêm rb_turn1/2_cm rồi rẽ; còn phiếu round_barrier thì không rẽ.
+        if(rb_pending_ && params.turn_enable && !turn_fault_ && !turn_direction_ && !rb_present &&
+           state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE &&
+           std::abs(input.odo_cm-rb_after_odo_)>=(rb_pending_==1 ? params.rb_turn1_cm : params.rb_turn2_cm)) {
+            turn_direction_=rb_pending_; arm_odo_=input.odo_cm; rb_pending_=0;
+            turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
+            turn_ms_=progress_ms_=now_ms; state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
+        }
         if(params.turn_enable && !turn_fault_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
            (lefts>=params.vote_min)!=(rights>=params.vote_min)) {
-            turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm;
+            turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm; rb_pending_=0;
         }
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
@@ -260,6 +286,22 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
+    // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
+    // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
+    if(rb_in_pass_ && result.debug.state!="BAM_LAN" && mask_fresh && swerve_==Swerve::NONE &&
+       params.turn_enable && !turn_fault_ && !sensor_bad && std::isfinite(rb_yaw0_) && !rb_hold_spent_) {
+        if(rb_hold_ms_<0) { rb_hold_ms_=now_ms; rb_hold_odo_=input.odo_cm; }
+        if(std::abs(input.odo_cm-rb_hold_odo_)>params.rb_hold_max_cm) rb_hold_spent_=true;
+        else {
+            const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
+                params.rb_yaw_kp*WrapDeg(rb_yaw0_-input.yaw_deg)));
+            const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+            const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
+            plan.cmd={std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))),angle};
+            plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG";
+            plan.debug.state=plan.debug.reason="GIU_HUONG"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
+        }
+    } else if(result.debug.state=="BAM_LAN") rb_hold_ms_=-1;
     if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
         if(!fresh || reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
         if(result.debug.state=="BAM_LAN") {

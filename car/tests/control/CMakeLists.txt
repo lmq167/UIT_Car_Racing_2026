@@ -134,6 +134,8 @@ add_test(NAME test_t57_obstacle_stop_no_turn COMMAND test_t57_turn obstacle_stop
 set_tests_properties(test_t57_obstacle_stop_no_turn PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t74_barrier_turn COMMAND test_t57_turn barrier_turn)
 set_tests_properties(test_t74_barrier_turn PROPERTIES LABELS "control" TIMEOUT 60)
+add_test(NAME test_t68b_roundabout COMMAND test_t57_turn roundabout)
+set_tests_properties(test_t68b_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME acc_t57_params COMMAND test_t57_turn params ${CMAKE_CURRENT_BINARY_DIR}/t57_params.yaml)
 set_tests_properties(acc_t57_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 

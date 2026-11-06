@@ -175,6 +175,42 @@ void Case(const std::string& name) {
           for (int i=0;i<6;++i) { plan=box(r,0.5f,0.80f); Check(plan.state==control::PlannerState::BAM_LAN,"Rào còn trong ảnh không rẽ lại"); } }
         { Rig r; r.in.sensor_ok=false; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"IMU lỗi: không rẽ, không dừng"); }
+    } else if (name=="roundabout") {
+        // Đếm lần qua bằng phiếu round_barrier; sau lần 1 đi rb_turn1_cm rồi RE_TRAI; sau lần 2 RE_PHAI;
+        // trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.
+        Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
+        auto rb=[&](bool seen) {
+            r.now+=40;
+            std::vector<control::Detection> items;
+            if (seen) items.push_back({"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now});
+            r.in.detections={items,r.now,++r.frame};
+            return r.step();
+        };
+        control::Plan plan;
+        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
+        Check(plan.state==control::PlannerState::BAM_LAN,"Thấy vòng xuyến vẫn bám làn");
+        r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0)); r.in.yaw_deg=25;
+        for (int i=0;i<12;++i) plan=rb(true);
+        Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.deg<0 && plan.cmd.cms>0,"Mất làn trong lần qua phải giữ hướng (lái phải về yaw0)");
+        r.in.yaw_deg=10+360; plan=rb(true); Check(std::abs(plan.cmd.deg)<=std::abs(r.p.rb_yaw_kp*15)+1,"Gói góc 360");
+        r.in.yaw_deg=10; r.mask(60,140);
+        for (int i=0;i<6;++i) plan=rb(true);
+        Check(plan.state==control::PlannerState::BAM_LAN,"Bắt lại làn thì bám làn");
+        for (int i=0;i<8;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ rb_lost_cm chưa hết lần qua");
+        for (int i=0;i<30;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        Check(plan.state==control::PlannerState::BAM_LAN,"Hết lần qua 1, chưa đủ rb_turn1_cm");
+        for (int i=0;i<90 && plan.state==control::PlannerState::BAM_LAN;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        Check(plan.state==control::PlannerState::RE_TRAI,"Sau lần 1 phải rẽ trái");
+        r.in.yaw_deg=10+r.p.turn_yaw_deg; plan=rb(false); Check(plan.state==control::PlannerState::BAM_LAN,"Xong rẽ");
+        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
+        for (int i=0;i<35;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        for (int i=0;i<120 && plan.state==control::PlannerState::BAM_LAN;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        Check(plan.state==control::PlannerState::RE_PHAI,"Sau lần 2 phải rẽ phải");
+        r.in.yaw_deg-=r.p.turn_yaw_deg; plan=rb(false);
+        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
+        for (int i=0;i<200;++i) { r.in.odo_cm+=1; plan=rb(false);
+            Check(plan.state==control::PlannerState::BAM_LAN,"Sau lần 2 không rẽ nữa"); }
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
