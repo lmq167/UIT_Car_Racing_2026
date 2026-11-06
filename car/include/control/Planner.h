@@ -47,6 +47,7 @@ private:
     int64_t red_ms_=-1, wait_since_ms_=-1;
     double red_x_=0;
     bool red_latched_=false, start_cleared_=false;
+    bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;
     PlannerState state_=PlannerState::CHO_SAN_SANG;
     std::string reason_="CHO_G";

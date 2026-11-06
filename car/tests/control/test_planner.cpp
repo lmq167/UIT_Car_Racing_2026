@@ -73,6 +73,18 @@ void Unit() {
               "no-yolo có lô cũ vẫn giữ tốc độ và lý do bám làn");
     }
     {
+        // Giữ tiếp cận đỏ khi lô thưa làm phiếu đỏ tụt dưới vote_min; thả khi đỏ cuối quá det_max_age_ms.
+        Rig r; r.moving(); r.red(1000); r.red(1000);
+        Check(r.red(1000).reason=="TIEP_CAN_DEN_DO","Đủ phiếu vào tiếp cận");
+        const int64_t last=r.now;
+        while(r.now+40-last<=r.p.det_max_age_ms)
+            Check(r.send({}).cmd.cms==5,"Lô rỗng tươi, phiếu đỏ tụt nhưng đỏ cuối còn tươi vẫn kẹp");
+        Check(r.send({}).cmd.cms>5,"Đỏ cuối quá tuổi thì thả");
+        r.red(1000); Check(r.red(1000).cmd.cms>5,"Sau khi thả cần đủ phiếu mới vào lại");
+        r.in.stop=true; r.step(); r.in.stop=false; r.now+=40; r.go();
+        Check(r.send({}).cmd.cms>5,"G mới không mang giữ cũ");
+    }
+    {
         Rig r; r.p.start_wait_green=0;
         r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=0; r.p.approach_cms=5;
         const auto plan=r.go();

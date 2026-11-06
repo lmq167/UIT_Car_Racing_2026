@@ -74,7 +74,7 @@ void Unit() {
     Check(r.debug.rows.size()==3 && r.debug.rows[0].valid && r.debug.rows[0].lines.size()==2,"Thiếu debug từng hàng");
     Near(r.debug.rows[0].left,80,"Biên trái"); Near(r.debug.rows[0].right,160,"Biên phải"); Near(r.debug.rows[0].center,120,"Tâm hàng");
     r=c.Step(left,200,200,p); Near(r.cmd.deg,6,"Tâm lệch trái phải lái dương");
-    p.kp=200; p.steer_max_deg=12; p.slow_per_deg=1;
+    p.kp=200; p.steer_max_deg=12; p.slow_per_deg=1; p.turn_enable=0; // góc 12 < turn_steer_deg chỉ hợp lệ khi tắt rẽ
     r=c.Step(right,300,300,p); Near(r.cmd.deg,-12,"Kẹp steer_max_deg"); Near(r.cmd.cms,p.min_cms,"Tốc độ không dưới min_cms");
     c.Reset(); p=Params(); p.steer_rate_dps=10;
     r=c.Step(right,0,0,p); Near(r.cmd.deg,-0.5,"Rate vòng đầu theo control_period_ms");
