@@ -552,19 +552,25 @@ def green_release(run, first_frame, mark, since=None):
     return third
 
 
-def red_stop(run, first_frame, mark):
+def red_stop(run, first_frame, mark, consumed=False):
     batches = run.wait(lambda: [b for b in detection_batches(run.events())
                                if b[0] >= mark and b[1] >= first_frame][2:],
                        25, 'Thiếu 3 lô đỏ mới')
     third = batches[0]
     first = next(b for b in detection_batches(run.events()) if b[0] >= mark and b[1] >= first_frame)
-    need(not any(motor_zero(e) for e in run.events()[first[0]:third[0]]),
+    stamp, stop_mark = third[3], third[0] + 1
+    if consumed:
+        samples = t62_consumed(run, [first] + [b for b in detection_batches(run.events())
+                                if first[1] < b[1] <= third[1]])
+        stamp, stop_mark = t62_control_mark(run, third, samples[-1])
+        need(stamp - first[2] < 500, 'Phiếu đỏ đã hết tuổi trước vòng tiêu thụ', 'setup')
+    need(not any(motor_zero(e) for e in run.events()[first[0]:stop_mark - 1]),
          'Dừng đỏ trước khi đủ 3 phiếu mới', 'red_votes')
-    stopped(run, third[3], run.values['control_period_ms'] + 200, mark=third[0] + 1)
+    stopped(run, stamp, run.values['control_period_ms'] + 200, mark=stop_mark)
     run.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in run.of('reason', mark)),
              message='Thiếu reason DUNG_DEN_DO')
     # Bắt luôn chuyển động lọt giữa cặp dừng và lần đọc trace này.
-    end = stop_tail(run, third[3], third[0] + 1)
+    end = stop_tail(run, stamp, stop_mark)
     held(run, end)
     return end
 
@@ -1024,23 +1030,46 @@ def t57_case(case, cfg, root):
                     failed = ('imu', 'encoder') if case == 't57_csv_both' else (case[8:],)
                     # Hai giá trị riêng, khác 0 và khác mẫu hồi để bắt giữ số cũ.
                     r.t57_yaw, r.t57_odo = 17, 23
-                    t57_wait(r, lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != '' and
-                                            float(row['yaw_deg']) == 17 and float(row['odo_cm']) == 23
-                                            for row in r.rows()), 'Chưa có mẫu CSV tốt 17/23 trước lỗi')
+                    r.wait(lambda: any(row['yaw_deg'] != '' and row['odo_cm'] != '' and
+                                       float(row['yaw_deg']) == 17 and float(row['odo_cm']) == 23
+                                       and (len(failed) == 1 or row['planner_state'] == 'RE_TRAI')
+                                       for row in r.rows()), 10, 'Chưa có mẫu CSV tốt 17/23 trước lỗi',
+                           tag='setup' if len(failed) == 2 else 'interface')
                     r.t57_yaw = r.t57_odo = 0
-                    r.inject('imu_sample 0 0'); r.inject('encoder_sample 0')
+                    r.inject('imu_sample 0 0'); zero = r.inject('encoder_sample 0')
                     if len(failed) == 2:
-                        # Hai lỗi phải cùng vòng hủy rẽ, không để lỗi đầu kết thúc rẽ trước.
-                        stalled = r.inject('controller_stall'); r.frames(2)
+                        r.wait(lambda: any(float(row['command_ms']) >= zero[0]
+                                           and row['planner_state'] == 'RE_TRAI'
+                                           and row['yaw_deg'] != '' and row['odo_cm'] != ''
+                                           and float(row['yaw_deg']) == float(row['odo_cm']) == 0
+                                           for row in r.rows()), 3, 'Chưa tiêu thụ mẫu 0/0 trước hai lỗi', tag='setup')
+                        # Đợi lệnh mới thay vì tốn tuổi lệnh cho số khung cố định.
+                        latest = r.of('command')[-1]
+                        r.wait(lambda: r.of('command')[-1] != latest, 3,
+                               'Chưa có lệnh tươi trước hai lỗi', tag='setup')
+                        need(not any(e[2] == 'HUY_RE_CAM_BIEN' or motor_zero(e)
+                                     for e in r.events()[mark:]), 'Đã hủy/dừng trước hai lỗi', 'setup')
+                        stalled = r.inject('controller_stall')
                         created = float(str(r.of('command')[-1][2]).split()[1])
+                        before = len(r.of('command'))
                     r.t57_imu = 'imu' not in failed
                     r.t57_encoder = 'encoder' not in failed
                     for sensor in failed:
                         event = r.inject(sensor + '_read_fail')
-                    stamp = event[0]
+                        if stamp is None:
+                            stamp = event[0]
                     if len(failed) == 2:
+                        need(len(r.of('command')) == before,
+                             'Planner chưa dừng khi tiêm hai lỗi', 'setup')
                         resumed = r.inject('controller_resume')
-                        t57_transient_window(stalled[0], resumed[0], created)
+                        age = r.values.get('cmd_max_age_ms', 200)
+                        need(0 <= resumed[0] - stalled[0] < age and 0 <= resumed[0] - created < age,
+                             'Thiết lập hai lỗi làm lệnh hết tuổi', 'setup')
+                        command = r.wait(lambda: next((e for e in r.of('command', mark)
+                                         if float(str(e[2]).split()[1]) >= resumed[0]), None),
+                                         3, 'Thiếu lệnh sau hai lỗi', tag='setup')
+                        need(float(str(command[2]).split()[1]) < created + age,
+                             'Planner hồi sau khi lệnh cũ hết tuổi', 'setup')
                     # Hai lỗi tiêm bằng hai lệnh: vòng an toàn có thể đọc giữa hai lệnh nên mẫu lỗi Planner nhận
                     # chỉ chắc chắn có ô của cảm biến lỗi ĐẦU (imu) trống; ô kia trống ở các dòng sau.
                     first = failed[:1]
@@ -1292,7 +1321,11 @@ def t73_case(case, cfg, root):
         try:
             with running(cfg, root / direction, values=current, env=env, setup=setup, no_yolo=False,
                          yolo_schedule=((1, mode),)) as r:
-                t57_feed(r); r.boot()
+                if case == 't73_encoder_turning':
+                    t73_add_feed(r)
+                else:
+                    t57_feed(r)
+                r.boot()
                 if lane_fault:
                     r.wait(lambda: any(e[2] == '3 yolo_stall' for e in r.of('inject')),
                            10, 'Thiếu ACK giữ biển trước G')
@@ -1576,31 +1609,56 @@ def t73_add_case(case, cfg, root):
             del YOLO_BOXES[mode]
 
 
-def t62_window(events, rows, since, until, speed, reason):
+def t62_window(events, rows, since, until, speed, reason, setup=False):
     """T62 mục 4: kiểm cả lệnh motor cuối và CSV, không nhận đoạn rỗng là đạt."""
     motors = [e for e in events if since <= e[0] < until and e[1] == 'motor_speed' and not e[3]]
     samples = [row for row in rows if since <= float(row['t_ms']) < until]
-    need(len(motors) >= 2 and len(samples) >= 2, 'Thiếu mẫu trong cửa sổ T62', 't62_window')
+    enough = len(motors) >= 2 and len(samples) >= 2
+    if not setup:
+        need(enough, 'Thiếu mẫu trong cửa sổ T62', 't62_window')
     need(all(abs(e[2] - speed) < 1e-6 for e in motors),
          'Motor không giữ {}: {}'.format(speed, motors), 't62_window')
     need(all(row['reason'] == reason and row['planner_state'] == 'BAM_LAN'
              and abs(float(row['sent_speed_cms']) - speed) < 1e-6 for row in samples),
          'CSV sai reason/trạng thái/tốc độ trong cửa sổ T62', 't62_window')
+    if setup:
+        need(enough, 'Thiếu mẫu trong cửa sổ T62', 'setup')
 
 
-def t62_next_red(run, delta):
+def t62_consumed(run, batches):
+    """Lô đã công bố chưa chắc đã được vòng điều khiển dùng; CSV xác nhận đúng ID/mốc."""
+    def samples():
+        rows = run.rows()
+        result = [next((row for row in rows if int(row['det_frame_id']) == batch[1]
+                        and float(row['det_captured_ms']) == batch[2]), None) for batch in batches]
+        return result if all(result) else None
+    return run.wait(samples, 3, 'Vòng điều khiển bỏ lỡ lô trong kịch bản', tag='setup')
+
+
+def t62_control_mark(run, batch, row):
+    stamp = float(row['command_ms'])
+    command = next((i for i, e in enumerate(run.events()) if i > batch[0] and e[1] == 'command'
+                    and float(str(e[2]).split()[1]) == stamp), None)
+    need(command is not None, 'Thiếu sự kiện điều khiển đã nhận lô đỏ', 'setup')
+    return stamp, command + 1
+
+
+def t62_next_red(run, delta, attempts=1):
     # Không có đồng hồ giả: dùng tuổi khung thật, hậu kiểm captured_ms thay vì ngủ cố định.
-    previous = detection_batches(run.events())[-1]
-    run.wait(lambda: float(str(run.of('frame')[-1][2]).split()[1]) >= previous[2] + delta,
-             3, 'Chưa tới khung cho lô đỏ kế tiếp')
-    mark = len(run.events())
-    run.inject('yolo_throw_off')
-    run.wait(lambda: detection_batches(run.events()[mark:]), 3, 'Thiếu lô đỏ kế tiếp')
-    run.inject('yolo_throw_on')
-    batches = [b for b in detection_batches(run.events()) if b[0] >= mark]
-    need(len(batches) == 1 and delta <= batches[0][2] - previous[2] <= delta + 120,
-         'Lịch lô không đạt Δ={} ms: {}'.format(delta, batches), 'setup')
-    return batches[0]
+    for _ in range(attempts):
+        previous = detection_batches(run.events())[-1]
+        run.wait(lambda: float(str(run.of('frame')[-1][2]).split()[1]) >= previous[2] + delta,
+                 3, 'Chưa tới khung cho lô đỏ kế tiếp')
+        mark = len(run.events())
+        run.inject('yolo_throw_off')
+        run.wait(lambda: detection_batches(run.events()[mark:]), 3, 'Thiếu lô đỏ kế tiếp')
+        run.inject('yolo_throw_on')
+        batches = [b for b in detection_batches(run.events()) if b[0] >= mark]
+        if len(batches) == 1 and delta <= batches[0][2] - previous[2] <= delta + 120:
+            if attempts > 1:
+                t62_consumed(run, batches)
+            return batches[0]
+    need(False, 'Lịch lô không đạt Δ={} ms sau {} lần: {}'.format(delta, attempts, batches), 'setup')
 
 
 def t62_case(case, cfg, root):
@@ -1641,28 +1699,42 @@ def t62_case(case, cfg, root):
                 t62_window(r.events(), r.rows(), since, external_stamp_ms(), 5, 'TIEP_CAN_DEN_DO')
                 need(not any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)), '0,89 vẫn chốt đỏ')
             else:
-                end = red_stop(r, 120, mark); r.frames(8, lambda: held(r, end))
+                end = red_stop(r, 120, mark, consumed=case.endswith('090'))
+                r.frames(8, lambda: held(r, end))
             r.finish()
         return
     if case == 't62_stop_flicker':
         # Leader: chốt GIỮ NGUYÊN, chỉ khi lô mới đủ phiếu; approach không thay phiếu dừng.
         values['yolo_every_n'] = 1
-        with running(cfg, root, values=values, no_yolo=False,
-                     yolo_schedule=((1, 'empty'), (120, 'red_mid'), (123, 'empty'), (126, 'red_edge'))) as r:
-            r.boot(); r.go(); mark = len(r.events())
-            need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước phiếu nhấp nháy', 'setup')
-            r.wait(lambda: last_detection_frame(r.events()) >= 128, 25, 'Chưa đủ phiếu tại lô mới')
-            batches = phase_batches(r, 120, 129, 9)
-            need([b[1] for b in batches] == list(range(120, 129))
-                 and batches[-1][2] - batches[2][2] < 500,
-                 'Lịch phiếu nhấp nháy thiếu khung/đỏ đã hết tươi', 'setup')
-            need(not any(motor_zero(e) for e in r.events()[batches[0][0]:batches[-1][0]]),
-                 'Chốt trước lô 128 đủ ba phiếu', 't62_stop_votes')
-            t62_window(r.events(), r.rows(), batches[5][3] + 20, batches[-1][3], 5, 'TIEP_CAN_DEN_DO')
-            stopped(r, batches[-1][3], 220, mark=batches[-1][0] + 1)
-            r.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)), 3, 'Không chốt tại lô đủ phiếu')
-            end = stop_tail(r, batches[-1][3], batches[-1][0] + 1)
-            r.frames(8, lambda: held(r, end)); r.finish()
+        for attempt in range(3):
+            try:
+                with running(cfg, root / str(attempt), values=values, no_yolo=False,
+                             yolo_schedule=((1, 'empty'), (120, 'red_mid'), (123, 'empty'), (126, 'red_edge'))) as r:
+                    r.boot(); r.go(); mark = len(r.events())
+                    need(last_detection_frame(r.events()) < 120, 'Bỏ lỡ trước phiếu nhấp nháy', 'setup')
+                    r.wait(lambda: last_detection_frame(r.events()) >= 128, 25,
+                           'Chưa đủ phiếu tại lô mới', tag='setup')
+                    batches = phase_batches(r, 120, 129, 9)
+                    need([b[1] for b in batches] == list(range(120, 129))
+                         and batches[-1][2] - batches[2][2] < 500,
+                         'Lịch phiếu nhấp nháy thiếu khung/đỏ đã hết tươi', 'setup')
+                    samples = t62_consumed(r, batches)
+                    stamp, stop_mark = t62_control_mark(r, batches[-1], samples[-1])
+                    need(stamp - batches[2][2] < 500,
+                         'Đỏ hết tươi trước vòng nhận phiếu cuối', 'setup')
+                    need(not any(motor_zero(e) for e in r.events()[batches[0][0]:stop_mark - 1]),
+                         'Chốt trước lô 128 đủ ba phiếu', 't62_stop_votes')
+                    t62_window(r.events(), r.rows(), float(samples[5]['command_ms']) + 20,
+                               stamp, 5, 'TIEP_CAN_DEN_DO', setup=True)
+                    stopped(r, stamp, 220, mark=stop_mark)
+                    r.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)),
+                           3, 'Không chốt tại lô đủ phiếu')
+                    end = stop_tail(r, stamp, stop_mark)
+                    r.frames(8, lambda: held(r, end)); r.finish()
+                break
+            except Failure as error:
+                if error.tag != 'setup' or attempt == 2:
+                    raise
         return
     if case in ('t62_green_approach', 't62_green_latch'):
         # T58 qua hợp đồng A40b/A43/A44: chốt đỏ chỉ mở bằng ba xanh mới liên tiếp.
@@ -1700,8 +1772,10 @@ def t62_case(case, cfg, root):
         r.inject('yolo_throw_on'); since = external_stamp_ms() + 20
         delta = 170 if case.endswith('170') else 200
         for _ in range(3):
-            t62_next_red(r, delta)
+            t62_next_red(r, delta, attempts=3 if case == 't62_reset_space' else 1)
         last = detection_batches(r.events())[-1]
+        if case == 't62_reset_space':
+            t62_consumed(r, [last])
         # Lô tới trễ thêm150ms tạo cửa sổ thiếu phiếu dài hơn một vòng điều khiển.
         r.wait(lambda: float(str(r.of('frame')[-1][2]).split()[1]) >= last[2] + delta + 150,
                3, 'Chưa tới pha lô trễ')
@@ -1752,6 +1826,23 @@ def t62_case(case, cfg, root):
         need(any(last[2] + 400 <= e[0] < last[2] + 500 and e[1] == 'motor_speed' and e[2] == 5
                  for e in r.events()), 'Thiếu mẫu sát hạn đỏ cuối', 't62_window')
         speed_is(r, 15); r.finish()
+
+
+def a28_origin(rows, events):
+    # Đồng hồ/góc phải cùng lệnh đã dùng mask hợp lệ, không lấy mask chỉ mới công bố.
+    valid = [row for row in rows if 0 < int(row['mask_id']) < 120]
+    need(len(valid) >= 2, 'Thiếu lệnh làn hợp lệ trước mất làn', 'setup')
+    last = valid[-1]
+    angle = float(last['sent_steer_deg'])
+    need(last['planner_state'] == 'BAM_LAN' and float(last['sent_speed_cms']) == 8 and angle > 0
+         and angle == float(last['requested_steer_deg']) == float(valid[-2]['sent_steer_deg']),
+         'Góc chưa ổn định trước mất làn', 'setup')
+    need(all(int(row['csv_dropped']) == 0 for row in rows), 'CSV rơi mất mốc tiêu thụ làn', 'setup')
+    mask = next((e for e in events if e[1] == 'mask' and int(str(e[2]).split()[0]) == int(last['mask_id'])), None)
+    need(mask is not None, 'Thiếu mask của lệnh làn hợp lệ cuối', 'setup')
+    captured = float(str(mask[2]).split()[1])
+    need(math.isfinite(captured) and captured >= 0 and math.isfinite(angle), 'Mốc làn không hữu hạn', 'setup')
+    return captured, angle
 
 
 def test_case(case, cfg, root):
@@ -2309,24 +2400,26 @@ def test_case(case, cfg, root):
                       min_cms=0, kd=0, control_period_ms=20)
         with running(cfg, root, values=values, schedule=((1, 'left'), (120, 'empty'), (300, 'right'))) as r:
             r.boot(); r.go()
-            r.wait(lambda: any(int(str(e[2]).split()[0]) >= 119 for e in r.of('mask')), 15, 'Chưa đến trước mất làn')
+            r.wait(lambda: any(0 < int(row['mask_id']) < 120 and row['planner_state'] == 'BAM_LAN'
+                               and float(row['sent_speed_cms']) == 8
+                               and float(row['sent_steer_deg']) == float(row['requested_steer_deg']) > 0
+                               for row in r.rows()), 15, 'Chưa tiêu thụ làn lệch tâm trước mất làn', tag='setup')
             r.wait(lambda: any(e[2] == 'MAT_LAN' for e in r.of('reason')), 15, 'Không vào MAT_LAN trước phục hồi')
             need(int(str(r.of('mask')[-1][2]).split()[0]) < 300, 'Fixture không đủ thời gian mất làn', 'setup')
             r.wait(lambda: any(int(str(e[2]).split()[0]) >= 305 for e in r.of('mask')), 20, 'Chưa phục hồi làn')
             rows = r.rows()
-            valid = [e for e in r.of('mask') if int(str(e[2]).split()[0]) < 120]
-            need(valid, 'Thiếu mask hợp lệ cuối')
-            last_valid = float(str(valid[-1][2]).split()[1])
-            previous = [row for row in rows if 0 < int(row['frame_id']) < 120 and float(row['sent_speed_cms']) > 0]
-            need(previous, 'Chưa chạy lệch tâm trước mất làn')
-            angle = float(previous[-1]['sent_steer_deg'])
-            need(angle > 0, 'Tiền đề cần góc trái khác 0')
+            last_valid, angle = a28_origin(rows, r.events())
+            lost = [row for row in rows if 120 <= int(row['mask_id']) < 300]
+            need(lost and all(row['reason'] not in ('MAT_ANH', 'MAT_NAN_CU')
+                              and 0 <= float(row['image_age_ms']) <= 500
+                              and 0 <= float(row['mask_age_ms']) <= BOUNDS['mask_max_age_ms'][0]
+                              and 0 <= float(row['t_ms']) - float(row['command_ms']) <= BOUNDS['cmd_max_age_ms'][0]
+                              for row in lost),
+                 'Dữ liệu cũ che kịch bản mất làn', 'setup')
             seen = set()
-            for row in rows:
-                frame = int(row['frame_id'])
-                if not 120 <= frame < 300:
-                    continue
+            for row in lost:
                 age = float(row['t_ms']) - last_valid
+                need(math.isfinite(age) and age >= 0, 'Tuổi mất làn không hợp lệ', 'setup')
                 speed, steer = float(row['sent_speed_cms']), float(row['sent_steer_deg'])
                 if age < 500:
                     seen.add('hold'); need(speed == 4 and abs(steer - angle) < 1e-6, 'Sai giai đoạn giữ lost_cms')
@@ -3327,6 +3420,70 @@ def selftest():
             result = predicate()
             assert result, kwargs.get('message', 'Không đạt điều kiện tổng hợp')
             return result
+    # Lô rỗng bị bỏ qua phải là setup; servo0 vòng thường trước khi nhận lô không thuộc cặp dừng.
+    control = [(90, 'motor_speed', 15, False), (100, 'detections', '120 90', False),
+               (105, 'command', '120 105', False), (106, 'motor_speed', 15, False),
+               (107, 'servo_angle', 0, False), (120, 'detections', '123 110', False),
+               (125, 'command', '123 125', False), (126, 'motor_speed', 15, False),
+               (127, 'servo_angle', 0, False), (140, 'detections', '126 130', False),
+               (141, 'servo_angle', 0, False), (145, 'command', '126 145', False),
+               (146, 'motor_speed', 0, False), (147, 'servo_angle', 0, False),
+               (147, 'reason', 'DUNG_DEN_DO', False)]
+    samples = [dict(det_frame_id=str(frame), det_captured_ms=str(captured), command_ms=str(command))
+               for frame, captured, command in ((120, 90, 105), (123, 110, 125), (126, 130, 145))]
+    def setup_wait(predicate, *args, **kwargs):
+        result = predicate()
+        need(result, 'Thiếu tiền đề tổng hợp', kwargs.get('tag', 'interface'))
+        return result
+    sync = SyntheticRun(control)
+    sync.rows = lambda: samples
+    sync.wait = setup_wait
+    batches = detection_batches(control)
+    assert t62_consumed(sync, batches) == samples
+    assert t62_control_mark(sync, batches[-1], samples[-1]) == (145, 12)
+    assert red_stop(sync, 120, 0, consumed=True) == 14
+    fails(lambda: red_stop(SyntheticRun(control), 120, 0), 'stop_order')
+    missing = samples.pop(1)
+    fails(lambda: t62_consumed(sync, batches), 'setup')
+    samples.insert(1, dict(missing, det_captured_ms='111'))
+    fails(lambda: t62_consumed(sync, batches), 'setup')
+    samples[1] = missing
+    late = SyntheticRun(control[:12] + [(400, 'motor_speed', 0, False),
+                                       (401, 'servo_angle', 0, False), control[-1]])
+    late.rows = sync.rows
+    fails(lambda: red_stop(late, 120, 0, consumed=True), 'stop_order')
+    fails(lambda: t62_window([], [], 0, 100, 5, 'TIEP_CAN_DEN_DO', setup=True), 'setup')
+    fails(lambda: t62_window([(1, 'motor_speed', 15, False)], [], 0, 100, 5,
+                            'TIEP_CAN_DEN_DO', setup=True), 't62_window')
+    class RedRetry(SyntheticRun):
+        def __init__(self, gaps):
+            super().__init__([(0, 'detections', '1 0', False)])
+            self.gaps, self.attempts = list(gaps), 0
+        def of(self, kind, mark=0):
+            if kind == 'frame':
+                return [(0, 'frame', '999 {}'.format(detection_batches(self.es)[-1][2] + 200), False)]
+            return super().of(kind, mark)
+        def inject(self, command):
+            if command == 'yolo_throw_off':
+                self.attempts += 1
+                captured = detection_batches(self.es)[-1][2] + self.gaps.pop(0)
+                self.es.append((captured, 'detections', '{} {}'.format(self.attempts + 1, captured), False))
+        def rows(self):
+            return [dict(det_frame_id=str(b[1]), det_captured_ms=str(b[2])) for b in detection_batches(self.es)]
+    retry = RedRetry([400, 200])
+    assert t62_next_red(retry, 200, attempts=3)[2] == 600 and retry.attempts == 2
+    retry = RedRetry([400, 400, 400])
+    fails(lambda: t62_next_red(retry, 200, attempts=3), 'setup')
+    assert retry.attempts == 3
+    # A28: ảnh đã tới 121 nhưng lệnh cuối chỉ dùng mask118; mask119 chỉ mới công bố.
+    masks = [(1000, 'mask', '118 1000', False), (1030, 'mask', '119 1030', False)]
+    lane = dict(mask_id='118', frame_id='121', command_ms='1040', csv_dropped='0',
+                planner_state='BAM_LAN', sent_speed_cms='8', sent_steer_deg='12', requested_steer_deg='12')
+    assert a28_origin([lane, lane], masks) == (1000, 12)
+    fails(lambda: a28_origin([], masks), 'setup')
+    fails(lambda: a28_origin([dict(lane, sent_steer_deg='11'), lane], masks), 'setup')
+    fails(lambda: a28_origin([lane, dict(lane, csv_dropped='1')], masks), 'setup')
+    fails(lambda: a28_origin([lane, lane], masks[1:]), 'setup')
     lane_events = [(0, 'state', 'RE_TRAI', False), (1, 'motor_speed', 4, False),
                    (2, 'state', 'BAM_LAN', False), (3, 'motor_speed', 15, False)]
     t73_lane_check(SyntheticRun(lane_events), 0, 2)
