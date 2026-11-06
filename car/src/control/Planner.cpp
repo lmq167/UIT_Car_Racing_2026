@@ -37,7 +37,7 @@ const char *StateName(PlannerState state) {
     return "DUNG";
 }
 void Planner::ClearTurn() {
-    turn_direction_=0; edge_run_=0; turning_=false; edge_mask_ms_=-1;
+    turn_direction_=0; turning_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
@@ -133,7 +133,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(params.turn_enable && !turn_fault_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
            (lefts>=params.vote_min)!=(rights>=params.vote_min)) {
             turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm;
-            edge_run_=0; edge_mask_ms_=-1;
         }
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
@@ -213,18 +212,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(!turning_) {
             if(std::abs(input.odo_cm-arm_odo_)>params.turn_arm_cm) { ClearTurn(); cancelled=true; }
-            else if(input.mask_ms!=edge_mask_ms_) {
-                if(input.mask.dims!=2 || input.mask.type()!=CV_8UC1 || input.mask.cols<2)
-                    throw std::runtime_error("Mặt nạ phải là CV_8UC1 H×W, W >= 2");
-                int begin,end; bool surface;
-                ScanLines(input.mask,std::min(input.mask.rows-1,int(params.scan_rows[0]*input.mask.rows)),begin,end,surface);
-                edge_mask_ms_=input.mask_ms;
-                edge_run_=surface && (turn_direction_==1 ? begin==0 : end==input.mask.cols) ? edge_run_+1 : 0;
-                if(edge_run_>=2) {
-                    turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
-                    turn_ms_=progress_ms_=now_ms;
-                    state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
-                }
+            // Bắt đầu rẽ theo quãng encoder kể từ lúc biển đủ phiếu; đang né/về làn thì chờ bám làn thường.
+            else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning &&
+                    std::abs(input.odo_cm-arm_odo_)>=params.turn_start_cm) {
+                turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
+                turn_ms_=progress_ms_=now_ms;
+                state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
         }
     }
