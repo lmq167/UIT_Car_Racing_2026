@@ -23,6 +23,8 @@ struct Parameter {
 };
 // Nguồn duy nhất cho mặc định, miền, nạp và in bảng (L2).
 const Parameter table[] = {
+    {"work_barrier_action",1,&ControlParams::work_barrier_action,0,1,"1","Rào công trình (0 = tắt, 1 = rẽ trái theo IMU)"},
+    {"work_barrier_y2_frac",0.65,&ControlParams::work_barrier_y2_frac,0.30,0.95,"H","Đáy hộp rào tối thiểu để bắt đầu rẽ"},
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
     {"obstacle_hole_frac",0.10,&ControlParams::obstacle_hole_frac,0.02,0.5,"1","Tỉ lệ lỗ tối thiểu để nhận vật cản"},
     {"obstacle_pass_cm",40.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi thêm sau khi vật cản biến mất, gồm vùng mù khoảng 25 cm"},

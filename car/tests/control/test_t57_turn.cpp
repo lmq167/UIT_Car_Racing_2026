@@ -152,6 +152,29 @@ void Case(const std::string& name) {
             Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0 && plan.cmd.deg==0,
                   "Đang dừng vật cản không được rẽ");
         }
+    } else if (name=="barrier_turn") {
+        // Rào gần đủ phiếu → RE_TRAI bằng máy rẽ IMU; yaw đủ → BAM_LAN; rào còn trong ảnh không rẽ lại;
+        // rào xa hoặc lệch ngang không kích hoạt; work_barrier_action 0 không kích hoạt.
+        auto box=[&](Rig& r,float cx,float y2) {
+            r.now+=40;
+            r.in.detections={{{"work_barrier",cv::Rect2f(cx*1280-40,y2*720-60,80,60),0.9f,r.now}},r.now,++r.frame};
+            return r.step();
+        };
+        { Rig r; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.58f);
+          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms<=r.p.approach_cms,"Rào xa: giảm tốc, chưa rẽ"); }
+        { Rig r; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.86f,0.80f);
+          Check(plan.state==control::PlannerState::BAM_LAN,"Rào lệch ngang không rẽ"); }
+        { Rig r; r.p.work_barrier_action=0; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>r.p.approach_cms,"Tắt rào: không đổi"); }
+        { Rig r; r.in.yaw_deg=5; control::Plan plan;
+          for (int i=0;i<r.p.vote_min;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==r.p.min_cms && plan.cmd.deg>0,"Rào gần đủ phiếu phải rẽ trái");
+          plan=box(r,0.83f,0.80f); Check(plan.state==control::PlannerState::RE_TRAI,"Hộp đổi bên khi đang rẽ không đổi quyết định");
+          r.in.yaw_deg=5+r.p.turn_yaw_deg; plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::BAM_LAN,"Đủ yaw về bám làn");
+          for (int i=0;i<6;++i) { plan=box(r,0.5f,0.80f); Check(plan.state==control::PlannerState::BAM_LAN,"Rào còn trong ảnh không rẽ lại"); } }
+        { Rig r; r.in.sensor_ok=false; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"IMU lỗi: không rẽ, không dừng"); }
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
