@@ -37,6 +37,7 @@ private:
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
+    bool barrier_turn_=false, barrier_done_=false;
     double pass_cm_=0, sent_cms_=0;
     int64_t swerve_ms_=-1;
     uint64_t last_frame_=0;

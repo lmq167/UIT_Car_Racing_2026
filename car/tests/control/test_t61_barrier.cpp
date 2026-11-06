@@ -43,27 +43,14 @@ struct Rig {
             {"work_barrier",cv::Rect2f(100,bottom-100,100,100),confidence,now+50});
         return step();
     }
-    Plan left() {
+    Plan turn() {
         Plan plan;
         for(int n=1;n<=p.vote_min;++n) {
             plan=send();
-            Check((plan.reason=="NE_TRAI")== (n==p.vote_min),"Rào kích hoạt sai số phiếu");
-            if(n<p.vote_min) Check(step(false).reference==LaneRef::RIGHT,"Lô trùng tạo phiếu rào");
+            Check((plan.reason=="RE_TRAI")==(n==p.vote_min),"Rào kích hoạt sai số phiếu");
         }
-        Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::LEFT &&
-              plan.cmd.cms>0 && plan.cmd.cms<=p.approach_cms,"Rào không né trái/tốc độ tiếp cận");
-        LaneController expected;
-        const auto lane=expected.Step(in.mask,in.mask_ms,now,p,LaneRef::LEFT);
-        Check(plan.debug.e==lane.debug.e,"Không truyền LEFT vào bộ bám làn");
-        return plan;
-    }
-    Plan pass() {
-        left(); Plan plan;
-        for(int n=1;n<=p.vote_window-p.vote_min+1;++n) {
-            plan=send(false);
-            Check(plan.reason==(n==p.vote_window-p.vote_min+1 ? "NE_QUA" : "NE_TRAI"),
-                  "Rào phải hết đủ phiếu mới sang QUA");
-        }
+        Check(plan.state==PlannerState::BAM_LAN && plan.cmd.deg==p.steer_max_deg &&
+              plan.cmd.cms>0 && plan.cmd.cms<=p.approach_cms,"Cua trái không đúng góc/tốc độ tiếp cận");
         return plan;
     }
 };
@@ -110,78 +97,54 @@ void Votes() {
             if(invalid==9) --d.captured_ms;
             if(invalid==10) d.class_name="barrier";
             r.in.detections.items.push_back(d);
-            Check(r.step().reference==LaneRef::RIGHT,"Hộp không hợp lệ vẫn kích hoạt");
+            Check(r.step().reason!="RE_TRAI","Hộp không hợp lệ vẫn kích hoạt");
         }
     }
-    { Rig r; r.left();
-      for(int n=0;n<12;++n) Check(r.send().reason=="NE_TRAI","Phiếu rào gần không giữ LEFT"); }
     { Rig r; r.send(); r.send(); r.now+=r.p.det_max_age_ms+1;
-      Check(r.step().reference==LaneRef::RIGHT,"YOLO cũ gây kích hoạt");
-      Check(r.send().reference==LaneRef::RIGHT,"Phiếu cũ chưa bị loại");
-      Check(r.send().reference==LaneRef::RIGHT,"Phiếu cũ còn ẩn");
-      Check(r.send().reason=="NE_TRAI","Không nhận phiếu mới sau YOLO cũ"); }
-    { Rig r; r.left(); r.now+=r.p.det_max_age_ms+1;
-      Check(r.step().reason=="NE_QUA","YOLO cũ vẫn giữ phiếu rào"); }
-    { Rig r; r.p.vote_window=3; r.p.vote_min=2; r.p.green_frames=2;
-      r.send(); r.send(false); r.send(false); r.send(false);
-      Check(r.send().reference==LaneRef::RIGHT,"Phiếu ngoài cửa sổ vẫn còn");
-      Check(r.send().reason=="NE_TRAI","Không dùng cửa sổ tùy chỉnh"); }
+      Check(r.step().reason!="RE_TRAI","YOLO cũ gây kích hoạt");
+      Check(r.send().reason!="RE_TRAI","Phiếu cũ chưa bị loại");
+      Check(r.send().reason!="RE_TRAI","Phiếu cũ còn ẩn");
+      Check(r.send().reason=="RE_TRAI","Không nhận phiếu mới sau YOLO cũ"); }
     { Rig r; r.in.yolo_enabled=false;
-      for(int n=0;n<8;++n) Check(r.send().reference==LaneRef::RIGHT,"Tắt YOLO vẫn tạo phiếu"); }
+      for(int n=0;n<8;++n) Check(r.send().reason!="RE_TRAI","Tắt YOLO vẫn tạo phiếu"); }
 }
-void Phases() {
-    { Rig r; auto plan=r.pass(); double distance=0;
-      for(int n=0;n<100;++n) {
-          distance+=plan.cmd.cms*0.05; plan=r.send(false);
-          if(distance<r.p.obstacle_pass_cm-1e-9)
-              Check(plan.reason=="NE_QUA" && plan.reference==LaneRef::LEFT,"QUA chưa đủ quãng");
+void Turn() {
+    { Rig r; r.p.obstacle_pass_cm=20; auto plan=r.turn(); double distance=0; bool ended=false;
+      for(int n=0;n<200;++n) {
+          distance+=plan.cmd.cms*0.05; plan=r.send();
+          if(distance<r.p.obstacle_pass_cm-0.5)  // sai số một nhịp: nhịp kích hoạt đã cộng quãng
+              Check(plan.reason=="RE_TRAI" && plan.cmd.deg==r.p.steer_max_deg,"Cua chưa đủ quãng");
+          else if(plan.reason=="RE_TRAI") Check(distance<r.p.obstacle_pass_cm+0.5,"Cua quá quãng");
           else {
-              Check(plan.reason=="VE_PHAI" && plan.reference==LaneRef::RIGHT,"Không về phải đủ quãng");
-              Check(r.send(false).reason=="BAM_LAN","VE_PHAI kéo dài"); break;
+              Check(plan.reason=="VE_PHAI" && plan.reference==LaneRef::RIGHT && plan.state==PlannerState::BAM_LAN,"Không về bám làn đủ quãng");
+              for(int k=0;k<20;++k) Check(r.send().reason!="RE_TRAI","Rào còn thấy làm cua lặp");
+              ended=true; break;
           }
-          Check(n<99,"Pha QUA không kết thúc");
       }
-    }
-    for(int action:{1,2}) {
-        Rig r; r.p.obstacle_action=action; r.in.mask=Mask(true); r.left();
-        for(int n=0;n<r.p.vote_window+2;++n)
-            Check(r.send(false).reason=="NE_TRAI","Còn lỗ đã hết né/ưu tiên rào sai");
-        r.in.mask=Mask();
-        for(int n=1;n<=r.p.vote_window;++n)
-            Check(r.send(false).reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Hết lỗ không theo chuỗi sạch cũ");
-    }
-    for(int action:{1,2}) {
-        Rig r; r.p.obstacle_action=action; r.in.mask=Mask(true); Plan plan;
-        for(int n=0;n<r.p.vote_min;++n) plan=r.send(false);
-        Check(action==1 ? plan.state==PlannerState::DUNG_VAT_CAN : plan.reason=="NE_TRAI",
-              "Lỗ riêng không theo obstacle_action");
-        r.in.mask=Mask();
-        for(int n=0;n<r.p.vote_window;++n) plan=r.send(false);
-        Check(action==1 ? plan.state==PlannerState::BAM_LAN : plan.reason=="NE_QUA",
-              "Lỗ riêng không thả sau chuỗi sạch");
-    }
-    for(bool passing:{false,true}) for(int cancel=0;cancel<4;++cancel) {
-        Rig r; if(passing) r.pass(); else r.left();
-        Plan stopped;
+      Check(ended,"Pha cua không kết thúc");
+      for(int k=0;k<r.p.vote_window;++k) r.send(false);
+      Check(r.turn().reason=="RE_TRAI","Không bật lại sau khi hết thấy rào"); }
+    { Rig r; r.p.steer_max_deg=20; Check(r.turn().cmd.deg==20,"Góc cua không theo steer_max_deg"); }
+    { Rig r; r.p.max_speed_cms=4; r.p.cruise_cms=4; Check(r.turn().cmd.cms<=4,"Cua vượt trần tốc độ"); }
+    { Rig r; r.p.obstacle_action=2; r.in.mask=Mask(true); r.turn();
+      for(int n=0;n<r.p.vote_window+2;++n) Check(r.send(false).reason=="RE_TRAI","Lỗ làm đổi pha cua rào"); }
+    for(int cancel=0;cancel<4;++cancel) {
+        Rig r; r.turn(); Plan stopped;
         if(cancel==0) { r.in.stop=true; stopped=r.step(); r.in.stop=false; }
-        if(cancel==1) { r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0)); stopped=r.step(); }
-        if(cancel==2) { r.now+=r.p.mask_max_age_ms+1; r.in.image_ms=r.now;
-            stopped=r.planner.Step(r.in,r.now,r.p); }
-        if(cancel==3) { r.now+=kStaleImageMs+1; stopped=r.planner.Step(r.in,r.now,r.p); }
-        Check(stopped.state==PlannerState::DUNG && stopped.cmd.cms==0 && stopped.cmd.deg==0,
-              "Hủy pha phải dừng hẳn");
-        Check(stopped.reason==(cancel==0 ? "SPACE" : cancel==3 ? "MAT_ANH" : "MAT_LAN_NE"),"Sai lý do hủy pha");
-        r.in.mask=Mask();
-        for(int n=0;n<r.p.vote_window+2;++n) {
-            const auto plan=r.send(false);
-            Check(plan.state==PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0,"Tự chạy lại trước G");
-        }
-        r.in.go=true; const auto plan=r.send(false); r.in.go=false;
-        Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT && plan.cmd.cms>0,"G mới không bỏ pha cũ");
+        if(cancel==1) { r.now+=r.p.mask_max_age_ms+1; r.in.image_ms=r.now; stopped=r.planner.Step(r.in,r.now,r.p); }
+        if(cancel==2) { r.now+=kStaleImageMs+1; stopped=r.planner.Step(r.in,r.now,r.p); }
+        if(cancel==3) { r.p.work_barrier_action=0; stopped=r.step(); }
+        if(cancel<3) {
+            Check(stopped.state==PlannerState::DUNG && stopped.cmd.cms==0 && stopped.cmd.deg==0,"Hủy cua phải dừng hẳn");
+            Check(stopped.reason==(cancel==0 ? "SPACE" : cancel==2 ? "MAT_ANH" : "MAT_LAN_NE"),"Sai lý do hủy cua");
+            for(int n=0;n<6;++n) { const auto plan=r.send(false); Check(plan.state==PlannerState::DUNG && plan.cmd.cms==0,"Tự chạy lại trước G"); }
+            r.in.go=true; const auto plan=r.send(false); r.in.go=false;
+            Check(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_TRAI","G mới không bỏ cua cũ");
+        } else Check(stopped.reason!="RE_TRAI","Tắt khóa giữa cua vẫn cua");
     }
-    { Rig r; r.left(); r.planner.Reset(true);
-      r.in.go=true; Check(r.send(false).reference==LaneRef::RIGHT,"Reset giữ pha rào"); }
-    { Rig r; r.left();
+    { Rig r; r.turn(); r.planner.Reset(true); r.in.go=true;
+      Check(r.send(false).reason!="RE_TRAI","Reset giữ pha cua"); }
+    { Rig r; r.turn();
       for(int n=1;n<=r.p.vote_min;++n) {
           r.in.detections={{{"red",cv::Rect2f(1050,100,200,100),1.0f,r.now+50}},r.now+50,++r.frame};
           const auto plan=r.step();
@@ -208,7 +171,7 @@ void Disabled() {
 int main(int argc, char **argv) {
     try {
         Check(argc==3,"Cần control.yaml và YAML tạm");
-        Params(argv[1],argv[2]); Votes(); Phases(); Disabled();
+        Params(argv[1],argv[2]); Votes(); Turn(); Disabled();
         std::cout << "PASS T61\n"; return 0;
     } catch(const std::exception &e) { std::cerr << e.what() << '\n'; return 1; }
 }

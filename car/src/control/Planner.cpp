@@ -36,7 +36,7 @@ const char *StateName(PlannerState state) {
 void Planner::Reset(bool preserve_lights) {
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
-    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; barrier_turn_=false; barrier_done_=false;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) {
         for(auto &vote:votes_) vote.barrier_near=false;
@@ -64,7 +64,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false,barrier_near=false,barrier_ready=false; double red_x=0;
+    bool red=false,green=false,off=false,barrier_near=false,barrier_ready=false; double red_x=0; int barriers_now=0;
     const auto &batch=input.detections;
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
@@ -103,6 +103,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
         int reds=0,greens=0,barriers=0;
         for(const auto &v:votes_) { reds+=v.red; greens+=v.green; barriers+=v.barrier_near; }
+        barriers_now=barriers;
         barrier_ready=params.work_barrier_action==1 && barriers>=params.vote_min;
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
@@ -124,18 +125,21 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool returning=false;
     if((params.obstacle_action!=2 && params.work_barrier_action==0) || state_!=PlannerState::BAM_LAN || entered_wait) {
-        swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+        swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; barrier_turn_=false; barrier_done_=false;
         if(params.obstacle_action==2 || (params.work_barrier_action==1 && state_!=PlannerState::DUNG_VAT_CAN)) {
             obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
         }
     }
-    if(barrier_ready && state_==PlannerState::BAM_LAN && swerve_!=Swerve::LEFT) {
-        swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0;
+    // Rào: cua trái hở theo góc lái cố định (steer_max_deg) trong quãng obstacle_pass_cm (thời gian x tốc độ lệnh).
+    // Tham chiếu LEFT không tạo cua trái ở rào (replay phiên 1793948443: lệnh -5 độ), nên không dùng ở đây.
+    if(barriers_now==0) barrier_done_=false;
+    if(barrier_ready && !barrier_done_ && state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE) {
+        swerve_=Swerve::PASS; barrier_turn_=true; pass_cm_=0; obstacle_clear_run_=0;
     }
     // shortcut: quãng theo lệnh gửi, cần encoder khi có phép đo quãng đường thực.
     if(swerve_==Swerve::PASS && swerve_ms_>=0 && now_ms>swerve_ms_)
         pass_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
-    if(params.obstacle_action!=0 &&
+    if(params.obstacle_action!=0 && !barrier_turn_ &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
             last_mask_ms_=input.mask_ms;
@@ -172,12 +176,27 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         swerve_=Swerve::PASS; pass_cm_=0;
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
+        if(barrier_turn_) { barrier_turn_=false; barrier_done_=true; }
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
         lane_.Reset(); returning=true;
     }
     plan.state=state_;
     if(state_!=PlannerState::BAM_LAN) {
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
+    }
+    if(barrier_turn_ && swerve_==Swerve::PASS) {
+        if(!mask_fresh) {  // mặt nạ quá tuổi: không quay mù, dừng như mất làn trong pha né
+            state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
+            swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; barrier_turn_=false; barrier_done_=false;
+            plan=Plan{}; plan.reference=input.reference; plan.state=state_; plan.reason=reason_;
+            plan.debug.state=StateName(state_); plan.debug.reason=reason_;
+            return plan;
+        }
+        plan.cmd={std::min({params.approach_cms,params.max_speed_cms,params.cruise_cms}),params.steer_max_deg};
+        plan.reason="RE_TRAI"; plan.debug.state="BAM_LAN"; plan.debug.reason=plan.reason;
+        plan.debug.angle_deg=plan.cmd.deg; plan.debug.speed_cms=plan.cmd.cms;
+        sent_cms_=plan.cmd.cms; swerve_ms_=now_ms;
+        return plan;
     }
     if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
@@ -193,7 +212,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(result.debug.state!="BAM_LAN") {
             if(swerve_!=Swerve::NONE) {
                 state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
-                swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+                swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; barrier_turn_=false; barrier_done_=false;
                 obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
                 plan=Plan{}; plan.reference=input.reference; plan.state=state_; plan.reason=reason_;
                 plan.debug.state=StateName(state_); plan.debug.reason=reason_;
