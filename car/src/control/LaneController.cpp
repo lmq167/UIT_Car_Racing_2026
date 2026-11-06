@@ -193,6 +193,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                     width_ratios.back()=gap/width;
                 }
             }
+            if(row.valid && row.left<0 && row.right/mask.cols>=params.right_clip_frac)
+                row.center=row.right-params.lane_width_frac[i]*mask.cols/4;
             if(row.valid) {
                 ++result.debug.valid_rows;
                 weighted+=params.row_weights[i]*(row.center-(mask.cols/2.0+params.center_offset_frac*mask.cols))/(mask.cols/2.0);

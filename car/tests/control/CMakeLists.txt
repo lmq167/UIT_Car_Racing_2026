@@ -5,6 +5,10 @@ add_test(NAME control_params COMMAND test_control_params
 add_executable(test_lane_controller test_lane_controller.cpp)
 target_link_libraries(test_lane_controller PRIVATE ucr_control opencv_imgcodecs)
 add_test(NAME control_lane COMMAND test_lane_controller)
+add_executable(test_t65_clip_center test_t65_clip_center.cpp)
+target_link_libraries(test_t65_clip_center PRIVATE ucr_control)
+add_test(NAME acc_t65_clip_center COMMAND test_t65_clip_center)
+set_tests_properties(acc_t65_clip_center PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 
 # Một ca tạo run, gọi replay thật, rồi đọc lại CSV và ảnh kết quả.
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/replay_test_$<CONFIG>.cmake CONTENT "
