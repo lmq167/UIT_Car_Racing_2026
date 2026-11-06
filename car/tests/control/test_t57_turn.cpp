@@ -344,6 +344,24 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
         for (int i=0;i<200;++i) { r.in.odo_cm+=1; plan=rb(false);
             Check(plan.state==control::PlannerState::BAM_LAN,"Sau lần 2 không rẽ nữa"); }
+    } else if (name=="roundabout_stall") {
+        // Giữ hướng mà bánh không tiến (kẹt đảo/rào) thì hết GIU_HUONG sau 1500 ms, về dừng mất làn như cũ.
+        Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
+        auto rb=[&]() {
+            r.now+=40;
+            r.in.detections={{{"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now}},r.now,++r.frame};
+            return r.step();
+        };
+        control::Plan plan;
+        for (int i=0;i<r.p.vote_min;++i) plan=rb();
+        r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0));
+        plan=rb(); Check(plan.state==control::PlannerState::GIU_HUONG,"Mất làn trong lần qua phải giữ hướng");
+        for (int i=0;i<30;++i) plan=rb();  // 1200 ms, odo đứng yên
+        Check(plan.state==control::PlannerState::GIU_HUONG,"Chưa tới 1500 ms vẫn giữ hướng");
+        for (int i=0;i<10;++i) plan=rb();
+        Check(plan.state!=control::PlannerState::GIU_HUONG,"Bánh không tiến 1500 ms phải hết giữ hướng");
+        for (int i=0;i<60;++i) plan=rb();
+        Check(plan.cmd.cms==0 && plan.state!=control::PlannerState::GIU_HUONG,"Sau đó dừng do mất làn, không giữ hướng lại");
     } else if (name=="low_conf_armed") {
         Rig r;
         for (int i=0;i<r.p.vote_min;++i) r.send({"left"},0.01f);
