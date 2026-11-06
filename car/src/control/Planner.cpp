@@ -42,7 +42,7 @@ void Planner::ClearTurn() {
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
 void Planner::Reset(bool preserve_lights) {
-    ClearTurn(); turn_fault_=false; sent_angle_=0; command_ms_=-1;
+    ClearTurn(); sent_angle_=0; command_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
@@ -56,15 +56,18 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=kStaleImageMs;
     const bool mask_fresh=!input.mask.empty() && input.mask_ms>=0 && input.mask_ms<=now_ms &&
                           now_ms-input.mask_ms<=params.mask_max_age_ms;
+    const bool sensor_bad=!input.sensor_ok || !std::isfinite(input.yaw_deg) || !std::isfinite(input.odo_cm) ||
+        input.sensor_ms<0 || input.sensor_ms>now_ms || now_ms-input.sensor_ms>200;
     bool entered_wait=false, released=false;
     if(input.stop) {
-        ClearTurn(); turn_fault_=false; sent_angle_=0; command_ms_=-1;
+        ClearTurn(); sent_angle_=0; command_ms_=-1;
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
         state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0;
-    } else if(input.go && !turn_fault_ && (state_==PlannerState::CHO_SAN_SANG || state_==PlannerState::DUNG)) {
+    } else if(input.go && (state_==PlannerState::CHO_SAN_SANG || state_==PlannerState::DUNG)) {
         if(!image_fresh || !mask_fresh) {
+            if(params.turn_enable && sensor_bad) { ClearTurn(); turn_fault_=true; }
             plan.state=state_; plan.reason=image_fresh ? "go ignored MAT_NAN_CU" : "go ignored MAT_ANH";
             plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
         }
@@ -73,24 +76,19 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
     bool red=false,green=false,off=false,left=false,right=false; double red_x=0;
-    bool cancelled=false;
-    auto sensorReason=[&]() -> const char* {
-        if(!input.sensor_ok || !std::isfinite(input.yaw_deg) || !std::isfinite(input.odo_cm)) return "LOI_CAM_BIEN";
-        if(input.sensor_ms<0 || input.sensor_ms>now_ms || now_ms-input.sensor_ms>200) return "CAM_BIEN_CU";
-        return nullptr;
+    bool cancelled=false, sensor_cancelled=false;
+    auto fault=[&]() {
+        sensor_cancelled=turning_;
+        if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
+        ClearTurn(); turn_fault_=true;
     };
-    auto fault=[&](const char* reason) {
-        ClearTurn(); turn_fault_=true; state_=PlannerState::DUNG; reason_=reason;
-        lane_.Reset(); sent_angle_=0;
-    };
-    // Lỗi phiên rẽ phải thắng đèn đỏ và không được G tự mở lại.
-    if(params.turn_enable && turn_direction_ && !input.stop && state_!=PlannerState::DUNG) {
-        if(const char* error=sensorReason()) fault(error);
-        else if(turning_ && std::abs(input.yaw_deg-yaw0_)<params.turn_yaw_deg) {
-            if(std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm) fault("RE_QUA_CM");
-            else if(now_ms-turn_ms_>params.turn_max_ms) fault("RE_QUA_MS");
+    if(params.turn_enable && !turn_fault_) {
+        if(sensor_bad) fault();
+        else if(turning_) {
+            if(std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm) fault();
+            else if(now_ms-turn_ms_>params.turn_max_ms) fault();
             else if(std::abs(input.odo_cm-progress_odo_)>=1) { progress_odo_=input.odo_cm; progress_ms_=now_ms; }
-            else if(now_ms-progress_ms_>=1500) fault("KET_RE");
+            else if(std::abs(input.yaw_deg-yaw0_)<params.turn_yaw_deg && now_ms-progress_ms_>=1500) fault();
         }
     }
     const auto &batch=input.detections;
@@ -132,11 +130,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
         int reds=0,greens=0,lefts=0,rights=0;
         for(const auto &v:votes_) { reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; }
-        if(params.turn_enable && !turn_direction_ && state_==PlannerState::BAM_LAN &&
+        if(params.turn_enable && !turn_fault_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
            (lefts>=params.vote_min)!=(rights>=params.vote_min)) {
             turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm;
             edge_run_=0; edge_mask_ms_=-1;
-            if(const char* error=sensorReason()) fault(error);
         }
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
@@ -275,6 +272,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         sent_cms_=plan.cmd.cms; swerve_ms_=now_ms;
     }
     if(cancelled) plan.reason=plan.debug.reason="HUY_RE";
+    if(sensor_cancelled && result.debug.state=="BAM_LAN") plan.reason=plan.debug.reason="HUY_RE_CAM_BIEN";
     sent_angle_=plan.cmd.deg; command_ms_=now_ms;
     return plan;
 }

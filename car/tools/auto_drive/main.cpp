@@ -129,7 +129,13 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         if (stopping) throw SignalStop{};
         InitSignalMask initMask;
         watchdog.reset(new Watchdog(motor,servo,paths));
-        if (params->turn_enable) imu.init(paths);
+        if (params->turn_enable) {
+            try { imu.init(paths); }
+            catch (const std::exception& e) {
+                std::cerr<<"IMU LOI: KHONG RE\n"<<e.what()<<'\n';
+                trace("imu_error",e.what());
+            }
+        }
         trace("state","CHO_SAN_SANG");
         if (!motor.init()) throw Failure(1,"Motor::Init thất bại");
         if (!motor.SetSpeedCms(0)) throw Failure(1,"Không xác nhận motor 0 sau Init");
@@ -137,6 +143,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         if (!servo.SetAngle(0)) throw Failure(1,"Không trả được servo 0 sau motor 0");
         // Các luồng con thừa hưởng chặn tín hiệu; chỉ vòng an toàn nhận tín hiệu dừng.
         writer.reset(new LogWriter(options,yaml,trace));
+        if (params->turn_enable && !imu.initialized)
+            writer->offerControl(csvRow(CommandStamped{},ModelResult{},*params,nowMs(),-1,0,0,
+                "CHO_SAN_SANG","LOI_CAM_BIEN",false,false,"",Statistics{},*writer));
         cameraDone=false;
         cameraThread=std::thread([&] {
             try {
@@ -266,7 +275,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         watchdog->heartbeat=nowMs(); watchdog->initialized=true;
         const auto boot=nowMs();
         bool enabled=false,ready=false,exit=false;
-        bool turnFault=false;
         double safetyPeakMs=0;
         auto safetyPrevious=Clock::now();
         std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
@@ -306,12 +314,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             bool maskFresh=!model.mask.empty() && now-model.frame.captured_ms<=params->mask_max_age_ms;
             if (enabled && !imageFresh) { enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true; }
             if (controllerFault.exchange(false)) { enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch; eventStop=true; forceLog=true; }
-            if (enabled && command.epoch==epoch && command.created_ms>=0 &&
-                now-command.created_ms<=params->cmd_max_age_ms && params->turn_enable &&
-                command.plan.state==control::PlannerState::DUNG && command.plan.reason!="SPACE" &&
-                command.plan.reason!=control::kMissingImageReason) {
-                enabled=false; turnFault=true; latch=command.plan.reason; ++epoch; eventStop=true; forceLog=true;
-            }
             const auto keys=preview.pollKeys();
             const bool batchStop=keys.find(' ')!=std::string::npos;
             for (unsigned char key:keys) {
@@ -320,12 +322,11 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 trace("key",std::string(1,key));
                 if (key=='E' || key=='3') { exit=true; eventStop=true; break; }
                 if (key==' ') {
-                    enabled=false; turnFault=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
+                    enabled=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
                     if (!stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng Space");
                 } else if (key=='g' || key=='G') {
                     eventGo=true; forceLog=true;
                     if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
-                    else if (turnFault) trace("go","ignored "+latch);
                     else if (!imageFresh || !maskFresh) trace("go",imageFresh ? "ignored MAT_NAN_CU" : "ignored MAT_ANH");
                     else if (!enabled) { enabled=true; latch.clear(); reason="BAM_LAN"; ++epoch; }
                 } else if (key=='r' || key=='R') {
@@ -334,9 +335,12 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         try {
                             // Toàn bộ bộ tham số bất biến được thay một lần sau khi kiểm đủ.
                             std::ostringstream table;
-                            auto replacement=std::make_shared<const control::ControlParams>(control::ControlParams::Load(options.control,table));
-                            if (replacement->turn_enable && !imu.initialized)
-                                throw std::runtime_error("Không bật rẽ bằng R: IMU chưa khởi tạo; cần khởi động lại chương trình");
+                            auto replacement=std::make_shared<control::ControlParams>(control::ControlParams::Load(options.control,table));
+                            if (replacement->turn_enable && !imu.initialized) {
+                                replacement->turn_enable=0;
+                                table.str(""); replacement->PrintTable(table);
+                                std::cerr<<"Không bật rẽ bằng R: IMU chưa khởi tạo; cần khởi động lại chương trình\n";
+                            }
                             if (yoloInfo && yoloInfo->conf_threshold>float(std::min({replacement->red_conf_min,replacement->green_conf_min,replacement->off_conf_min})))
                                 throw std::runtime_error("conf_threshold YOLO cao hơn conf_min đèn");
                             params=replacement; every=params->record_every_n; yoloEvery=params->yolo_every_n; ++epoch;

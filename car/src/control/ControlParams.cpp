@@ -26,7 +26,7 @@ const Parameter table[] = {
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
     {"obstacle_hole_frac",0.10,&ControlParams::obstacle_hole_frac,0.02,0.5,"1","Tỉ lệ lỗ tối thiểu để nhận vật cản"},
     {"obstacle_pass_cm",40.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi thêm sau khi vật cản biến mất, gồm vùng mù khoảng 25 cm"},
-    {"turn_enable",0,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
+    {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
     {"turn_steer_deg",25.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
     {"turn_arm_cm",80.0,&ControlParams::turn_arm_cm,10,300,"cm","Quãng chờ ngã rẽ tối đa"},

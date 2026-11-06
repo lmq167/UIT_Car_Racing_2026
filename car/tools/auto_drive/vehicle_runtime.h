@@ -326,6 +326,7 @@ struct DriveImu {
         initialized=true;
     }
     bool read(SensorSample& sample) {
+        if (!initialized) return false;
         HardwareCall call(2);
         if (hardwareFault) return false;
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS

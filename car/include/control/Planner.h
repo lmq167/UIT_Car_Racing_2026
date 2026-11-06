@@ -51,7 +51,7 @@ private:
     PlannerState state_=PlannerState::CHO_SAN_SANG;
     std::string reason_="CHO_G";
     int turn_direction_=0, edge_run_=0;
-    bool turning_=false, turn_fault_=false;
+    bool turning_=false, turn_fault_=false; // Lỗi rẽ giữ hết phiên, kể cả Space/G/R và Reset.
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t edge_mask_ms_=-1, turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
     void ClearTurn();

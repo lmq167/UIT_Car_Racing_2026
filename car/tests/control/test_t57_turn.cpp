@@ -16,10 +16,10 @@ struct Rig {
     control::PlannerInput in;
     int64_t now=1000;
     uint64_t frame=0;
-    Rig() {
+    Rig(bool sensor_ok=true) {
         p.turn_enable=1; p.start_wait_green=0; p.kd=0;
         p.lane_width_frac={0.4,0.4,0.4};
-        in.yolo_enabled=true; in.sensor_ok=true;
+        in.yolo_enabled=true; in.sensor_ok=sensor_ok;
         mask(60,140);
         in.go=true; step(); in.go=false;
     }
@@ -60,16 +60,36 @@ struct Rig {
         return result;
     }
 };
-void Stopped(const control::Plan& plan, const std::string& reason) {
-    Check(plan.state==control::PlannerState::DUNG && plan.reason==reason &&
-          plan.debug.reason==reason && plan.cmd.cms==0 && plan.cmd.deg==0,
-          "Lỗi phải DUNG motor0/servo0 đúng lý do: "+reason);
+void Cancelled(const control::Plan& plan, const control::ControlParams& p) {
+    Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE_CAM_BIEN" &&
+          plan.debug.state=="BAM_LAN" && plan.debug.reason==plan.reason &&
+          plan.cmd.cms>0 && plan.cmd.cms<=p.max_speed_cms && std::abs(plan.cmd.deg)<=p.steer_max_deg,
+          "Lỗi rẽ phải về BAM_LAN/HUY_RE_CAM_BIEN, lệnh trong giới hạn");
+}
+void TurnUnavailable(Rig& r) {
+    r.mask(60,140); r.in.detections={};
+    for (bool left:{true,false}) {
+        r.arm(left?"left":"right"); r.edge(left);
+        Check(r.edge(left).state==control::PlannerState::BAM_LAN,"Lỗi cảm biến phải bỏ rẽ hết phiên");
+    }
+}
+void RecoveredSensor(Rig& r) {
+    r.in.sensor_ok=true; r.in.yaw_deg=0; r.in.odo_cm=0;
+    TurnUnavailable(r);
+    r.in.stop=true; ++r.now; Check(r.step().cmd.cms==0,"Space vẫn phải dừng"); r.in.stop=false;
+    r.in.go=true; ++r.now; Check(r.step().cmd.cms>0,"Space/G vẫn cho xe chạy"); r.in.go=false;
+    TurnUnavailable(r);
+    for (bool preserve:{false,true}) {
+        r.planner.Reset(preserve); r.in.go=true; ++r.now;
+        Check(r.step().cmd.cms>0,"Reset/G vẫn cho xe chạy"); r.in.go=false;
+        TurnUnavailable(r);
+    }
 }
 
 // T57_design:3,17: sáu mặc định, hai biên hợp lệ, ngoài miền và quan hệ góc.
 void Params(const std::string& path) {
     control::ControlParams p;
-    Check(p.turn_enable==0 && p.turn_yaw_deg==80 && p.turn_steer_deg==25 &&
+    Check(p.turn_enable==1 && p.turn_yaw_deg==80 && p.turn_steer_deg==25 &&
           p.turn_arm_cm==80 && p.turn_max_cm==70 && p.turn_max_ms==8000,"Sai sáu mặc định");
     const char* names[]={"turn_enable","turn_yaw_deg","turn_steer_deg","turn_arm_cm","turn_max_cm","turn_max_ms"};
     const double low[]={0,30,5,10,10,1000}, high[]={1,120,30,300,200,20000};
@@ -150,25 +170,46 @@ void Case(const std::string& name) {
             Check(r.step().state==control::PlannerState::BAM_LAN,"Phiên mới dùng yaw0 mới");
         }
     } else if (name=="nonfinite_sensor" || name=="armed_sensor_fault") {
+        if (name=="armed_sensor_fault") {
+            Rig startup(false);
+            const auto plan=startup.step();
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
+                  "Cảm biến lỗi khởi động vẫn bám làn");
+            TurnUnavailable(startup); RecoveredSensor(startup);
+            Rig fresh; fresh.turn();
+            for (bool stale_image:{false,true}) {
+                Rig ignored; ignored.planner.Reset(false);
+                const auto waiting=ignored.step();
+                ignored.now+=1000; ignored.in.go=true; ignored.in.sensor_ok=false;
+                ignored.in.sensor_ms=ignored.in.image_ms=ignored.in.mask_ms=ignored.now;
+                if (stale_image) ignored.in.image_ms-=501;
+                else ignored.in.mask_ms-=ignored.p.mask_max_age_ms+1;
+                const auto plan=ignored.planner.Step(ignored.in,ignored.now,ignored.p);
+                Check(plan.state==waiting.state && plan.cmd.cms==0 && plan.cmd.deg==0,
+                      "G cùng ảnh/mask cũ vẫn phải giữ chờ dù cảm biến lỗi");
+                ignored.in.sensor_ok=true; ++ignored.now;
+                const auto resumed=ignored.step(); ignored.in.go=false;
+                Check(resumed.state==control::PlannerState::BAM_LAN && resumed.cmd.cms>0,
+                      "G với ảnh/mask tươi vẫn chạy sau lỗi cảm biến lúc G bị bỏ qua");
+                RecoveredSensor(ignored);
+            }
+        }
         for (int fault=(name=="armed_sensor_fault"?0:1);fault<(name=="armed_sensor_fault"?1:8);++fault) {
             for (int phase=0;phase<3;++phase) {
                 Rig r;
                 if (phase==1) r.arm();
                 if (phase==2) r.turn();
-                std::string reason="LOI_CAM_BIEN";
                 if (fault==0) r.in.sensor_ok=false;
                 if (fault>=1 && fault<=3) r.in.yaw_deg=fault==1?std::numeric_limits<double>::quiet_NaN():
                     (fault==2?1:-1)*std::numeric_limits<double>::infinity();
                 if (fault>=4 && fault<=6) r.in.odo_cm=fault==4?std::numeric_limits<double>::quiet_NaN():
                     (fault==5?1:-1)*std::numeric_limits<double>::infinity();
-                if (fault==7) { r.in.sensor_ms=r.now+1; reason="CAM_BIEN_CU"; }
-                r.in.go=true; const auto plan=r.step(true,fault!=7); r.in.go=false;
-                if (phase==0) { Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"Chưa armed bỏ qua lỗi cảm biến"); continue; }
-                Stopped(plan,reason);
-                r.in.sensor_ok=true; r.in.yaw_deg=0; r.in.odo_cm=0; ++r.now;
-                r.in.go=true; Stopped(r.step(),reason); r.in.go=false;
-                r.in.stop=true; ++r.now; r.step(); r.in.stop=false; r.in.go=true; ++r.now;
-                Check(r.step().cmd.cms>0,"Lỗi cảm biến chỉ mở sau Space/G");
+                if (fault==7) r.in.sensor_ms=r.now+1;
+                const auto plan=r.step(true,fault!=7);
+                if (phase==2) Cancelled(plan,r.p);
+                else Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
+                           "Lỗi cảm biến khi chưa rẽ vẫn bám làn");
+                RecoveredSensor(r);
             }
         }
     } else if (name=="armed_red" || name=="red_release_after_turn_red") {
@@ -190,6 +231,25 @@ void Case(const std::string& name) {
             for (int i=0;i<kept.p.vote_min;++i) kept.send({"red"});
             for (int i=0;i<kept.p.vote_window+kept.p.green_frames;++i) kept.send({"green"});
             kept.edge(); Check(control::StateName(kept.edge().state)==std::string("RE_TRAI"),"Nhả đỏ còn armed khi trong quãng");
+            for (bool release:{false,true}) {
+                Rig fault; fault.p.vote_window=fault.p.vote_min; fault.arm();
+                for (int i=0;i<fault.p.vote_min;++i) plan=fault.send({"red"});
+                Check(plan.state==control::PlannerState::DUNG_DEN_DO,"Thiết lập phải giữ đỏ khi armed");
+                fault.mask(0,140);
+                if (!release) {
+                    fault.in.sensor_ok=false; ++fault.now; plan=fault.step();
+                    Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
+                          "Lỗi cảm biến khi giữ đỏ vẫn phải dừng đèn");
+                    fault.in.sensor_ok=true;
+                }
+                for (int i=0;i<fault.p.green_frames;++i) {
+                    if (release && i==fault.p.green_frames-1) fault.in.sensor_ok=false;
+                    plan=fault.send({"green"});
+                }
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
+                      "Lỗi khi giữ hoặc nhả đỏ phải về bám làn, không bắt đầu rẽ");
+                RecoveredSensor(fault);
+            }
         }
     } else if (name=="sign_while_turning") {
         Rig r; r.in.odo_cm=100; r.arm();
@@ -205,13 +265,13 @@ void Case(const std::string& name) {
         Rig travel; travel.turn(); travel.in.odo_cm=10;
         for (int i=0;i<travel.p.vote_window;++i) travel.send({"right"});
         travel.in.odo_cm=travel.p.turn_max_cm+0.01; ++travel.now;
-        Stopped(travel.step(),"RE_QUA_CM");
+        Cancelled(travel.step(),travel.p);
         Rig clock; clock.p.turn_max_ms=1000; clock.turn(); const auto start=clock.now;
         while (clock.now<start+clock.p.turn_max_ms) {
             const auto plan=clock.send({"right"});
             Check(control::StateName(plan.state)==std::string("RE_TRAI"),"Biển mới không đổi phiên trước hạn ms");
         }
-        ++clock.now; Stopped(clock.step(),"RE_QUA_MS");
+        ++clock.now; Cancelled(clock.step(),clock.p);
     } else if (name=="after_turn_lane") {
         Rig r; r.p.kd=2; r.mask(40,120); ++r.now; r.step(); r.turn();
         r.mask(80,160); r.in.yaw_deg=r.p.turn_yaw_deg; ++r.now;
@@ -278,24 +338,24 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) plan=r.send({"red"});
         Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,"Đỏ khi rẽ phải dừng đèn");
     } else {
-        // T57_design:8,19,21,22; notes:3: mỗi lỗi giữ DUNG tới Space rồi G.
+        // T73: lỗi cảm biến bỏ rẽ hết phiên, không chốt dừng bám làn.
         Rig r; r.turn(); const auto start=r.now;
         std::string reason=name;
         if (name=="fault_red") { for (int i=1;i<r.p.vote_min;++i) r.send({"red"}); reason="LOI_CAM_BIEN"; }
         if (reason=="LOI_CAM_BIEN") r.in.sensor_ok=false;
         else if (reason=="CAM_BIEN_CU") {
-            r.now+=200; Check(r.step(true,false).state!=control::PlannerState::DUNG,"200ms vẫn hợp lệ"); ++r.now;
+            r.now+=200; Check(r.step(true,false).state==control::PlannerState::RE_TRAI,"200ms vẫn hợp lệ"); ++r.now;
         } else if (reason=="sensor_invalid") { r.in.sensor_ms=-1; reason="CAM_BIEN_CU"; }
         else if (reason=="RE_QUA_CM") {
             r.in.odo_cm=-r.p.turn_max_cm; ++r.now;
-            Check(r.step().state!=control::PlannerState::DUNG,"Đúng biên cm chưa lỗi"); r.in.odo_cm-=0.01;
+            Check(r.step().state==control::PlannerState::RE_TRAI,"Đúng biên cm chưa lỗi"); r.in.odo_cm-=0.01;
         } else if (reason=="RE_QUA_MS") {
             for (int64_t t=start+100;t<=start+r.p.turn_max_ms;t+=100) { r.now=t; r.in.odo_cm+=0.1; r.step(); }
-            Check(r.step().state!=control::PlannerState::DUNG,"Đúng biên ms chưa lỗi"); ++r.now;
+            Check(r.step().state==control::PlannerState::RE_TRAI,"Đúng biên ms chưa lỗi"); ++r.now;
         } else if (reason=="KET_RE") {
             Rig progress; progress.turn(); progress.now+=1500; progress.in.odo_cm=1;
-            Check(progress.step().state!=control::PlannerState::DUNG,"Đúng1cm/1500ms không phải kẹt");
-            r.now=start+1499; Check(r.step().state!=control::PlannerState::DUNG,"Chưa1500ms không kẹt"); ++r.now;
+            Check(progress.step().state==control::PlannerState::RE_TRAI,"Đúng1cm/1500ms không phải kẹt");
+            r.now=start+1499; Check(r.step().state==control::PlannerState::RE_TRAI,"Chưa1500ms không kẹt"); ++r.now;
         } else if (reason=="mask_stale") { r.now+=r.p.mask_max_age_ms+1; }
         else throw std::runtime_error("Ca không tồn tại: "+name);
         control::Plan plan;
@@ -315,12 +375,29 @@ void Case(const std::string& name) {
             }
             return;
         }
-        Stopped(plan,reason);
-        r.in.sensor_ok=true; ++r.now; r.step(); r.in.go=true; Stopped(r.step(),reason); r.in.go=false;
-        r.in.stop=true; ++r.now; r.step(); r.in.stop=false; ++r.now;
-        Check(r.step().cmd.cms==0,"Space chưa G phải giữ dừng");
-        r.in.go=true; ++r.now;
-        if (name!="fault_red") Check(r.step().cmd.cms>0,"Space rồi G mới chạy lại");
+        if (name=="fault_red") {
+            Check(plan.state==control::PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0,
+                  "Đỏ đủ phiếu vẫn thắng lỗi cảm biến");
+            r.in.sensor_ok=true;
+            for (int i=0;i<r.p.vote_window+r.p.green_frames;++i) plan=r.send({"green"});
+            Check(plan.state==control::PlannerState::BAM_LAN,"Đủ xanh vẫn mở chốt đỏ sau lỗi cảm biến");
+        } else Cancelled(plan,r.p);
+        RecoveredSensor(r);
+        if (name=="RE_QUA_CM" || name=="RE_QUA_MS") {
+            Rig limit; limit.turn(); limit.in.yaw_deg=limit.p.turn_yaw_deg;
+            if (name=="RE_QUA_CM") { limit.in.odo_cm=limit.p.turn_max_cm+0.01; ++limit.now; }
+            else limit.now+=limit.p.turn_max_ms+1;
+            Cancelled(limit.step(),limit.p);
+            RecoveredSensor(limit);
+        }
+        if (name=="CAM_BIEN_CU") for (bool armed:{false,true}) {
+            Rig lane; if (armed) lane.arm();
+            lane.now+=201;
+            const auto continued=lane.step(true,false);
+            Check(continued.state==control::PlannerState::BAM_LAN && continued.cmd.cms>0,
+                  "Cảm biến cũ khi bám làn không được dừng");
+            RecoveredSensor(lane);
+        }
     }
 }
 }
