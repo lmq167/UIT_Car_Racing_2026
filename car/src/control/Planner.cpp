@@ -38,7 +38,10 @@ void Planner::Reset(bool preserve_lights) {
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
-    if(preserve_lights) return;
+    if(preserve_lights) {
+        for(auto &vote:votes_) vote.barrier_near=false;
+        return;
+    }
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false;
 }
 Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params) {
@@ -61,7 +64,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false; double red_x=0;
+    bool red=false,green=false,off=false,barrier_near=false,barrier_ready=false; double red_x=0;
     const auto &batch=input.detections;
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
@@ -75,6 +78,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
+            else if(d.class_name=="work_barrier") conf=0.5;
             else continue;
             const auto &b=d.box;
             if(d.captured_ms!=batch.captured_ms || !std::isfinite(d.confidence) || d.confidence<conf || d.confidence>1 ||
@@ -83,21 +87,23 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                double(b.width)*b.height/(1280.0*720.0)<area) continue;
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
-            else off=true;
+            else if(d.class_name=="off") off=true;
+            else if(double(b.y)+b.height>=0.70*720) barrier_near=true;
         }
         if(!fresh || red || off || !green) green_run_=0;
         if(batch.frame_id>last_frame_) {
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,barrier_near});
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0;
-        for(const auto &v:votes_) { reds+=v.red; greens+=v.green; }
+        int reds=0,greens=0,barriers=0;
+        for(const auto &v:votes_) { reds+=v.red; greens+=v.green; barriers+=v.barrier_near; }
+        barrier_ready=params.work_barrier_action==1 && barriers>=params.vote_min;
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
             if(!red_latched_) { green_run_=0; wait_since_ms_=now_ms; }
@@ -117,11 +123,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         else if(state_==PlannerState::BAM_LAN) reason_="BAM_LAN";
     }
     bool returning=false;
-    if(params.obstacle_action!=2 || state_!=PlannerState::BAM_LAN || entered_wait) {
+    if((params.obstacle_action!=2 && params.work_barrier_action==0) || state_!=PlannerState::BAM_LAN || entered_wait) {
         swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
-        if(params.obstacle_action==2) {
+        if(params.obstacle_action==2 || (params.work_barrier_action==1 && state_!=PlannerState::DUNG_VAT_CAN)) {
             obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
         }
+    }
+    if(barrier_ready && state_==PlannerState::BAM_LAN && swerve_!=Swerve::LEFT) {
+        swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0;
     }
     // shortcut: quãng theo lệnh gửi, cần encoder khi có phép đo quãng đường thực.
     if(swerve_==Swerve::PASS && swerve_ms_>=0 && now_ms>swerve_ms_)
@@ -137,15 +146,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
             if(state_==PlannerState::BAM_LAN &&
                std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
-                if(params.obstacle_action==1) {
+                if(params.obstacle_action==1 && swerve_==Swerve::NONE) {
                     state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
                 } else if(swerve_!=Swerve::LEFT) {
                     swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0;
                 }
             }
-            if(params.obstacle_action==2 && swerve_==Swerve::LEFT) {
+            if(swerve_==Swerve::LEFT) {
                 obstacle_clear_run_=fraction>=params.obstacle_hole_frac*0.5 ? 0 : obstacle_clear_run_+1;
-                if(obstacle_clear_run_>=params.vote_window) {
+                if(!barrier_ready && obstacle_clear_run_>=params.vote_window) {
                     swerve_=Swerve::PASS; pass_cm_=0; obstacle_votes_.clear();
                 }
             } else if(state_==PlannerState::DUNG_VAT_CAN) {
@@ -158,6 +167,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
     } else {
         obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+    }
+    if(params.obstacle_action==0 && swerve_==Swerve::LEFT && !barrier_ready) {
+        swerve_=Swerve::PASS; pass_cm_=0;
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
@@ -177,7 +189,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         plan.debug.speed_cms=plan.cmd.cms;
     }
-    if(params.obstacle_action==2) {
+    if(params.obstacle_action==2 || params.work_barrier_action==1) {
         if(result.debug.state!="BAM_LAN") {
             if(swerve_!=Swerve::NONE) {
                 state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;

@@ -108,6 +108,12 @@ foreach(scenario golden params)
     set_tests_properties(acc_t56_kd_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
 
+add_executable(test_t61_barrier test_t61_barrier.cpp)
+target_link_libraries(test_t61_barrier PRIVATE ucr_control)
+add_test(NAME control_t61_barrier COMMAND test_t61_barrier
+    ${PROJECT_SOURCE_DIR}/control.yaml ${CMAKE_CURRENT_BINARY_DIR}/t61_params.yaml)
+set_tests_properties(control_t61_barrier PROPERTIES LABELS "control" TIMEOUT 60)
+
 add_executable(test_t66_obstacle test_t66_obstacle.cpp)
 target_link_libraries(test_t66_obstacle PRIVATE ucr_control)
 add_test(NAME control_t66_obstacle COMMAND test_t66_obstacle
