@@ -1575,14 +1575,21 @@ def t73_add_case(case, cfg, root):
                     r.frames(4, lambda: t73_add_lane(r, mark, lane_mark))
                     stop_mark = len(r.events())
                     if action == 'space':
-                        event = r.key(' '); end = stopped(r, event[0], 150, mark=stop_mark)
-                        r.frames(4, lambda: no_motion(r, end))
+                        stamp, limit = r.key(' ')[0], 150
+                    else:
+                        r.t57_imu = r.t57_encoder = False
+                        stamp, limit = external_stamp_ms(), 1000
+                        os.kill(r.process.pid, signal.SIGTERM)
+                    stopped(r, stamp, limit, mark=stop_mark)
+                    events = r.events()
+                    # Cùng ms vẫn phân biệt lệnh trước dừng và tái chạy sau motor0 đầu tiên.
+                    end = events.index(stopping_pair(events[stop_mark:], stamp)[0], stop_mark)
+                    if action == 'space':
+                        r.frames(4, lambda: held(r, end))
                         r.t57_imu = r.t57_encoder = False
                         r.finish()
                     else:
-                        r.t57_imu = r.t57_encoder = False
-                        stamp = external_stamp_ms(); os.kill(r.process.pid, signal.SIGTERM)
-                        end = stopped(r, stamp, 1000, mark=stop_mark); r.exited(); no_motion(r, end)
+                        r.exited(); held(r, end)
                     continue
                 if case == 't73_fault_then_lost_image':
                     r.frames(4, lambda: t73_add_lane(r, mark, lane_mark))
@@ -1771,7 +1778,7 @@ def t62_case(case, cfg, root):
         r.inject('yolo_throw_on'); since = external_stamp_ms() + 20
         delta = 170 if case.endswith('170') else 200
         for _ in range(3):
-            t62_next_red(r, delta, attempts=3 if case == 't62_reset_space' else 1)
+            t62_next_red(r, delta, attempts=3 if case in ('t62_reset_space', 't62_hold_170') else 1)
         last = detection_batches(r.events())[-1]
         if case == 't62_reset_space':
             t62_consumed(r, [last])
@@ -1833,9 +1840,13 @@ def a28_origin(rows, events):
     need(len(valid) >= 2, 'Thiếu lệnh làn hợp lệ trước mất làn', 'setup')
     last = valid[-1]
     angle = float(last['sent_steer_deg'])
-    need(last['planner_state'] == 'BAM_LAN' and float(last['sent_speed_cms']) == 8 and angle > 0
-         and angle == float(last['requested_steer_deg']) == float(valid[-2]['sent_steer_deg']),
+    need(last['planner_state'] == 'BAM_LAN' and float(last['sent_speed_cms']) == 8 and angle != 0
+         and angle == float(valid[-2]['sent_steer_deg']),
          'Góc chưa ổn định trước mất làn', 'setup')
+    need(0 <= float(last['image_age_ms']) <= 500
+         and 0 <= float(last['mask_age_ms']) <= BOUNDS['mask_max_age_ms'][0]
+         and 0 <= float(last['t_ms']) - float(last['command_ms']) <= BOUNDS['cmd_max_age_ms'][0],
+         'Dữ liệu làn trước mất làn đã cũ', 'setup')
     need(all(int(row['csv_dropped']) == 0 for row in rows), 'CSV rơi mất mốc tiêu thụ làn', 'setup')
     mask = next((e for e in events if e[1] == 'mask' and int(str(e[2]).split()[0]) == int(last['mask_id'])), None)
     need(mask is not None, 'Thiếu mask của lệnh làn hợp lệ cuối', 'setup')
@@ -2401,7 +2412,7 @@ def test_case(case, cfg, root):
             r.boot(); r.go()
             r.wait(lambda: any(0 < int(row['mask_id']) < 120 and row['planner_state'] == 'BAM_LAN'
                                and float(row['sent_speed_cms']) == 8
-                               and float(row['sent_steer_deg']) == float(row['requested_steer_deg']) > 0
+                               and abs(float(row['sent_steer_deg'])) > 0
                                for row in r.rows()), 15, 'Chưa tiêu thụ làn lệch tâm trước mất làn', tag='setup')
             r.wait(lambda: any(e[2] == 'MAT_LAN' for e in r.of('reason')), 15, 'Không vào MAT_LAN trước phục hồi')
             need(int(str(r.of('mask')[-1][2]).split()[0]) < 300, 'Fixture không đủ thời gian mất làn', 'setup')
@@ -3498,20 +3509,96 @@ def selftest():
                 self.es.append((captured, 'detections', '{} {}'.format(self.attempts + 1, captured), False))
         def rows(self):
             return [dict(det_frame_id=str(b[1]), det_captured_ms=str(b[2])) for b in detection_batches(self.es)]
-    retry = RedRetry([400, 200])
-    assert t62_next_red(retry, 200, attempts=3)[2] == 600 and retry.attempts == 2
-    retry = RedRetry([400, 400, 400])
-    fails(lambda: t62_next_red(retry, 200, attempts=3), 'setup')
-    assert retry.attempts == 3
+    for delta in (170, 200):
+        retry = RedRetry([400, delta])
+        assert t62_next_red(retry, delta, attempts=3)[2] == 400 + delta and retry.attempts == 2
+        retry = RedRetry([400, 400, 400])
+        fails(lambda: t62_next_red(retry, delta, attempts=3), 'setup')
+        assert retry.attempts == 3
+    # Kiểm đường gọi thật: vòng ba lô không thay thế ba lần thử của từng lô.
+    with patch('{}.running'.format(__name__)) as start, \
+            patch('{}.t62_next_red'.format(__name__), side_effect=Failure('retry_probe', '')) as next_red:
+        run = start.return_value.__enter__.return_value
+        run.events.return_value = [(0, 'detections', '1 0', False)]
+        fails(lambda: t62_case('t62_hold_170', None, Path('synthetic')), 'retry_probe')
+        next_red.assert_called_once_with(run, 170, attempts=3)
+    # T73: chạy cả hai đường dừng; khác0 sau motor0 phải bị bắt dù cùng ms và đã trả0.
+    class FaultStopRun(SyntheticRun):
+        def __init__(self, bad):
+            super().__init__([])
+            self.bad = bad
+            self.process = SimpleNamespace(pid=123)
+        def boot(self):
+            pass
+        def go(self):
+            event = (0, 'go', '', False)
+            self.es.extend([event, (1, 'state', 'RE_TRAI', False)])
+            return event
+        def inject(self, command):
+            assert command == 'imu_read_fail'
+            self.es.extend([(2, 'reason', 'HUY_RE_CAM_BIEN', False), (2, 'state', 'BAM_LAN', False),
+                            (2, 'motor_speed', 15, False)])
+        def frames(self, count=5, check=lambda: None):
+            check()
+        def stop(self):
+            commands = [(100, 'motor_speed', 15, False), (100, 'servo_angle', 0, False),
+                        (100, 'motor_speed', 0, False), (100, 'servo_angle', 0, False)]
+            if self.bad:
+                commands.insert(self.bad[0], (100, self.bad[1], 1, False))
+                commands.extend([(100, 'motor_speed', 0, False), (100, 'servo_angle', 0, False)])
+            self.es.extend(commands)
+        def key(self, key):
+            assert key == ' '
+            self.stop()
+            return (100, 'key', key, False)
+        def exited(self):
+            pass
+        def finish(self):
+            pass
+    for action in ('space', 'term'):
+        for bad in (None, (3, 'motor_speed'), (3, 'servo_angle'), (4, 'motor_speed'), (4, 'servo_angle')):
+            runs = []
+            @contextmanager
+            def fault_running(cfg, root, **kwargs):
+                run = FaultStopRun(bad if root.name == action else None)
+                runs.append(run)
+                yield run
+            with patch('{}.running'.format(__name__), fault_running), \
+                    patch('{}.t73_add_feed'.format(__name__)), \
+                    patch.object(td, 'now_ms', return_value=100), \
+                    patch.object(os, 'kill', create=True, side_effect=lambda *args: runs[-1].stop()):
+                call = lambda: t73_add_case('t73_fault_stop_order', None, Path('synthetic'))
+                if bad:
+                    fails(call, 'light_latch')
+                else:
+                    call()
+                    assert len(runs) == 2
     # A28: ảnh đã tới 121 nhưng lệnh cuối chỉ dùng mask118; mask119 chỉ mới công bố.
     masks = [(1000, 'mask', '118 1000', False), (1030, 'mask', '119 1030', False)]
     lane = dict(mask_id='118', frame_id='121', command_ms='1040', csv_dropped='0',
+                t_ms='1045', image_age_ms='5', mask_age_ms='45',
                 planner_state='BAM_LAN', sent_speed_cms='8', sent_steer_deg='12', requested_steer_deg='12')
     assert a28_origin([lane, lane], masks) == (1000, 12)
+    # Góc gửi âm và khác góc yêu cầu vẫn là tiền đề hợp lệ khi hai lệnh gửi đã ổn định.
+    negative = dict(lane, sent_steer_deg='-4', requested_steer_deg='-4.25')
+    assert a28_origin([negative, negative], masks) == (1000, -4)
+    with patch('{}.running'.format(__name__)) as start:
+        run = start.return_value.__enter__.return_value
+        run.rows.return_value = [negative, negative]
+        def first_lane(predicate, *args, **kwargs):
+            need(predicate(), 'Không nhận làn lệch tâm với góc gửi âm', 'setup')
+            raise Failure('origin_probe', '')
+        run.wait.side_effect = first_lane
+        fails(lambda: test_case('A28', None, Path('synthetic')), 'origin_probe')
     fails(lambda: a28_origin([], masks), 'setup')
     fails(lambda: a28_origin([dict(lane, sent_steer_deg='11'), lane], masks), 'setup')
     fails(lambda: a28_origin([lane, dict(lane, csv_dropped='1')], masks), 'setup')
     fails(lambda: a28_origin([lane, lane], masks[1:]), 'setup')
+    for column, value in (('sent_steer_deg', '0'), ('sent_steer_deg', 'nan'),
+                          ('sent_steer_deg', 'inf'), ('image_age_ms', '501'),
+                          ('mask_age_ms', '301'), ('command_ms', '844')):
+        bad = dict(lane, **{column: value})
+        fails(lambda: a28_origin([bad, bad], masks), 'setup')
     lane_events = [(0, 'state', 'RE_TRAI', False), (1, 'motor_speed', 4, False),
                    (2, 'state', 'BAM_LAN', False), (3, 'motor_speed', 15, False)]
     t73_lane_check(SyntheticRun(lane_events), 0, 2)
