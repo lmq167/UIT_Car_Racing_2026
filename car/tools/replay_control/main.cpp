@@ -271,7 +271,7 @@ int main(int argc, char **argv) {
             } else if(indexes.count("planner_state")) {
                 const auto state=get("planner_state");
                 Require(state=="BAM_LAN" || state=="CHO_SAN_SANG" || state=="DUNG" ||
-                        state=="CHO_DEN_XUAT_PHAT" || state=="DUNG_DEN_DO","CSV planner_state không hợp lệ");
+                        state=="CHO_DEN_XUAT_PHAT" || state=="DUNG_DEN_DO" || state=="DUNG_VAT_CAN","CSV planner_state không hợp lệ");
                 stop=state=="DUNG" || state=="CHO_SAN_SANG";
                 if(stop) running=false;
                 else if(state!=previous_logged_state && mask_fresh) running=true;

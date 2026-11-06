@@ -18,6 +18,8 @@ struct ControlParams {
     int pair_mode;
     double pair_max_shift_frac, pair_merge_frac;
     int kd_filter_ms;
+    int obstacle_action;
+    double obstacle_hole_frac;
     int start_wait_green, vote_window, vote_min, green_frames;
     double red_conf_min, green_conf_min, off_conf_min;
     double red_box_min_area_frac, green_box_min_area_frac, off_box_min_area_frac;

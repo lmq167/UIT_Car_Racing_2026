@@ -23,6 +23,8 @@ struct Parameter {
 };
 // Nguồn duy nhất cho mặc định, miền, nạp và in bảng (L2).
 const Parameter table[] = {
+    {"obstacle_action",0,&ControlParams::obstacle_action,0,1,"1","Vật cản (0 = tắt, 1 = dừng)"},
+    {"obstacle_hole_frac",0.10,&ControlParams::obstacle_hole_frac,0.02,0.5,"1","Tỉ lệ lỗ tối thiểu để dừng"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
     {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},

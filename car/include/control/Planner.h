@@ -6,7 +6,7 @@
 namespace control {
 constexpr int kStaleImageMs = 500;
 constexpr const char* kMissingImageReason = "MAT_ANH";
-enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO };
+enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN };
 const char *StateName(PlannerState state);
 struct PlannerInput {
     cv::Mat mask;
@@ -32,6 +32,9 @@ public:
 private:
     struct Vote { int64_t ms; bool red, green; };
     std::deque<Vote> votes_;
+    std::deque<bool> obstacle_votes_;
+    int64_t last_mask_ms_=-1;
+    int obstacle_clear_run_=0;
     uint64_t last_frame_=0;
     int green_run_=0;
     int64_t red_ms_=-1, wait_since_ms_=-1;
