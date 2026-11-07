@@ -55,6 +55,7 @@ private:
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
     bool rb_holding_=false; // Đang GIU_HUONG (bước trước): không bắt đầu rẽ/rào/né.
     bool person_stop_=false; // Đủ phiếu người đi bộ: lệnh tốc độ 0, giữ nguyên state.
+    bool barrier_turn_=false; // Lượt rẽ hiện tại do rào khởi động.
     bool barrier_done_=false; // Đã rẽ vì rào: bỏ qua rào tới khi hết phiếu rào (qua cả Space/G).
     bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;

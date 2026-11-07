@@ -358,6 +358,15 @@ void Case(const std::string& name) {
           Check(plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN","Lỗi tạm + rào gần: dừng");
           for (int i=0;i<30 && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::RE_TRAI,"Hồi lỗi tạm (1 s tươi): rẽ trái qua rào"); }
+        { Rig r; r.in.yaw_deg=5; control::Plan plan;  // lỗi giữa lúc rẽ qua rào, rào còn gần
+          for (int i=0;i<r.p.vote_min;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI,"Rào gần: đang rẽ trái");
+          r.now+=40; r.in.sensor_ms=r.now-300; plan=r.step(true,false);
+          plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN",
+                "Rẽ qua rào bị hủy vì lỗi, rào còn gần: dừng, không đi thẳng vào rào");
+          for (int i=0;i<30 && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI,"Hồi lỗi: rẽ trái lại qua rào"); }
     } else if (name=="roundabout") {
         // Đếm lần qua bằng phiếu round_barrier; sau lần 1 đi rb_turn1_cm rồi RE_TRAI; sau lần 2 RE_PHAI;
         // trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.
