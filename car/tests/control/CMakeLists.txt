@@ -207,3 +207,11 @@ foreach(scenario jump_left straight_stable straight_seq far_not_worse no_row_los
     add_test(NAME acc_t59_${scenario} COMMAND test_t59_pair_hold ${scenario})
     set_tests_properties(acc_t59_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
+
+# Chuyển làn khi né trên đường hai làn (pair_mode=1): theo vạch phân làn.
+add_executable(test_swerve_lane test_swerve_lane.cpp)
+target_link_libraries(test_swerve_lane PRIVATE ucr_control)
+foreach(scenario left arrived lost_divider return_right keep_across_reset pair0_unchanged planner_cycle)
+    add_test(NAME test_swerve_lane_${scenario} COMMAND test_swerve_lane ${scenario})
+    set_tests_properties(test_swerve_lane_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+endforeach()

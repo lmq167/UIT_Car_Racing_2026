@@ -312,6 +312,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
     }
     if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
+    lane_.SetSwerve(swerve_!=Swerve::NONE ? 1 : returning ? -1 : 0);  // pair_mode=1: theo vạch phân làn khi chuyển làn
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,

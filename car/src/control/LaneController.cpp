@@ -136,7 +136,42 @@ RowDebug ScanPair(const cv::Mat &mask, int y, double width, const ControlParams 
     return row;
 }
 }
-void LaneController::Reset() { *this=LaneController{}; }
+void LaneController::Reset() {
+    // Chuyển làn đang dở thì giữ vạch phân làn đang theo dõi (Planner đặt lại bằng SetSwerve).
+    const int dir=swerve_dir_; const auto x=d_x_; const auto v=d_valid_; const auto m=d_miss_;
+    *this=LaneController{}; swerve_dir_=dir; d_x_=x; d_valid_=v; d_miss_=m;
+}
+void LaneController::SetSwerve(int dir) {
+    if(dir==swerve_dir_) return;
+    if(dir==0 || swerve_dir_==0) { d_x_.clear(); d_valid_.clear(); d_miss_.clear(); }
+    swerve_dir_=dir;
+}
+// Hàng quét khi chuyển làn: theo vạch phân làn D (khởi tạo từ cặp bao quanh xe, rồi bám vạch gần nhất ở khung sau).
+// Mục tiêu = D - nửa làn (sang trái) hoặc D + nửa làn (về phải); mất D quá lâu thì hàng hỏng.
+RowDebug LaneController::SwerveRow(const cv::Mat &mask, int y, size_t i, double left, double right, bool edge_is_line,
+                                   const ControlParams &params) {
+    constexpr int kMissSteps=40;      // ~2 s ở chu kỳ 50 ms: một nhịp vạch đứt.
+    const double tolerance=0.10*mask.cols;
+    if(d_x_.size()!=params.scan_rows.size()) {
+        d_x_.assign(params.scan_rows.size(),0); d_valid_.assign(params.scan_rows.size(),0); d_miss_.assign(params.scan_rows.size(),0);
+    }
+    int begin, end; bool surface;
+    auto row=ScanLines(mask,y,begin,end,surface);
+    if(!d_valid_[i] && edge_is_line) { d_x_[i]=swerve_dir_>0 ? left : right; d_valid_[i]=1; d_miss_[i]=0; }
+    if(d_valid_[i]) {
+        double best=tolerance; bool found=false; double x_new=0;
+        for(double x:row.lines) if(std::abs(x-d_x_[i])<=best) { best=std::abs(x-d_x_[i]); x_new=x; found=true; }
+        if(found) { d_x_[i]=x_new; d_miss_[i]=0; }
+        else if(++d_miss_[i]>kMissSteps) d_valid_[i]=0;
+    }
+    const double width=params.lane_width_frac[i]*mask.cols;
+    row.left=row.right=row.center=-1; row.valid=false;
+    if(!d_valid_[i]) return row;
+    if(swerve_dir_>0) { row.right=d_x_[i]; row.left=row.right-width; }
+    else { row.left=d_x_[i]; row.right=row.left+width; }
+    row.center=(row.left+row.right)/2; row.valid=true;
+    return row;
+}
 ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
                                    const ControlParams &params, LaneRef ref) {
     params.Validate();
@@ -194,8 +229,10 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                    gap>=params.lane_width_min_ratio*width && gap<=params.lane_width_max_ratio*width) {
                     width_ratios.back()=gap/width;
                 }
+                if(swerve_dir_!=0) row=SwerveRow(mask,y,i,selected.left,selected.right,
+                                       selected.valid && (swerve_dir_>0 ? selected.left_line : selected.right_line),params);
             }
-            if(row.valid && row.left<0 && row.right/mask.cols>=params.right_clip_frac)
+            if(swerve_dir_==0 && row.valid && row.left<0 && row.right/mask.cols>=params.right_clip_frac)
                 row.center=row.right-params.lane_width_frac[i]*mask.cols/4;
             if(row.valid) {
                 ++result.debug.valid_rows;
@@ -209,6 +246,11 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
             for(size_t i=0;i<result.debug.rows.size();++i) {
                 auto &row=result.debug.rows[i];
                 if(!row.valid) continue;
+                if(swerve_dir_!=0) {  // chuyển làn: hàng đã tính theo vạch phân làn, không thay mép giả
+                    weighted+=params.row_weights[i]*(row.center-(mask.cols/2.0+params.center_offset_frac*mask.cols))/(mask.cols/2.0);
+                    total+=params.row_weights[i];
+                    continue;
+                }
                 const auto &pair=pairs[i];
                 const double nominal=params.lane_width_frac[i]*mask.cols, pair_gap=pair.right-pair.left;
                 // Mép giả chỉ bị thay khi cặp trông như một làn đủ bề rộng; ngoài miền đó giữ luật B3 (mép thảm ẩn).
@@ -242,7 +284,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         if(total<=0) result.debug.valid_rows=0;
     } else if(params.pair_mode==1) have_near_=false;
     bool valid=result.debug.valid_rows>=params.min_valid_rows;
-    if(params.right_lost_ms>0) {
+    if(params.right_lost_ms>0 && swerve_dir_==0) {
         bool any=false, all=true;
         for(const auto &row:result.debug.rows) if(row.valid) {
             any=true;
