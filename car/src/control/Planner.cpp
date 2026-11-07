@@ -15,7 +15,7 @@ constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo
 constexpr double kWideBarrierCx=0.62, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
 // Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
 constexpr double kRightTurnYawFactor=0.92;
-constexpr double kReturnMaxError=0.5, kReturnAlignedError=0.12, kReturnCapFactor=5;
+constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -343,7 +343,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
     lane_.SetSwerve(swerve_!=Swerve::NONE ? 1 : returning ? -1 : 0);  // pair_mode=1: theo vạch phân làn khi chuyển làn
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
-    if(returning) return_e_=result.debug.e;
+    if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
