@@ -50,7 +50,7 @@ void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
-    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false; person_stop_=false;
+    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; approach_=false; person_stop_=false; return_cm_=-1;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -224,9 +224,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         else if(state_==PlannerState::BAM_LAN && red_fresh && approach_) reason_="TIEP_CAN_DEN_DO";
         else if(state_==PlannerState::BAM_LAN) reason_="BAM_LAN";
     }
-    bool returning=false;
     if(params.obstacle_action!=2 || state_!=PlannerState::BAM_LAN || entered_wait) {
-        swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+        swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; return_cm_=-1;
         if(params.obstacle_action==2) {
             obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
         }
@@ -234,6 +233,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     // shortcut: quãng theo lệnh gửi, cần encoder khi có phép đo quãng đường thực.
     if(swerve_==Swerve::PASS && swerve_ms_>=0 && now_ms>swerve_ms_)
         pass_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
+    // Pha về làn phải (VE_PHAI) dài bằng quãng né obstacle_pass_cm, kẹp tốc độ như pha né.
+    if(return_cm_>=0 && swerve_ms_>=0 && now_ms>swerve_ms_) return_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
+    if(return_cm_>=params.obstacle_pass_cm) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
@@ -269,8 +271,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(); returning=true;
+        lane_.Reset(); return_cm_=0;
     }
+    const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
        state_!=PlannerState::DUNG_VAT_CAN) {
         if(!mask_fresh) {
@@ -347,7 +350,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(result.debug.state!="BAM_LAN") {
             if(swerve_!=Swerve::NONE) {
                 state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
-                swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1;
+                swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; return_cm_=-1;
                 obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
                 plan=Plan{}; plan.reference=input.reference; plan.state=state_; plan.reason=reason_;
                 plan.debug.state=StateName(state_); plan.debug.reason=reason_;
@@ -356,7 +359,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0;
             obstacle_votes_.clear(); last_mask_ms_=-1; plan.reference=input.reference;
         } else if(swerve_!=Swerve::NONE || returning) {
-            if(!returning) plan.cmd.cms=std::min(plan.cmd.cms,params.approach_cms);
+            plan.cmd.cms=std::min(plan.cmd.cms,params.approach_cms);
             plan.reason=returning ? "VE_PHAI" : swerve_==Swerve::LEFT ? "NE_TRAI" : "NE_QUA";
             plan.debug.reason=plan.reason; plan.debug.speed_cms=plan.cmd.cms;
         }

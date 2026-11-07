@@ -40,7 +40,7 @@ private:
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
-    double pass_cm_=0, sent_cms_=0;
+    double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
     int64_t swerve_ms_=-1;
     uint64_t last_frame_=0;
     int green_run_=0;
