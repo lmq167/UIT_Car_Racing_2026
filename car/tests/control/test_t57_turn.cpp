@@ -31,11 +31,28 @@ struct Rig {
             if (end<200) in.mask.at<unsigned char>(y,end)=2;
         }
     }
+    // Planner chỉ hủy rẽ khi cảm biến hỏng liên tục từ 250 ms (mẫu ngắn hơn: dừng giữ góc), nên ca "cảm biến hỏng" mô phỏng hỏng kéo dài.
+    bool was_bad=false;
+    void PersistBad(bool fresh_mask, control::Plan &plan) {
+        const bool bad=!in.sensor_ok || !std::isfinite(in.yaw_deg) || !std::isfinite(in.odo_cm) ||
+                       in.sensor_ms<0 || now-in.sensor_ms>200;  // mốc giờ tương lai chỉ là một mẫu thoáng qua
+        const bool first=!was_bad; was_bad=bad;
+        if(!bad || !first) return;  // chỉ kéo dài ở mẫu hỏng đầu tiên của đợt
+        bool cancelled=false; auto cancel_plan=plan;
+        for(int k=0;k<5;++k) {
+            now+=50; in.image_ms=now; if(fresh_mask) in.mask_ms=now;
+            plan=planner.Step(in,now,p);
+            if(!cancelled && plan.reason=="HUY_RE_CAM_BIEN") { cancelled=true; cancel_plan=plan; }
+        }
+        if(cancelled) plan=cancel_plan;  // ca kiểm lượt hủy cần thấy đúng lệnh của khung hủy
+    }
     control::Plan step(bool fresh_mask=true, bool fresh_sensor=true) {
         in.image_ms=now;
         if (fresh_mask) in.mask_ms=now;
         if (fresh_sensor) in.sensor_ms=now;
-        return planner.Step(in,now,p);
+        auto plan=planner.Step(in,now,p);
+        PersistBad(fresh_mask,plan);
+        return plan;
     }
     control::Plan send(const std::vector<std::string>& names, float confidence=0.9f) {
         now+=40;
@@ -322,8 +339,12 @@ void Case(const std::string& name) {
                 Check(votes>=r.p.vote_min && distance+1e-9>=r.p.obstacle_pass_cm,
                       "Thiết lập biển phải đủ phiếu và hoàn tất quãng VE_PHAI");
                 if (plan.state==control::PlannerState::BAM_LAN) tick(r,plan,distance,true);
-                Check(plan.state==control::PlannerState::RE_TRAI,
-                      "Hết VE_PHAI, biển còn đủ phiếu/quãng phải được rẽ; nhận "+plan.reason);
+                // Biển còn trong ảnh thì mốc rẽ dời theo; rẽ chỉ bắt đầu sau turn_start_cm kể từ lúc biển rời khung hình.
+                Check(plan.state==control::PlannerState::BAM_LAN,"Biển còn trong ảnh chưa rẽ; nhận "+plan.reason);
+                const double last_seen=r.in.odo_cm; int ticks=0;
+                while (plan.state!=control::PlannerState::RE_TRAI && ticks++<400) tick(r,plan,distance,false);
+                Check(plan.state==control::PlannerState::RE_TRAI && r.in.odo_cm-last_seen>=r.p.turn_start_cm-1e-9,
+                      "Biển rời khung hình rồi đi turn_start_cm phải rẽ; nhận "+plan.reason);
             }
             Rig fresh; auto plan=returning(fresh); double distance=0;
             for (int i=0;i<1000 && distance+1e-9<fresh.p.obstacle_pass_cm;++i) tick(fresh,plan,distance);
@@ -429,6 +450,54 @@ void Case(const std::string& name) {
             auto plan=r.advance(r.p.turn_start_cm/2); plan=r.advance(r.p.turn_start_cm/2);
             Check(control::StateName(plan.state)==std::string("BAM_LAN"),"Sai luật phiếu "+mode);
         }
+    } else if (name=="glitch_hold") {
+        // Mẫu cảm biến hỏng ngắn (< 250 ms) giữa lúc rẽ: xe dừng giữ góc, về lại thì rẽ tiếp; hỏng từ 250 ms thì hủy.
+        Rig r; r.turn();
+        for (int i=0;i<10;++i) { r.now+=40; r.step(); }
+        const double angle=r.step().cmd.deg;
+        r.in.sensor_ok=false; ++r.now;
+        auto plan=r.planner.Step(r.in,r.now,r.p);   // mẫu hỏng đầu tiên (không qua Rig::step để không kéo dài)
+        Check(plan.state==control::PlannerState::RE_TRAI && plan.reason=="CAM_BIEN_CHO" && plan.cmd.cms==0 &&
+              std::abs(plan.cmd.deg-angle)<1e-9,"Mẫu hỏng thoáng qua: dừng giữ góc");
+        r.now+=100; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+        plan=r.planner.Step(r.in,r.now,r.p);
+        Check(plan.reason=="CAM_BIEN_CHO","Hỏng 100 ms vẫn giữ");
+        r.in.sensor_ok=true; r.now+=50; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+        plan=r.planner.Step(r.in,r.now,r.p);
+        Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==r.p.min_cms,"Cảm biến về trong 250 ms: rẽ tiếp");
+        r.in.sensor_ok=false;
+        for (int i=0;i<6;++i) { r.now+=50; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
+        Check(plan.state==control::PlannerState::BAM_LAN,"Hỏng quá 250 ms phải hủy rẽ");
+    } else if (name=="sign_min_width") {
+        // Biển hẹp (xa/chặng khác) không tính phiếu; đủ rộng thì tính.
+        for (float width:{30.0f,44.0f,45.0f,80.0f}) {
+            Rig r; control::Plan plan;
+            for (int i=0;i<r.p.vote_window;++i) {
+                r.now+=40; r.in.detections={{{"left",cv::Rect2f(600,100,width,width),0.99f,r.now}},r.now,++r.frame};
+                plan=r.step();
+            }
+            r.advance(r.p.turn_start_cm);
+            const bool turned=control::StateName(r.advance(1).state)==std::string("RE_TRAI");
+            Check(turned==(width>=45.0f),"Chỉ biển rộng >= 45 px được tính, rộng "+std::to_string(width));
+        }
+    } else if (name=="sign_exit_anchor") {
+        // Biển còn trong ảnh: mốc rẽ dời theo; rời khung hình rồi đi turn_start_cm mới rẽ.
+        Rig r; r.arm("left");
+        for (int i=0;i<5;++i) { r.advance(10); r.send({"left"}); }
+        const double last_seen=r.in.odo_cm;
+        Check(r.send({"left"}).state==control::PlannerState::BAM_LAN,"Biển còn trong ảnh chưa rẽ");
+        r.in.detections={{},r.now,++r.frame};
+        control::Plan plan;
+        for (int i=0;i<40 && plan.state!=control::PlannerState::RE_TRAI;++i) { r.now+=40; r.in.odo_cm+=2; r.in.detections={{},r.now,++r.frame}; plan=r.step(); }
+        Check(plan.state==control::PlannerState::RE_TRAI,"Rời khung hình rồi đi đủ quãng phải rẽ");
+        Check(r.in.odo_cm-last_seen>=r.p.turn_start_cm-1e-9,"Quãng tính từ lúc biển rời khung hình");
+    } else if (name=="turn_steer_by_type") {
+        // Rẽ phải lái nhiều hơn (bán kính đường xe ~65 cm), rẽ trái do rào lái ít hơn (vào đường 2 làn ~95 cm).
+        Rig left; left.turn(true); Rig right; right.turn(false);
+        control::Plan pl, pr;
+        for (int i=0;i<10;++i) { left.now+=40; pl=left.step(); right.now+=40; pr=right.step(); }
+        Check(std::abs(pl.cmd.deg-left.p.turn_steer_deg)<1e-9,"Rẽ trái theo biển giữ turn_steer_deg");
+        Check(std::abs(pr.cmd.deg+std::min(right.p.steer_max_deg,1.12*right.p.turn_steer_deg))<1e-9,"Rẽ phải lái 1,12 lần");
     } else if (name=="obstacle_blocked_in_roundabout") {
         // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
         Rig r; r.p.obstacle_action=2;
@@ -658,9 +727,15 @@ void Case(const std::string& name) {
                     (fault==5?1:-1)*std::numeric_limits<double>::infinity();
                 if (fault==7) r.in.sensor_ms=r.now+1;
                 const auto plan=r.step(true,fault!=7);
+                if (phase==2 && fault==7) {  // một mẫu mốc giờ tương lai: thoáng qua, xe dừng giữ góc, chưa hủy
+                    Check(plan.state==control::PlannerState::RE_TRAI && plan.reason=="CAM_BIEN_CHO" && plan.cmd.cms==0,
+                          "Một mẫu cảm biến thoáng qua giữa lúc rẽ: dừng giữ góc, chưa hủy");
+                    continue;
+                }
                 if (phase==2) Cancelled(plan,r.p);
                 else Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,
                            "Lỗi cảm biến khi chưa rẽ vẫn bám làn");
+                if (fault==7) continue;  // mẫu thoáng qua: không có lỗi để hồi
                 RecoveredSensor(r);
             }
         }
@@ -714,7 +789,8 @@ void Case(const std::string& name) {
         Rig distance; distance.in.odo_cm=100; distance.arm(); distance.in.odo_cm=120;
         for (int i=0;i<distance.p.vote_window;++i) distance.send({"left"});
         distance.in.odo_cm=100+distance.p.turn_arm_cm+0.01; ++distance.now;
-        Check(distance.step().reason=="HUY_RE","Biển mới không đặt lại mốc armed");
+        // Biển còn trong ảnh dời mốc armed theo (mốc rẽ tính từ lúc biển rời khung hình): không hủy theo mốc cũ.
+        Check(control::StateName(distance.step().state)==std::string("RE_TRAI"),"Biển mới dời mốc armed");
         Rig travel; travel.turn(); const double turn_odo=travel.in.odo_cm; travel.in.odo_cm+=10;
         for (int i=0;i<travel.p.vote_window;++i) travel.send({"right"});
         travel.in.odo_cm=turn_odo+travel.p.turn_max_cm+0.01; ++travel.now;

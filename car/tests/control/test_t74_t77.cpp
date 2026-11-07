@@ -50,11 +50,28 @@ struct Rig {
             if (end<200) in.mask.at<unsigned char>(y,end)=2;
         }
     }
+    // Planner chỉ hủy rẽ khi cảm biến hỏng liên tục từ 250 ms (mẫu ngắn hơn: dừng giữ góc), nên ca "cảm biến hỏng" mô phỏng hỏng kéo dài.
+    bool was_bad=false;
+    void PersistBad(bool fresh_mask, Plan &plan) {
+        const bool bad=!in.sensor_ok || !std::isfinite(in.yaw_deg) || !std::isfinite(in.odo_cm) ||
+                       in.sensor_ms<0 || in.sensor_ms>now || now-in.sensor_ms>200;
+        const bool first=!was_bad; was_bad=bad;
+        if(!bad || !first) return;  // chỉ kéo dài ở mẫu hỏng đầu tiên của đợt
+        bool cancelled=false; auto cancel_plan=plan;
+        for(int k=0;k<5;++k) {
+            now+=50; in.image_ms=now; if(fresh_mask) in.mask_ms=now;
+            plan=planner.Step(in,now,p);
+            if(!cancelled && plan.reason=="HUY_RE_CAM_BIEN") { cancelled=true; cancel_plan=plan; }
+        }
+        if(cancelled) plan=cancel_plan;  // ca kiểm lượt hủy cần thấy đúng lệnh của khung hủy
+    }
     Plan step(bool fresh_mask=true, bool fresh_sensor=true, bool fresh_image=true) {
         if (fresh_image) in.image_ms=now;
         if (fresh_mask) in.mask_ms=now;
         if (fresh_sensor && sensor_fresh) in.sensor_ms=now;
-        return planner.Step(in,now,p);
+        auto plan=planner.Step(in,now,p);
+        PersistBad(fresh_mask,plan);
+        return plan;
     }
     Plan send(const std::vector<std::string>& names={}, float confidence=0.9f,
               float cx=0.5f, float y2=0.8f, int dt=40) {
@@ -189,7 +206,7 @@ void T74(const std::string& name) {
             Rig r; r.in.yaw_deg=5;
             auto plan=r.votes({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
-                   Near(plan.cmd.deg,r.p.turn_steer_deg),plan,"Rào gần vào lệnh rẽ IMU min_cms/+turn_steer_deg");
+                   Near(plan.cmd.deg,0.8*r.p.turn_steer_deg),plan,"Rào gần vào lệnh rẽ IMU min_cms/+0,8*turn_steer_deg (rào: rẽ trái vào đường 2 làn, bán kính rộng)");
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
             r.in.yaw_deg=5+sign*r.p.turn_yaw_deg; plan=r.send({"work_barrier"});
