@@ -63,9 +63,26 @@ int main(int argc, char **argv) {
         } else if(name=="keep_across_reset") {
             control::LaneController c; c.SetSwerve(1);
             Run(c,Road(0,true,false),p,t);
-            c.Reset(); c.SetSwerve(-1);
+            c.Reset(true); c.SetSwerve(-1);
             auto r=Run(c,Road(80,false,false),p,t);   // chỉ thấy vạch phân làn D
             Check(r.debug.state=="BAM_LAN" && r.cmd.deg<0,"Giữ vạch phân làn qua Reset khi đổi sang về phải");
+        } else if(name=="reset_clears") {
+            // Reset thường (Space/G/MAT_LAN_NE) không được giữ vạch phân làn cũ.
+            control::LaneController c; c.SetSwerve(1);
+            Run(c,Road(0,true,false),p,t);
+            c.Reset(); c.SetSwerve(1);
+            auto r=Run(c,Road(0,false,false,false),p,t);   // không còn vạch nào: phải mất làn, không dùng D cũ
+            Check(r.debug.state!="BAM_LAN" || r.cmd.cms==0 || std::abs(r.cmd.deg)<1,"Reset thường phải xoá vạch phân làn cũ");
+        } else if(name=="pair0_return_keeps_right_lost") {
+            // pair_mode=0: chuyển làn không tắt luật mất vạch phải (kiểm M3).
+            control::ControlParams q=Params(0); q.right_lost_ms=500;
+            control::LaneController c; c.SetSwerve(-1);
+            control::ControlResult r;
+            for(int i=0;i<40;++i) r=Run(c,Road(106,true,false,false),q,t,1);
+            control::LaneController ref; control::ControlResult rr;
+            int t2=1000;
+            for(int i=0;i<40;++i) rr=Run(ref,Road(106,true,false,false),q,t2,1);
+            Check(r.debug.state==rr.debug.state && r.cmd.cms==rr.cmd.cms,"pair_mode=0 chuyển làn phải giống bám làn thường");
         } else if(name=="pair0_unchanged") {
             control::ControlParams q=Params(0);
             control::LaneController a,b; b.SetSwerve(1);

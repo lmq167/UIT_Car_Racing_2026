@@ -211,7 +211,7 @@ endforeach()
 # Chuyển làn khi né trên đường hai làn (pair_mode=1): theo vạch phân làn.
 add_executable(test_swerve_lane test_swerve_lane.cpp)
 target_link_libraries(test_swerve_lane PRIVATE ucr_control)
-foreach(scenario left arrived lost_divider return_right keep_across_reset pair0_unchanged planner_cycle)
+foreach(scenario left arrived lost_divider return_right keep_across_reset reset_clears pair0_return_keeps_right_lost pair0_unchanged planner_cycle)
     add_test(NAME test_swerve_lane_${scenario} COMMAND test_swerve_lane ${scenario})
     set_tests_properties(test_swerve_lane_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()

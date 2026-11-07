@@ -247,7 +247,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             obstacle_votes_.push_back(obstacle);
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
             // Đang qua vòng xuyến: lòng vòng là "hố" trong mặt nạ nhưng phải đi thẳng, không né (ảnh 07/11 phiên 9445, 211-219 s).
-            if(state_==PlannerState::BAM_LAN && !rb_holding_ && !rb_in_pass_ &&
+            if(state_==PlannerState::BAM_LAN && !rb_holding_ && !(params.obstacle_action==2 && rb_in_pass_) &&
                std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
                 if(params.obstacle_action==1) {
                     state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
@@ -273,7 +273,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(); return_cm_=0;
+        lane_.Reset(true); return_cm_=0;
     }
     const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&

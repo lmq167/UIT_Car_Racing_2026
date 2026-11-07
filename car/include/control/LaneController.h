@@ -25,17 +25,17 @@ class LaneController {
 public:
     ControlResult Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
                        const ControlParams &params, LaneRef ref=LaneRef::RIGHT);
-    void Reset();
+    void Reset(bool keep_swerve=false);  // keep_swerve: chỉ giữ vạch phân làn khi chuyển NE_QUA sang VE_PHAI
     // Chuyển làn (chỉ pair_mode=1): +1 sang làn trái, -1 về làn phải, 0 bám làn thường.
     // Theo dõi vạch phân làn qua các khung; mục tiêu = vạch -/+ nửa bề rộng làn.
     void SetSwerve(int dir);
 private:
     RowDebug SwerveRow(const cv::Mat &mask, int y, size_t i, double left, double right, bool edge_is_line,
-                       const ControlParams &params);
+                       int64_t now_ms, const ControlParams &params);
     int swerve_dir_=0;
     std::vector<double> d_x_;      // vị trí vạch phân làn theo từng hàng quét
     std::vector<char> d_valid_;
-    std::vector<int> d_miss_;
+    std::vector<int64_t> d_seen_ms_;  // lần cuối thấy vạch phân làn, theo hàng
     int64_t last_now_ms_=-1, last_mask_ms_=-1, last_valid_ms_=-1, regain_mask_ms_=-1;
     int64_t right_clip_since_ms_=-1;
     double angle_=0, error_=0;
