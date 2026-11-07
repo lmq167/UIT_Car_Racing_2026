@@ -429,6 +429,16 @@ void Case(const std::string& name) {
             auto plan=r.advance(r.p.turn_start_cm/2); plan=r.advance(r.p.turn_start_cm/2);
             Check(control::StateName(plan.state)==std::string("BAM_LAN"),"Sai luật phiếu "+mode);
         }
+    } else if (name=="obstacle_blocked_in_roundabout") {
+        // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
+        Rig r; r.p.obstacle_action=2;
+        for (int i=0;i<r.p.vote_min;++i) r.send({"round_barrier"});
+        r.obstacle(true);
+        for (int i=0;i<r.p.vote_window+3;++i) {
+            const auto plan=r.send({"round_barrier"});
+            Check(plan.reason!="NE_TRAI" && plan.reference==control::LaneRef::RIGHT,"Đang qua vòng xuyến không được né");
+        }
+        Rig outside; outside.avoid();
     } else if (name=="obstacle_stop_no_turn") {
         // Đang DUNG_VAT_CAN (obstacle_action 1), đủ quãng cũng không được bắt đầu rẽ.
         Rig r; r.p.obstacle_action=1; r.arm();

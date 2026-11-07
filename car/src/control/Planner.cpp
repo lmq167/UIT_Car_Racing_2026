@@ -246,7 +246,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool obstacle=fraction>=params.obstacle_hole_frac && centroid>=0.35 && centroid<=0.85;
             obstacle_votes_.push_back(obstacle);
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
-            if(state_==PlannerState::BAM_LAN && !rb_holding_ &&
+            // Đang qua vòng xuyến: lòng vòng là "hố" trong mặt nạ nhưng phải đi thẳng, không né (ảnh 07/11 phiên 9445, 211-219 s).
+            if(state_==PlannerState::BAM_LAN && !rb_holding_ && !rb_in_pass_ &&
                std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
                 if(params.obstacle_action==1) {
                     state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;

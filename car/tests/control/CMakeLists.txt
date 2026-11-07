@@ -134,6 +134,8 @@ endforeach()
 # Hồi quy: đang dừng vật cản thì không bắt đầu rẽ (ca unit, không thuộc bộ chấp nhận).
 add_test(NAME test_t57_obstacle_stop_no_turn COMMAND test_t57_turn obstacle_stop_no_turn)
 set_tests_properties(test_t57_obstacle_stop_no_turn PROPERTIES LABELS "control" TIMEOUT 60)
+add_test(NAME test_t57_obstacle_blocked_in_roundabout COMMAND test_t57_turn obstacle_blocked_in_roundabout)
+set_tests_properties(test_t57_obstacle_blocked_in_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t74_barrier_turn COMMAND test_t57_turn barrier_turn)
 set_tests_properties(test_t74_barrier_turn PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t68b_roundabout COMMAND test_t57_turn roundabout)
