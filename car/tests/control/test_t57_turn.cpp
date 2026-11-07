@@ -284,6 +284,129 @@ void Case(const std::string& name) {
         r.now+=40; plan=r.step();
         Check(plan.state==(cancel?control::PlannerState::BAM_LAN:control::PlannerState::RE_TRAI),
               cancel?"Đã hủy thì về bám làn không rẽ lại":"Về bám làn thường mới được rẽ");
+    } else if (name=="q8_sign_blocked_until_end" || name=="q8_speed_min" ||
+               name=="q8_space_in_ve_phai" || name=="q8_pass_cm_scale" || name=="q8_lane_lost") {
+        auto returning=[](Rig& r) {
+            r.p.slow_per_deg=0;
+            r.avoid(); r.obstacle(false);
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
+            Check(plan.reason=="NE_QUA","Thiết lập Q8 phải qua NE_QUA");
+            for (int i=0;i<1000 && plan.reason=="NE_QUA";++i) { r.now+=100; plan=r.step(); }
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
+                  plan.reference==control::LaneRef::RIGHT && plan.cmd.cms>0,"Thiết lập Q8 phải đang VE_PHAI");
+            return plan;
+        };
+        // Quãng kiểm tra lấy từ lệnh vừa gửi; encoder chỉ phục vụ điều kiện rẽ biển.
+        auto tick=[](Rig& r, control::Plan& plan, double& distance, bool sign=false) {
+            const double cm=plan.cmd.cms*0.1;
+            distance+=cm; r.in.odo_cm+=cm; r.now+=100;
+            std::vector<control::Detection> items;
+            if (sign) items.push_back({"left",cv::Rect2f(1024,100,128,72),0.9f,r.now});
+            r.in.detections={items,r.now,++r.frame};
+            plan=r.step();
+        };
+        if (name=="q8_sign_blocked_until_end") {
+            for (double fraction:{0.0,0.5}) {
+                Rig r; r.p.obstacle_pass_cm=90; r.p.turn_arm_cm=200;
+                auto plan=returning(r); double distance=0; int votes=0;
+                for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm;++i) {
+                    const bool sign=distance>=fraction*r.p.obstacle_pass_cm;
+                    tick(r,plan,distance,sign); if (sign) ++votes;
+                    if (distance+1e-9<r.p.obstacle_pass_cm)
+                        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
+                              plan.reference==control::LaneRef::RIGHT,
+                              "Biển ở đầu/giữa VE_PHAI phải chờ hết quãng; nhận "+plan.reason+
+                              " state="+control::StateName(plan.state)+" quãng="+std::to_string(distance));
+                }
+                Check(votes>=r.p.vote_min && distance+1e-9>=r.p.obstacle_pass_cm,
+                      "Thiết lập biển phải đủ phiếu và hoàn tất quãng VE_PHAI");
+                if (plan.state==control::PlannerState::BAM_LAN) tick(r,plan,distance,true);
+                Check(plan.state==control::PlannerState::RE_TRAI,
+                      "Hết VE_PHAI, biển còn đủ phiếu/quãng phải được rẽ; nhận "+plan.reason);
+            }
+            Rig fresh; auto plan=returning(fresh); double distance=0;
+            for (int i=0;i<1000 && distance+1e-9<fresh.p.obstacle_pass_cm;++i) tick(fresh,plan,distance);
+            Check(distance+1e-9>=fresh.p.obstacle_pass_cm && plan.state==control::PlannerState::BAM_LAN,
+                  "Không biển trong VE_PHAI phải trở về bám làn");
+            fresh.arm();
+            Check(fresh.advance(fresh.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,
+                  "Biển mới sau VE_PHAI chưa đủ quãng không được rẽ");
+            Check(fresh.advance(1).state==control::PlannerState::RE_TRAI,
+                  "Biển mới đủ phiếu và quãng sau VE_PHAI phải rẽ bình thường");
+        } else if (name=="q8_speed_min") {
+            Rig r; r.p.cruise_cms=5; r.p.approach_cms=6;
+            auto plan=returning(r); double distance=0;
+            for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm;++i) {
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
+                      plan.reference==control::LaneRef::RIGHT && plan.cmd.cms==r.p.cruise_cms &&
+                      plan.debug.speed_cms==plan.cmd.cms,
+                      "VE_PHAI phải giữ cruise_cms=5 khi approach_cms=6, không tăng tốc");
+                tick(r,plan,distance);
+            }
+            Check(distance+1e-9>=r.p.obstacle_pass_cm && plan.reason=="BAM_LAN",
+                  "Cruise thấp vẫn phải hoàn tất đủ quãng VE_PHAI; nhận "+plan.reason+
+                  " quãng="+std::to_string(distance)+" đích="+std::to_string(r.p.obstacle_pass_cm));
+        } else if (name=="q8_space_in_ve_phai") {
+            Rig r; auto plan=returning(r); double distance=0;
+            for (int i=0;i<1000 && distance<r.p.obstacle_pass_cm/2;++i) tick(r,plan,distance);
+            Check(distance>=r.p.obstacle_pass_cm/2 && distance<r.p.obstacle_pass_cm &&
+                  plan.reason=="VE_PHAI","Thiết lập Space ở giữa VE_PHAI");
+            r.in.stop=true; tick(r,plan,distance); r.in.stop=false;
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="SPACE" &&
+                  plan.cmd.cms==0 && plan.cmd.deg==0,"Space giữa VE_PHAI phải dừng motor/servo");
+            for (int i=0;i<3;++i) {
+                tick(r,plan,distance);
+                Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0,
+                      "Chưa có G mới không được tự chạy tiếp VE_PHAI");
+            }
+            r.in.go=true; tick(r,plan,distance); r.in.go=false;
+            for (int i=0;i<10;++i) {
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
+                      plan.reference==control::LaneRef::RIGHT && plan.cmd.cms==r.p.cruise_cms,
+                      "G sau Space phải BAM_LAN/RIGHT ở cruise; nhận "+plan.reason+
+                      " state="+control::StateName(plan.state)+" cms="+std::to_string(plan.cmd.cms)+
+                      " cruise="+std::to_string(r.p.cruise_cms));
+                tick(r,plan,distance);
+            }
+        } else if (name=="q8_pass_cm_scale") {
+            double measured[2]={0,0}; int index=0;
+            for (double cm:{45.0,90.0}) {
+                Rig r; r.p.obstacle_pass_cm=cm;
+                auto plan=returning(r); double distance=0, last_cm=0;
+                for (int i=0;i<1000 && distance+1e-9<cm;++i) {
+                    last_cm=plan.cmd.cms*0.1;
+                    tick(r,plan,distance);
+                    Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                          plan.reason==(distance+1e-9<cm?"VE_PHAI":"BAM_LAN"),
+                          "VE_PHAI phải kết thúc đúng obstacle_pass_cm, không dùng quãng cố định");
+                }
+                Check(distance+1e-9>=cm && distance<cm+last_cm+1e-9,"Sai quãng VE_PHAI theo bước mô phỏng");
+                measured[index++]=distance;
+                std::cout<<"Q8 obstacle_pass_cm="<<cm<<" VE_PHAI_cm="<<distance<<'\n';
+            }
+            Check(std::abs(measured[1]-2*measured[0])<1,
+                  "obstacle_pass_cm 90 phải cho quãng VE_PHAI gấp đôi 45 trong sai số một bước");
+        } else {
+            Rig r; auto plan=returning(r);
+            control::LaneController expected;
+            expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::LaneRef::RIGHT);
+            const auto last_valid=r.now;
+            r.in.mask.setTo(0);
+            for (int elapsed:{1,r.p.lost_hold_ms-1,r.p.lost_hold_ms,r.p.lost_stop_ms-1,r.p.lost_stop_ms}) {
+                r.now=last_valid+elapsed; plan=r.step();
+                const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::LaneRef::RIGHT);
+                const double speed=lane.cmd.cms<r.p.approach_cms?lane.cmd.cms:r.p.approach_cms;
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                      plan.reason!="MAT_LAN_NE" && plan.debug.reason!="MAT_LAN_NE" && plan.cmd.cms==speed,
+                      "Mất làn trong VE_PHAI phải theo LaneController thường, không chốt MAT_LAN_NE");
+            }
+            Check(plan.cmd.cms==0 && plan.cmd.deg==0,"Đúng lost_stop_ms trong VE_PHAI phải dừng và trả góc 0");
+            r.obstacle(false);
+            for (int i=0;i<r.p.regain_frames+1;++i) { r.now+=40; plan=r.step(); }
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0 && plan.reason!="MAT_LAN_NE",
+                  "Làn hồi đủ khung phải tự phục hồi theo luật thường, không cần G mở chốt né");
+        }
     } else if (name=="t68_hold_heading") {
         Rig r; r.arm();
         for (int i=0;i<r.p.vote_min;++i) r.send({"round_barrier"});

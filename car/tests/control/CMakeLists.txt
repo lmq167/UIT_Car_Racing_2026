@@ -176,6 +176,19 @@ foreach(scenario people person votes low_conf release absent turn_pause_stuck tu
     set_tests_properties(acc_t75_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
 
+foreach(scenario action0 recover_barrier_moved fault_while_barrier_turn vs_red startup_fault_barrier)
+    add_test(NAME acc_q7_${scenario} COMMAND test_t74_t77 q7_${scenario})
+    set_tests_properties(acc_q7_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+foreach(scenario sign_blocked_until_end speed_min space_in_ve_phai pass_cm_scale lane_lost)
+    add_test(NAME acc_q8_${scenario} COMMAND test_t57_turn q8_${scenario})
+    set_tests_properties(acc_q8_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+foreach(scenario flicker_resets_clock one_source_stale rb_not_revived)
+    add_test(NAME acc_q9_${scenario} COMMAND test_t74_t77 q9_${scenario})
+    set_tests_properties(acc_q9_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+endforeach()
+
 add_executable(test_t58_vote_release test_t58_vote_release.cpp)
 target_link_libraries(test_t58_vote_release PRIVATE ucr_control)
 foreach(scenario hold_2of5 release_2of5 hold_1of5 start_2of5 default_3of5 stale_red
