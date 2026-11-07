@@ -490,6 +490,12 @@ void Case(const std::string& name) {
                 "Rẽ qua rào bị hủy vì lỗi, rào còn gần: dừng, không đi thẳng vào rào");
           for (int i=0;i<30 && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::RE_TRAI,"Hồi lỗi: rẽ trái lại qua rào"); }
+        { Rig r; r.in.yaw_deg=5; control::Plan plan;  // mặt nạ cũ giữa lúc rẽ rào: không bỏ qua rào còn gần
+          for (int i=0;i<r.p.vote_min;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI,"Rào gần: đang rẽ trái (mặt nạ)");
+          r.now+=r.p.mask_max_age_ms+40; plan=r.step(false,true);  // mặt nạ quá tuổi, cảm biến tươi
+          for (int i=0;i<4 && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI,"Mặt nạ tươi lại, rào còn gần: rẽ lại, không bám làn vào rào"); }
     } else if (name=="roundabout") {
         // Đếm lần qua bằng phiếu round_barrier; sau lần 1 đi rb_turn1_cm rồi RE_TRAI; sau lần 2 RE_PHAI;
         // trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.

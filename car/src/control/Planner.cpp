@@ -278,6 +278,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
        state_!=PlannerState::DUNG_VAT_CAN) {
         if(!mask_fresh) {
+            if(barrier_turn_) barrier_done_=false;  // rẽ rào bị hủy vì mặt nạ cũ: rào còn gần thì xét lại (rẽ hoặc dừng Q7)
             ClearTurn(); state_=PlannerState::BAM_LAN;
         } else if(turning_ && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg) {
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
