@@ -838,9 +838,10 @@ void Case(const std::string& name) {
     } else if (name=="yaw") {
         for (bool left:{false,true}) for (double sign:{-1.0,1.0}) {
             Rig r; r.in.yaw_deg=37; r.turn(left);
-            r.in.yaw_deg=37+sign*(r.p.turn_yaw_deg-0.01); ++r.now;
+            const double yaw_end=left?r.p.turn_yaw_deg:0.92*r.p.turn_yaw_deg; // rẽ phải thoát sớm 8% (đo log: vượt 4-7 độ)
+            r.in.yaw_deg=37+sign*(yaw_end-0.01); ++r.now;
             Check(control::StateName(r.step().state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Chưa đủ yaw còn rẽ");
-            r.in.yaw_deg=37+sign*r.p.turn_yaw_deg; ++r.now;
+            r.in.yaw_deg=37+sign*yaw_end; ++r.now;
             const auto plan=r.step(); Check(plan.state==control::PlannerState::BAM_LAN,"Đúng yaw đích phải xong, kể cả yaw âm");
         }
     } else if (name=="command") {

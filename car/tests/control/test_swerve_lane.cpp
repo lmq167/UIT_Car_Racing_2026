@@ -59,7 +59,7 @@ int main(int argc, char **argv) {
         } else if(name=="return_right") {
             control::LaneController c; c.SetSwerve(-1);
             auto r=Run(c,Road(106,false,true),p,t);
-            Check(r.debug.state=="BAM_LAN" && r.cmd.deg<-20,"Về phải từ làn trái phải lái phải mạnh");
+            Check(r.debug.state=="BAM_LAN" && r.cmd.deg<-15 && r.cmd.deg>-20,"Về phải từ làn trái lái phải vừa phải (sai số kẹp 0,5)");
         } else if(name=="keep_across_reset") {
             control::LaneController c; c.SetSwerve(1);
             Run(c,Road(0,true,false),p,t);
@@ -113,7 +113,32 @@ int main(int argc, char **argv) {
             Check(qua,"Phải qua pha NE_QUA");
             Check(ve_phai,"Phải sang VE_PHAI sau quãng obstacle_pass_cm");
             for(int i=0;i<5;++i) { plan=step(Road(106,false,true)); if(plan.reason=="VE_PHAI") min_deg=std::min(min_deg,plan.cmd.deg); }
-            Check(min_deg<-20,"VE_PHAI phải lái phải mạnh để về làn phải, được "+std::to_string(min_deg));
+            Check(min_deg<-15 && min_deg>-20,"VE_PHAI lái phải êm (kẹp sai số 0,5), được "+std::to_string(min_deg));
+        } else if(name=="return_end") {
+            // VE_PHAI chỉ kết thúc khi đã thẳng hàng làn phải (|e| nhỏ) hoặc quá 5*obstacle_pass_cm; không cắt ở 25 cm khi còn lệch.
+            control::ControlParams q=Params(1); q.obstacle_action=2; q.turn_enable=0; q.start_wait_green=0;
+            auto ve_phai_steps=[&](bool aligned) {
+                control::Planner planner; control::PlannerInput in; int64_t now=1000;
+                auto step=[&](const cv::Mat &mask) {
+                    in.mask=mask; in.mask_ms=now; in.image_ms=now; in.sensor_ok=true; in.sensor_ms=now;
+                    const auto plan=planner.Step(in,now,q); now+=50; return plan;
+                };
+                in.go=true; step(Road(0,true,false)); in.go=false;
+                cv::Mat blocked=Road(0,true,false); blocked(cv::Rect(90,36,30,55)).setTo(0);
+                control::Plan plan; int shift=0;
+                for(int i=0;i<4;++i) plan=step(blocked);
+                for(int i=0;i<400 && plan.reason!="VE_PHAI";++i) { if(shift<106) shift+=2; plan=step(Road(shift,false,true)); }
+                Check(plan.reason=="VE_PHAI","Phải vào VE_PHAI");
+                int n=0;
+                for(;n<2000 && plan.reason=="VE_PHAI";++n) {
+                    if(aligned && shift>0) shift-=2;  // xe quay về làn phải dần: vạch phân làn trôi về trái
+                    plan=step(aligned ? Road(shift,false,true) : Road(106,false,true));
+                }
+                return n;
+            };
+            const int aligned=ve_phai_steps(true), lost=ve_phai_steps(false);
+            Check(aligned<lost,"Đã thẳng hàng làn phải thì kết thúc sớm hơn: "+std::to_string(aligned)+" so với "+std::to_string(lost));
+            Check(lost<2000,"Còn lệch vẫn phải dừng ở trần 5*obstacle_pass_cm, được "+std::to_string(lost)+" bước");
         } else throw std::runtime_error("Ca không tồn tại: "+name);
         std::cout<<"ĐẠT: "<<name<<"\n"; return 0;
     } catch(const std::exception &e) { std::cerr<<"KHÔNG ĐẠT: "<<e.what()<<"\n"; return 1; }

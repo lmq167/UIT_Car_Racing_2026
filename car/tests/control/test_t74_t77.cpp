@@ -60,6 +60,8 @@ struct Rig {
         bool cancelled=false; auto cancel_plan=plan;
         for(int k=0;k<5;++k) {
             now+=50; in.image_ms=now; if(fresh_mask) in.mask_ms=now;
+            // Camera vẫn gửi lô YOLO mới (cùng nội dung) trong lúc cảm biến hỏng; không có thì phiếu hết hạn, sai thực tế.
+            if(!in.detections.items.empty()) { in.detections.captured_ms=now; in.detections.frame_id=++frame; for(auto &d:in.detections.items) d.captured_ms=now; }
             plan=planner.Step(in,now,p);
             if(!cancelled && plan.reason=="HUY_RE_CAM_BIEN") { cancelled=true; cancel_plan=plan; }
         }
@@ -176,9 +178,11 @@ void T74(const std::string& name) {
     if (name=="thresholds") {
         struct Sample { float conf,cx,y2_px; bool turn; };
         const Sample samples[]={{.499f,.5f,576,false},{.5f,.5f,576,true},
-            {.9f,.5f,467.9f,false},{.9f,.5f,468,true},
-            {.9f,.25f,576,true},{.9f,.75f,576,true},
-            {.9f,.2499f,576,false},{.9f,.7501f,576,false},{.9f,.86f,576,false}};
+            // Rào hẹp (cx<0,62, rào 1 đường 1 làn) kích hoạt sớm 0,05 so với y2_frac; rào rộng (cx 0,62-0,82, rào 2 đường 2 làn) theo y2_frac.
+            {.9f,.5f,431.9f,false},{.9f,.5f,432,true},
+            {.9f,.75f,467.9f,false},{.9f,.75f,468,true},
+            {.9f,.25f,576,true},{.9f,.81f,576,true},
+            {.9f,.2499f,576,false},{.9f,.8201f,576,false},{.9f,.86f,576,false}};
         for (const auto& s:samples) {
             Rig r; Plan plan;
             for (int i=0;i<r.p.vote_min;++i) {
@@ -206,12 +210,23 @@ void T74(const std::string& name) {
             Rig r; r.in.yaw_deg=5;
             auto plan=r.votes({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
-                   Near(plan.cmd.deg,0.8*r.p.turn_steer_deg),plan,"Rào gần vào lệnh rẽ IMU min_cms/+0,8*turn_steer_deg (rào: rẽ trái vào đường 2 làn, bán kính rộng)");
+                   Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Rào hẹp (cx 0,5) vào lệnh rẽ IMU min_cms/+1,12*turn_steer_deg (rào 1: rẽ trái vào đường 1 làn, bán kính nhỏ)");
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
             r.in.yaw_deg=5+sign*r.p.turn_yaw_deg; plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT,plan,"Đủ |yaw-yaw0| về BAM_LAN RIGHT");
         }
+    } else if (name=="barrier_types") {
+        // Work 1 (hộp giữa, vào đường 1 làn): rẽ gắt 1,12*turn_steer_deg, kích hoạt sớm 0,05; work 2 (hộp lệch phải): 0,8*turn_steer_deg.
+        const double frac=Rig().p.work_barrier_y2_frac;
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.04));
+          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Work 1: sớm 0,04 và lái 1,12*turn_steer_deg"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.06));
+          Lane(plan,"Work 1: chưa tới đáy hộp thì chưa rẽ"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.75f,static_cast<float>(frac-.04));
+          Lane(plan,"Work 2: theo y2_frac đủ, không rẽ sớm hơn"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.78f,static_cast<float>(frac+.001));
+          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,0.8*r.p.turn_steer_deg),plan,"Work 2 (hộp cx 0,78): vào đường 2 làn, lái 0,8*turn_steer_deg"); }
     } else if (name=="box_moves") {
         Rig r; r.votes({"work_barrier"});
         for (int i=0;i<6;++i) {
@@ -255,7 +270,7 @@ void T74(const std::string& name) {
             if (fault==3) r.in.yaw_deg=std::numeric_limits<double>::quiet_NaN();
             if (fault==4) r.in.odo_cm=std::numeric_limits<double>::quiet_NaN();
             const auto far=r.votes({"work_barrier"},r.p.vote_window,.9f,.5f,
-                                   static_cast<float>(r.p.work_barrier_y2_frac-.05));
+                                   static_cast<float>(r.p.work_barrier_y2_frac-.1));
             Lane(far,"Q7: rào xa trong vùng tiếp cận chưa dừng khi cảm biến lỗi");
             Expect(far.cmd.cms<=r.p.approach_cms,far,"Rào xa vẫn kẹp tốc độ tiếp cận");
             for (int i=1;i<=r.p.vote_min;++i) {
@@ -301,8 +316,8 @@ void T74(const std::string& name) {
         Rig defaults;
         const float near=static_cast<float>(defaults.p.work_barrier_y2_frac*720);
         const Sample samples[]={{.5f,.25f,near,true},{.5f,.75f,near,true},
-            {.499f,.5f,576,false},{.9f,.2499f,576,false},{.9f,.7501f,576,false},
-            {.9f,.5f,near-.1f,false}};
+            {.499f,.5f,576,false},{.9f,.2499f,576,false},{.9f,.8201f,576,false},
+            {.9f,.75f,near-.1f,false},{.9f,.5f,near-36.1f,false},{.5f,.5f,near-36.f,true}};
         for (const auto& s:samples) {
             context="biên conf="+std::to_string(s.conf)+" tâm="+std::to_string(s.cx)+
                     " đáy="+std::to_string(s.y2_px);
@@ -345,8 +360,8 @@ void Q7(const std::string& name) {
             stopped(r.votes({"work_barrier"}));
             const std::vector<std::string> labels=moved==0?std::vector<std::string>{}:
                 std::vector<std::string>{"work_barrier"};
-            const float cx=moved==2?.2499f:(moved==3?.7501f:.5f);
-            const float y2=moved==1?static_cast<float>(r.p.work_barrier_y2_frac-.05):.8f;
+            const float cx=moved==2?.2499f:(moved==3?.8201f:.5f);
+            const float y2=moved==1?static_cast<float>(r.p.work_barrier_y2_frac-.1):.8f;
             Lane(r.votes(labels,r.p.vote_window,.9f,cx,y2),"Q7: rào hết phiếu/xa/ngoài tâm thì nhả dừng");
             r.in.sensor_ok=true;
             Lane(r.send(labels,.9f,cx,y2,1),"Q7: bắt đầu hồi khi rào đã chuyển");
