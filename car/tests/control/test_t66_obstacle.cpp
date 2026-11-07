@@ -101,7 +101,9 @@ void Params(const char *yaml, const char *temporary) {
     }
 }
 void SwerveTests() {
-    { Rig r; auto plan=r.pass(); double distance=0;
+    { Rig r; r.p.slow_per_deg=0; const double normal_cms=r.step().cmd.cms;
+      Check(normal_cms>r.p.approach_cms,"Thiết lập tốc độ thường phải cao hơn tốc độ né");
+      auto plan=r.pass(); double distance=0;
       for(int n=0;n<1000;++n) {
           distance+=plan.cmd.cms*0.05;
           plan=r.step();
@@ -109,7 +111,24 @@ void SwerveTests() {
               Check(plan.reason=="NE_QUA" && plan.reference==LaneRef::LEFT,"Về trước đủ quãng");
           } else {
               Check(plan.reason=="VE_PHAI" && plan.reference==LaneRef::RIGHT,"Không về đúng quãng");
-              Check(r.step().reason=="BAM_LAN","VE_PHAI không chỉ một nhịp");
+              double return_distance=0;
+              for(int m=0;m<1000;++m) {
+                  Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
+                        plan.reference==LaneRef::RIGHT && plan.cmd.cms>0 &&
+                        plan.cmd.cms<=r.p.approach_cms && plan.debug.reason=="VE_PHAI",
+                        "Suốt pha về phải giữ RIGHT/VE_PHAI và kẹp tốc độ né");
+                  return_distance+=plan.cmd.cms*0.05;
+                  plan=r.step();
+                  if(return_distance+1e-9<r.p.obstacle_pass_cm)
+                      Check(plan.reason=="VE_PHAI","Kết thúc về phải trước đủ quãng");
+                  else {
+                      Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
+                            plan.reference==LaneRef::RIGHT && plan.cmd.cms==normal_cms,
+                            "Hết quãng về phải phải trả BAM_LAN và tốc độ thường");
+                      break;
+                  }
+                  Check(m<999,"Không kết thúc pha về phải");
+              }
               r.left(); break;
           }
           Check(n<999,"Không kết thúc né");
@@ -204,6 +223,24 @@ void SwerveTests() {
               Check(plan.reason=="NE_QUA","Nhịp không đều/tốc độ thay đổi cộng sai quãng");
           else { Check(plan.reason=="VE_PHAI","Nhịp không đều không về đủ quãng"); break; }
           Check(n<99,"Nhịp không đều kẹt pha");
+      }
+      distance=0;
+      for(int n=0;n<100;++n) {
+          const int dt=n%2 ? 130 : 70;
+          distance+=plan.cmd.cms*dt/1000.0;
+          r.p.approach_cms=n>=10 && n<15 ? 0 : (n%2 ? 2 : 5);
+          r.now+=dt-50; plan=r.step();
+          if(distance<r.p.obstacle_pass_cm-1e-9)
+              Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
+                    plan.reference==LaneRef::RIGHT && plan.cmd.cms>=0 &&
+                    plan.cmd.cms<=r.p.approach_cms,
+                    "Pha về phải nhịp/tốc độ thay đổi phải tích phân lệnh đã gửi");
+          else {
+              Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
+                    plan.reference==LaneRef::RIGHT,"Nhịp không đều không kết thúc về phải đủ quãng");
+              break;
+          }
+          Check(n<99,"Nhịp không đều kẹt pha về phải");
       }
     }
     { Rig r; r.p.obstacle_pass_cm=10; r.pass(); r.p.approach_cms=0;

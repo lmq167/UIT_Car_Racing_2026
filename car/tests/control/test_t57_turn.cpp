@@ -253,16 +253,34 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA" &&
               plan.reference==control::LaneRef::LEFT,"Đủ quãng khi NE_QUA không được rẽ");
-        bool returned=false;
+        bool returning=false, returned=false;
+        double return_distance=0;
         for (int i=0;i<400;++i) {
-            r.now+=100; plan=r.step();
-            if (plan.reason=="VE_PHAI") {
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT,"VE_PHAI phải trả làn trước khi rẽ");
+            if (returning) return_distance+=plan.cmd.cms*0.1;
+            r.now+=100;
+            r.in.detections={{},r.now,++r.frame};
+            plan=r.step();
+            if (returning && return_distance+1e-9>=r.p.obstacle_pass_cm) {
+                Check(plan.state==control::PlannerState::BAM_LAN ||
+                      (!cancel && plan.state==control::PlannerState::RE_TRAI),
+                      "Hết VE_PHAI mới được bắt đầu rẽ nếu còn armed");
+                if (plan.state==control::PlannerState::BAM_LAN)
+                    Check(plan.reason=="BAM_LAN" && plan.reference==control::LaneRef::RIGHT,
+                          "Hết VE_PHAI khi chưa rẽ phải trở về bám làn phải; nhận "+plan.reason+
+                          " ref="+std::to_string(static_cast<int>(plan.reference))+
+                          " quãng="+std::to_string(return_distance));
                 returned=true; break;
             }
+            if (plan.reason=="VE_PHAI") {
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                      plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms,
+                      "Suốt VE_PHAI phải trả làn, kẹp tốc độ và không rẽ");
+                returning=true; continue;
+            }
+            Check(!returning,"VE_PHAI không được kết thúc trước đủ quãng lệnh gửi");
             Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA","Chưa hết pha né không được bắt đầu rẽ");
         }
-        Check(returned,"Phải kết thúc pha né trong giới hạn mô phỏng");
+        Check(returned,"Phải kết thúc cả pha né và về phải trong giới hạn mô phỏng");
         r.now+=40; plan=r.step();
         Check(plan.state==(cancel?control::PlannerState::BAM_LAN:control::PlannerState::RE_TRAI),
               cancel?"Đã hủy thì về bám làn không rẽ lại":"Về bám làn thường mới được rẽ");

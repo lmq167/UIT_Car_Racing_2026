@@ -1293,6 +1293,8 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
         fresh_since = max(imu[0], encoder[0])
     run.t57_imu = run.t57_encoder = True
     step = run.values.get('turn_start_cm', 30)
+    need(0 < step <= run.values.get('turn_arm_cm', 80),
+         'Bước encoder hồi phải dương và không vượt turn_arm_cm', 'setup')
     run.t57_odo = getattr(run, 't57_odo', 0) + step
     def lane_only():
         t73_add_lane(run, mark, lane_mark)
@@ -1328,10 +1330,19 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
         run.wait(idle_sign, 10, 'Chưa có biển mới frame126 sau lỗi khi idle')
     run.wait(lambda: enough(resumed[0], first), 10, 'Thiếu biển mới đủ phiếu sau hồi cảm biến')
     run.frames(3, lane_only)
-    run.t57_odo += step
-    turn = run.wait(lambda: next((e for e in run.of('state', first) if
-                    e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')), None),
-                    3, 'Mẫu tươi >=1000 ms và biển/quãng mới không cho rẽ lại')
+    attempts, next_step = 0, td.now_ms()
+    def turning():
+        nonlocal attempts, next_step
+        turn = next((e for e in run.of('state', first) if
+                     e[2] == ('RE_TRAI' if direction == 'left' else 'RE_PHAI')), None)
+        if turn:
+            return turn
+        # Planner có thể nhận biển sau bước đầu; giữ chung hạn 3 s cho tối đa ba bước.
+        if attempts < 3 and td.now_ms() >= next_step:
+            run.t57_odo += step
+            attempts += 1
+            next_step = td.now_ms() + 1000
+    turn = run.wait(turning, 3, 'Mẫu tươi >=1000 ms và biển/quãng mới không cho rẽ lại')
     need(turn[0] >= fresh_since + 1000, 'Rẽ lại trước đủ 1000 ms mẫu tươi', 't73_recover')
     need(not any(e[2] == 'DUNG' for e in run.of('state', mark)) and
          not any(motor_zero(e) or (e[1] == 'motor_speed' and e[2] <= 0 and not e[3])
@@ -3712,13 +3723,15 @@ def selftest():
         fails(lambda: t73_add_fresh(SyntheticRun(gap), 0, 400), 'setup')
     # Q9: bộ kiểm hồi phải bắt rẽ sớm, dùng lại phiếu cũ, khóa cả lượt và mẫu đứt quãng.
     class RecoveryRun(SyntheticRun):
-        def __init__(self, direction, bad=None):
+        def __init__(self, direction, bad=None, planner_after_step=0):
             super().__init__([(0, 'state', 'BAM_LAN', False), (0, 'motor_speed', 15, False),
                               (0, 'inject', '0 imu_sample 0 0', False),
                               (0, 'inject', '0 encoder_sample 0', False)])
             self.clock, self.t57_odo, self.yolo, self.resumes, self.late_votes = 0, 0, False, 0, 0
             self.direction, self.bad = direction, bad
             self.late_mode, self.armed_odo = False, None
+            self.planner_after_step, self.recovery_odo = planner_after_step, None
+            self.encoder_steps, self.turn_started = [], None
             self.values.update(vote_min=3)
         def inject(self, command):
             event = (self.clock, 'inject', '0 ' + command, False)
@@ -3727,9 +3740,15 @@ def selftest():
                 assert command in ('yolo_throw_on', 'yolo_throw_off'), 'Hồi cảm biến làm stall model/mask'
                 self.yolo = command == 'yolo_throw_off'
                 self.resumes += int(self.yolo)
+                if self.yolo and self.clock >= 1000:
+                    self.recovery_odo = self.t57_odo
             return event
         def tick(self):
             self.clock += 20
+            if self.recovery_odo is not None:
+                previous = self.encoder_steps[-1][1] if self.encoder_steps else self.recovery_odo
+                if self.t57_odo != previous:
+                    self.encoder_steps.append((self.clock, self.t57_odo))
             for sensor in ('imu', 'encoder'):
                 if not (self.bad == 'stale' and sensor == 'encoder' and 400 < self.clock < 800):
                     self.inject(sensor + '_sample 0' + (' 0' if sensor == 'imu' else ''))
@@ -3739,7 +3758,9 @@ def selftest():
                 self.late_votes += int(self.resumes > 1)
                 if not (self.bad == 'missing_votes' and self.late_votes > 2):
                     self.es.append((self.clock, 'detections', '{} {}'.format(frame, self.clock), False))
-                if self.armed_odo is None and (not self.late_mode or frame >= 120):
+                received = not self.planner_after_step or (self.recovery_odo is not None and
+                           self.t57_odo >= self.recovery_odo + 30 * self.planner_after_step)
+                if self.armed_odo is None and received and (not self.late_mode or frame >= 120):
                     self.armed_odo = self.t57_odo
             early = self.bad == 'early' and self.clock >= 100 and self.t57_odo >= 30
             old = self.bad == 'old_votes' and self.clock >= 1000
@@ -3749,6 +3770,9 @@ def selftest():
             if early or old or (ready and self.bad != 'permanent'):
                 self.es.append((self.clock, 'state', 'RE_TRAI' if self.direction == 'left' else 'RE_PHAI', False))
         def wait(self, predicate, seconds=3, message='', **kwargs):
+            if message.startswith('Mẫu tươi >=1000 ms'):
+                self.turn_started = self.clock
+                assert seconds == 3
             for _ in range(int(seconds * 50)):
                 self.tick()
                 result = predicate()
@@ -3766,12 +3790,30 @@ def selftest():
                 with patch.object(td, 'now_ms', side_effect=lambda: probe.clock):
                     assert t73_recover(probe, 0, direction=direction, fresh_since=fresh_since,
                                        early_votes=early_votes)[0] >= 1000
+        # Planner chỉ nhận biển sau bước 1/2: phải tăng thêm bước, vẫn chung hạn 3 s.
+        for delayed in (1, 2, 3):
+            probe = RecoveryRun(direction, planner_after_step=delayed)
+            with patch.object(td, 'now_ms', side_effect=lambda: probe.clock):
+                if delayed < 3:
+                    assert t73_recover(probe, 0, direction=direction)[0] >= 1000
+                else:
+                    fails(lambda: t73_recover(probe, 0, direction=direction), 't73_recover')
+            assert len(probe.encoder_steps) == min(delayed + 1, 3)
+            assert probe.clock - probe.turn_started <= 3000
+            previous = probe.recovery_odo
+            for stamp, odo in probe.encoder_steps:
+                assert odo - previous == 30 and odo - previous <= probe.values.get('turn_arm_cm', 80)
+                previous = odo
+            if delayed < 3:
+                assert probe.t57_odo - probe.armed_odo == 30
     for bad, tag in (('early', 't73_lane'), ('old_votes', 't73_lane'),
                      ('permanent', 't73_recover'), ('stale', 'setup'),
                      ('missing_votes', 't73_recover'), ('stop', 't73_recover')):
         probe = RecoveryRun('left', bad)
         with patch.object(td, 'now_ms', side_effect=lambda: probe.clock):
             fails(lambda: t73_recover(probe, 0), tag)
+        if bad == 'permanent':
+            assert len(probe.encoder_steps) == 3 and probe.clock - probe.turn_started == 3000
     assert len(CASES) == len(set(CASES))
     cmake = (HERE / 'tests.cmake').read_text(encoding='utf-8')
     for case in CASES:
