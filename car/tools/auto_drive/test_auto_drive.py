@@ -384,14 +384,17 @@ def no_motion(run, stamp, tag='latched'):
                  for e in run.events()), 'Có motor/servo khác0 sau mốc dừng', tag)
 
 
-def stopping_pair(events, stamp, tag='stop_order'):
-    es = [e for e in events if e[1] in ('motor_speed', 'motor_emergency', 'servo_angle')]
-    motors = [i for i, e in enumerate(es) if e[0] >= stamp and motor_zero(e)]
+def stopping_pair(events, stamp, tag='stop_order', mark=0):
+    kinds = ('motor_speed', 'motor_emergency', 'servo_angle')
+    es = [e for e in events if e[1] in kinds]
+    first_new = sum(e[1] in kinds for e in events[:mark])
+    motors = [i for i, e in enumerate(es) if i >= first_new and e[0] >= stamp and motor_zero(e)]
     if not motors:
         return None
     first = motors[0]
-    # Giữ lệnh trước mốc để không nhầm servo 0 của cặp chạy thẳng với lệnh dừng.
-    zeros = [i for i, e in enumerate(es) if e[0] >= stamp and e[1] == 'servo_angle' and e[2] == 0 and not e[3]
+    # Lệnh trước mark chỉ làm ngữ cảnh cặp chạy thẳng, không được nhận làm ứng viên dừng.
+    zeros = [i for i, e in enumerate(es) if i >= first_new and e[0] >= stamp and
+             e[1] == 'servo_angle' and e[2] == 0 and not e[3]
              and not (i > 0 and es[i - 1][1] == 'motor_speed' and es[i - 1][2] != 0)]
     if not zeros:
         return None
@@ -402,7 +405,7 @@ def stopping_pair(events, stamp, tag='stop_order'):
 def stopped(run, stamp, limit, tag='stop_order', after=None, mark=0):
     """A27: cắt sau tác nhân, kiểm motor thực/thứ tự; S chỉ cộng đúng một lần."""
     def pair():
-        return stopping_pair(run.events()[mark:], stamp if after is None else after, tag)
+        return stopping_pair(run.events(), stamp if after is None else after, tag, mark=mark)
     result = run.wait(pair, (limit + run.slack) / 1000.0 + 1, 'Thiếu cặp dừng', alive=False, tag=tag)
     need(0 <= result[0][0] - stamp <= limit + run.slack,
          'Motor0 trễ {} ms, trần {}'.format(result[0][0] - stamp, limit + run.slack), tag)
@@ -522,7 +525,7 @@ def held(run, mark):
 
 def stop_tail(run, stamp, mark):
     events = run.events()
-    pair = stopping_pair(events[mark:], stamp)
+    pair = stopping_pair(events, stamp, mark=mark)
     need(pair is not None, 'Thiếu cặp dừng trong đoạn trace mới')
     return next(i for i in range(mark, len(events)) if events[i] is pair[1]) + 1
 
@@ -859,6 +862,19 @@ def t57_wait(run, predicate, message):
     return run.wait(predicate, 10, message)
 
 
+def t57_fresh(run):
+    """Chỉ tiêm lỗi khi vòng điều khiển đã nhận đủ hai mẫu tốt, còn tươi."""
+    since = external_stamp_ms()
+    def ready():
+        return next((row for row in reversed(run.rows()) if
+                     since <= float(row['command_ms']) <= td.now_ms() and
+                     td.now_ms() - float(row['command_ms']) <= 200 and
+                     row['yaw_deg'] != '' and row['odo_cm'] != '' and
+                     float(row['yaw_deg']) == getattr(run, 't57_yaw', 0) and
+                     float(row['odo_cm']) == getattr(run, 't57_odo', 0)), None)
+    return run.wait(ready, 3, 'Chưa tiêu thụ đủ mẫu cảm biến tươi trước lỗi', tag='setup')
+
+
 def t68a_armed(run, mark, since):
     """Giữ encoder tại mốc0 tới khi biển đủ phiếu; J1 không quyết định rẽ."""
     def enough():
@@ -1013,6 +1029,8 @@ def t57_case(case, cfg, root):
                 # T73–2: lỗi cảm biến chỉ hủy khả năng rẽ, không dừng/chốt.
                 stamp, limit, fresh_since = None, 200, None
                 if case.startswith('t57_transient_'):
+                    if idle or '_encoder_' in case:
+                        t57_fresh(r)
                     # Chặn Planner, hồi mẫu ngay sau ack lỗi, trước kỳ lệnh kế.
                     stalled = r.inject('controller_stall'); r.frames(2)
                     before = len(r.of('command'))
@@ -1913,6 +1931,15 @@ def a28_origin(rows, events):
 
 
 def test_case(case, cfg, root):
+    if case in ('t57_transient_encoder_armed', 't57_transient_encoder_turning',
+                't57_transient_idle', 't62_reset_image', 't62_stop_090'):
+        for attempt in range(3):
+            try:
+                return (t57_case if case.startswith('t57_') else t62_case)(case, cfg, root / str(attempt))
+            except Failure as error:
+                if error.tag != 'setup' or attempt == 2:
+                    raise
+                print('THỬ LẠI THIẾT LẬP {} ({}/3): {}'.format(case, attempt + 1, error), file=sys.stderr)
     if case in T73_ADDED_CASES:
         return t73_add_case(case, cfg, root)
     if case.startswith('t62_'):
@@ -3243,6 +3270,10 @@ def selftest():
     assert stamp == 11975221
     same_ms = [(11975221.0, 'motor_speed', 0, False), (11975221.0, 'servo_angle', 0, False)]
     assert stopping_pair(same_ms, stamp) == tuple(same_ms)
+    assert stopping_pair(same_ms, stamp, mark=1) is None
+    assert stopping_pair(same_ms * 2, stamp, mark=2) == tuple(same_ms)
+    fails(lambda: stopping_pair(same_ms + [(stamp, 'servo_angle', 0, False)] + same_ms,
+                                stamp, mark=2), 'stop_order')
     straight = [(0, 'motor_speed', 7.98, False), (1, 'reason', 'BAM_LAN', False),
                 (2, 'servo_angle', 0, False), (3, 'motor_speed', 0, False),
                 (4, 'servo_angle', 0, False)]
@@ -3542,6 +3573,18 @@ def selftest():
     assert t62_control_mark(sync, batches[-1], samples[-1]) == (145, 12)
     assert red_stop(sync, 120, 0, consumed=True) == 14
     fails(lambda: red_stop(SyntheticRun(control), 120, 0), 'stop_order')
+    # command chen giữa motor15/servo0: chỉ vòng CSV đã tiêu thụ lô đỏ mới là tác nhân.
+    interleaved = control[:10] + [(145, 'motor_speed', 15, False), control[11],
+                                 (145, 'servo_angle', 0, False)] + control[12:]
+    ordered = SyntheticRun(interleaved)
+    ordered.rows, ordered.wait = sync.rows, setup_wait
+    assert red_stop(ordered, 120, 0, consumed=True) == 15
+    for bad in ([(146, 'servo_angle', 0, False), (147, 'motor_speed', 0, False),
+                 (148, 'servo_angle', 0, False)],
+                [(366, 'motor_speed', 0, False), (367, 'servo_angle', 0, False)]):
+        broken = SyntheticRun(interleaved[:13] + bad + [control[-1]])
+        broken.rows, broken.wait = sync.rows, setup_wait
+        fails(lambda: red_stop(broken, 120, 0, consumed=True), 'stop_order')
     missing = samples.pop(1)
     fails(lambda: t62_consumed(sync, batches), 'setup')
     samples.insert(1, dict(missing, det_captured_ms='111'))
@@ -3554,6 +3597,58 @@ def selftest():
     fails(lambda: t62_window([], [], 0, 100, 5, 'TIEP_CAN_DEN_DO', setup=True), 'setup')
     fails(lambda: t62_window([(1, 'motor_speed', 15, False)], [], 0, 100, 5,
                             'TIEP_CAN_DEN_DO', setup=True), 't62_window')
+    # Mẫu tốt phải thuộc lệnh mới; chờ có hạn, không nhận số cũ/ô lỗi làm tiền đề.
+    good = dict(command_ms='1000', yaw_deg='0', odo_cm='30')
+    fresh = SyntheticRun([])
+    fresh.t57_odo = 30
+    fresh.wait = setup_wait
+    with patch.object(td, 'now_ms', return_value=1000):
+        fresh.rows = lambda: [good]
+        assert t57_fresh(fresh) == good
+        for bad in (dict(good, command_ms='999'), dict(good, command_ms='1001'),
+                    dict(good, yaw_deg=''), dict(good, odo_cm=''), dict(good, odo_cm='0')):
+            fresh.rows = lambda: [bad]
+            fails(lambda: t57_fresh(fresh), 'setup')
+        pending = iter([[], [dict(good, odo_cm='')], [good]])
+        fresh.rows = lambda: next(pending)
+        def fresh_wait(predicate, seconds, message, **kwargs):
+            assert seconds == 3 and kwargs['tag'] == 'setup'
+            for _ in range(3):
+                result = predicate()
+                if result:
+                    return result
+            raise Failure('setup', message)
+        fresh.wait = fresh_wait
+        assert t57_fresh(fresh) == good
+    with patch('{}.external_stamp_ms'.format(__name__), return_value=0), \
+            patch.object(td, 'now_ms', return_value=1000):
+        fresh.wait = setup_wait
+        fresh.rows = lambda: [dict(good, command_ms='800')]
+        assert t57_fresh(fresh)
+        fresh.rows = lambda: [dict(good, command_ms='799')]
+        fails(lambda: t57_fresh(fresh), 'setup')
+    # Chỉ năm ca được giao thử lại setup; lỗi hợp đồng phải dừng ngay lần đầu.
+    for case in ('t57_transient_encoder_armed', 't57_transient_encoder_turning',
+                 't57_transient_idle', 't62_reset_image', 't62_stop_090'):
+        target = 't57_case' if case.startswith('t57_') else 't62_case'
+        with patch('{}.{}'.format(__name__, target)) as execute, patch('sys.stderr'):
+            execute.side_effect = [Failure('setup', 'trễ mẫu/lô'), Failure('setup', 'trễ mẫu/lô'), None]
+            test_case(case, None, Path('synthetic'))
+            assert [call[0][2] for call in execute.call_args_list] == [Path('synthetic') / str(i) for i in range(3)]
+            execute.reset_mock()
+            execute.side_effect = [Failure('setup', 'hết lượt')] * 3
+            fails(lambda: test_case(case, None, Path('synthetic')), 'setup')
+            assert execute.call_count == 3
+            for tag in ('interface', 't57_cancel', 't57_transient', 'stop_order', 'red_votes', 't62_window'):
+                execute.reset_mock(); execute.side_effect = Failure(tag, 'lỗi hợp đồng')
+                fails(lambda: test_case(case, None, Path('synthetic')), tag)
+                assert execute.call_count == 1
+    # Đường gọi thật của 0,90 phải xác nhận lô đã tiêu thụ.
+    with patch('{}.running'.format(__name__)) as start, patch('{}.red_stop'.format(__name__)) as stop:
+        run = start.return_value.__enter__.return_value
+        run.events.return_value = []
+        t62_case('t62_stop_090', None, Path('synthetic'))
+        stop.assert_called_once_with(run, 120, 0, consumed=True)
     class RedRetry(SyntheticRun):
         def __init__(self, gaps):
             super().__init__([(0, 'detections', '1 0', False)])
