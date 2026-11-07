@@ -326,7 +326,20 @@ void Case(const std::string& name) {
           Check(plan.state==control::PlannerState::BAM_LAN,"Đủ yaw về bám làn");
           for (int i=0;i<6;++i) { plan=box(r,0.5f,0.80f); Check(plan.state==control::PlannerState::BAM_LAN,"Rào còn trong ảnh không rẽ lại"); } }
         { Rig r; r.in.sensor_ok=false; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
-          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0,"IMU lỗi: không rẽ, không dừng"); }
+          Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN",
+                "IMU lỗi + rào gần: dừng trước rào, không rẽ");
+          for (int i=0;i<5;++i) plan=box(r,0.5f,0.58f);
+          Check(plan.cmd.cms>0 && plan.reason!="DUNG_RAO_LOI_CAM_BIEN","IMU lỗi + rào còn xa: chưa dừng");
+          r.in.stop=true; plan=box(r,0.5f,0.80f); r.in.stop=false;
+          r.in.go=true; plan=box(r,0.5f,0.80f); r.in.go=false;
+          for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.cmd.cms>0 && plan.state==control::PlannerState::BAM_LAN,"Space rồi G: đi tiếp qua rào đang thấy, không rẽ"); }
+        { Rig r; r.in.yaw_deg=5; control::Plan plan;
+          r.now+=40; r.in.sensor_ms=r.now-300; r.step(true,false);  // lỗi tạm
+          for (int i=0;i<r.p.vote_min;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN","Lỗi tạm + rào gần: dừng");
+          for (int i=0;i<30 && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
+          Check(plan.state==control::PlannerState::RE_TRAI,"Hồi lỗi tạm (1 s tươi): rẽ trái qua rào"); }
     } else if (name=="roundabout") {
         // Đếm lần qua bằng phiếu round_barrier; sau lần 1 đi rb_turn1_cm rồi RE_TRAI; sau lần 2 RE_PHAI;
         // trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.

@@ -65,7 +65,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                           now_ms-input.mask_ms<=params.mask_max_age_ms;
     const bool sensor_bad=!input.sensor_ok || !std::isfinite(input.yaw_deg) || !std::isfinite(input.odo_cm) ||
         input.sensor_ms<0 || input.sensor_ms>now_ms || now_ms-input.sensor_ms>200;
-    bool entered_wait=false, released=false, barrier_slow=false;
+    bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false;
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
@@ -78,6 +78,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.state=state_; plan.reason=image_fresh ? "go ignored MAT_NAN_CU" : "go ignored MAT_ANH";
             plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
         }
+        if(turn_fault_) barrier_done_=true;  // G khi rẽ lỗi: đi tiếp qua rào đang thấy (hết phiếu rào thì tự xoá)
         state_=!input.yolo_enabled ? PlannerState::BAM_LAN : red_latched_ ? PlannerState::DUNG_DEN_DO :
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
@@ -184,6 +185,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
             turn_ms_=progress_ms_=now_ms; state_=PlannerState::RE_TRAI;
         }
+        // Rào gần mà không rẽ được (lỗi cảm biến tạm hoặc IMU lỗi từ khởi động): dừng trước rào, không đi thẳng.
+        // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
+        barrier_fault_stop=params.work_barrier_action && params.turn_enable && turn_fault_ && !barrier_done_ && !rb_present &&
+            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min;
         // Ngã T không biển sau vòng xuyến: đi thêm rb_turn1/2_cm rồi rẽ; còn phiếu round_barrier thì không rẽ.
         if(rb_pending_ && params.turn_enable && !turn_fault_ && !turn_direction_ && !rb_present && !rb_holding_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE &&
@@ -359,6 +364,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(cancelled) plan.reason=plan.debug.reason="HUY_RE";
     if(sensor_cancelled && result.debug.state=="BAM_LAN") plan.reason=plan.debug.reason="HUY_RE_CAM_BIEN";
+    if(barrier_fault_stop) { plan.cmd.cms=0; plan.reason=plan.debug.reason="DUNG_RAO_LOI_CAM_BIEN"; plan.debug.speed_cms=0; }
     if(person_hold) { plan.cmd.cms=0; plan.reason=plan.debug.reason="NGUOI_DI_BO"; plan.debug.speed_cms=0; }
     sent_angle_=plan.cmd.deg; command_ms_=now_ms;
     return plan;
