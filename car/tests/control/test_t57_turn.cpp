@@ -468,6 +468,19 @@ void Case(const std::string& name) {
         r.in.sensor_ok=false;
         for (int i=0;i<6;++i) { r.now+=50; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
         Check(plan.state==control::PlannerState::BAM_LAN,"Hỏng quá 250 ms phải hủy rẽ");
+    } else if (name=="sign_nan_odo") {
+        // Mẫu hỏng (odo NaN) đúng lúc đủ phiếu biển: không chốt hướng với mốc NaN; sau khi hồi vẫn rẽ được.
+        Rig r; r.in.odo_cm=std::numeric_limits<double>::quiet_NaN(); r.in.sensor_ok=false;
+        for (int i=0;i<r.p.vote_min;++i) { r.now+=40; r.in.detections={{{"left",cv::Rect2f(600,100,80,80),0.9f,r.now}},r.now,++r.frame}; r.planner.Step((r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now,r.in),r.now,r.p); }
+        r.in.odo_cm=100; r.in.sensor_ok=true;
+        r.advance(0);   // không còn lô biển mới để dời mốc: phiếu cũ phải chốt hướng với mốc quãng hợp lệ
+        r.advance(r.p.turn_start_cm);
+        Check(control::StateName(r.advance(1).state)==std::string("RE_TRAI"),"Sau khi cảm biến hồi biển vẫn được rẽ (không kẹt mốc NaN)");
+    } else if (name=="barrier_sensor_hold") {
+        // Rào gần mà cảm biến vừa hỏng (chưa tới 250 ms): không tiến thẳng vào rào với tốc độ bám làn.
+        Rig r; r.in.sensor_ok=false; control::Plan plan;
+        for (int i=0;i<4;++i) { r.now+=40; r.in.detections={{{"work_barrier",cv::Rect2f(600,400,80,80),0.9f,r.now}},r.now,++r.frame}; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
+        Check(plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN","Rào gần + cảm biến hỏng thoáng qua: dừng ngay");
     } else if (name=="sign_min_width") {
         // Biển hẹp (xa/chặng khác) không tính phiếu; đủ rộng thì tính.
         for (float width:{30.0f,44.0f,45.0f,80.0f}) {
