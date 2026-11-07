@@ -170,6 +170,11 @@ RowDebug LaneController::SwerveRow(const cv::Mat &mask, int y, size_t i, double 
     if(swerve_dir_>0) { row.right=d_x_[i]; row.left=row.right-width; }
     else { row.left=d_x_[i]; row.right=row.left+width; }
     row.center=(row.left+row.right)/2; row.valid=true;
+    // Về làn phải: kẹp sai số tối đa để lái êm (log 07/11: sai số bão hoà làm lái -35 độ rồi lao khỏi đường).
+    if(swerve_dir_<0) {
+        const double axis=mask.cols/2.0+params.center_offset_frac*mask.cols;
+        row.center=std::min(row.center,axis+0.5*(mask.cols/2.0));
+    }
     return row;
 }
 ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,

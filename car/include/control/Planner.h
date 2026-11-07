@@ -33,7 +33,7 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
@@ -56,6 +56,8 @@ private:
     bool rb_holding_=false; // Đang GIU_HUONG (bước trước): không bắt đầu rẽ/rào/né.
     bool person_stop_=false; // Đủ phiếu người đi bộ: lệnh tốc độ 0, giữ nguyên state.
     bool barrier_turn_=false; // Lượt rẽ hiện tại do rào khởi động.
+    bool barrier_wide_turn_=false; // Rào lệch phải (work 2: vào đường 2 làn); sai: work 1 vào đường 1 làn.
+    double return_e_=1; // Sai số làn lần cuối khi về làn phải (VE_PHAI).
     bool barrier_done_=false; // Đã rẽ vì rào: bỏ qua rào tới khi hết phiếu rào (qua cả Space/G).
     bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;

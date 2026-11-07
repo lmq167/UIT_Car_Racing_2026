@@ -11,8 +11,13 @@ constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
-double TurnSteer(const ControlParams &p, int direction, bool barrier_turn) {
-    const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*0.8 : p.turn_steer_deg;
+// Rào work 1 (vào đường 1 làn) lệch giữa (tâm hộp 0,43-0,54), work 2 (vào đường 2 làn) lệch phải (0,70-0,71): đo ở hai phiên 07/11.
+constexpr double kWideBarrierCx=0.62, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
+// Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
+constexpr double kRightTurnYawFactor=0.92;
+constexpr double kReturnMaxError=0.5, kReturnAlignedError=0.12, kReturnCapFactor=5;
+double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
+    const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
 }
 // Sai số góc gói về [-180, 180).
@@ -50,7 +55,7 @@ const char *StateName(PlannerState state) {
     return "DUNG";
 }
 void Planner::ClearTurn() {
-    turn_direction_=0; turning_=false; barrier_turn_=false;
+    turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
@@ -91,7 +96,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
-    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_seen=false,round=false,people=false; double red_x=0;
+    bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,people=false; double red_x=0;
     bool cancelled=false, sensor_cancelled=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
@@ -156,7 +161,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
                 barrier_seen=barrier_seen || bottom>=params.work_barrier_y2_frac-0.10;
-                barrier_near=barrier_near || (bottom>=params.work_barrier_y2_frac && center>=0.25 && center<=0.75);
+                // Work 2 (hộp lệch phải) vào đường 2 làn: dải tâm tới 0,82; work 1 (hộp giữa) kích hoạt sớm hơn 0,05 theo đáy hộp.
+                const bool wide=center>=kWideBarrierCx;
+                const bool near_wide=wide && bottom>=params.work_barrier_y2_frac && center<=kWideBarrierMaxCx;
+                const bool near_narrow=!wide && center>=0.25 && bottom>=params.work_barrier_y2_frac-kNarrowBarrierEarly;
+                barrier_near=barrier_near || near_wide || near_narrow;
+                barrier_wide=barrier_wide || near_wide;
             }
             else { left=left || signLeft; right=right || signRight; }
         }
@@ -166,15 +176,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             sign_batch=fresh && (left || right);  // lô mới có biển hợp lệ (đủ rộng)
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide});
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_seen=0,rounds=0,persons=0;
+        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_wide=0,barriers_seen=0,rounds=0,persons=0;
         for(const auto &v:votes_) {
-            reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_seen+=v.barrier_seen;
+            reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_wide+=v.barrier_wide; barriers_seen+=v.barrier_seen;
             rounds+=v.round; persons+=v.person;
         }
         person_stop_=persons>=params.vote_min;
@@ -195,7 +205,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Rào gần đủ phiếu: rẽ trái ngay bằng máy rẽ IMU (vòng kín theo yaw), chốt quyết định tới hết rẽ.
         if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_present &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min) {
-            turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true; barrier_turn_=true;
+            turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true; barrier_turn_=true; barrier_wide_turn_=barriers_wide*2>barriers;
             turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
             turn_ms_=progress_ms_=now_ms; state_=PlannerState::RE_TRAI;
         }
@@ -252,7 +262,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         pass_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
     // Pha về làn phải (VE_PHAI) dài bằng quãng né obstacle_pass_cm, kẹp tốc độ như pha né.
     if(return_cm_>=0 && swerve_ms_>=0 && now_ms>swerve_ms_) return_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
-    if(return_cm_>=params.obstacle_pass_cm) return_cm_=-1;
+    // Về làn phải: tối thiểu obstacle_pass_cm; với pair_mode=1 chờ tới khi về tới làn (sai số nhỏ) hoặc đủ kReturnCapFactor lần quãng đó.
+    if(return_cm_>=params.obstacle_pass_cm &&
+       (params.pair_mode!=1 || std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
@@ -289,7 +301,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(true); return_cm_=0;
+        lane_.Reset(true); return_cm_=0; return_e_=1;
     }
     const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
@@ -297,7 +309,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(!mask_fresh) {
             if(barrier_turn_) barrier_done_=false;  // rẽ rào bị hủy vì mặt nạ cũ: rào còn gần thì xét lại (rẽ hoặc dừng Q7)
             ClearTurn(); state_=PlannerState::BAM_LAN;
-        } else if(turning_ && !sensor_bad && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg) {  // mẫu hỏng (kể cả ±inf) không được coi là đã quay đủ
+        } else if(turning_ && !sensor_bad && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0)) {  // mẫu hỏng (kể cả ±inf) không được coi là đã quay đủ
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(!turning_) {
             if(!sensor_bad && std::abs(input.odo_cm-arm_odo_)>params.turn_arm_cm) { ClearTurn(); cancelled=true; }
@@ -314,7 +326,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     plan.state=state_;
     if(params.turn_enable && turning_ && (state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI)) {
         const double step=sensor_hold_ ? 0 : params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);  // giữ nguyên góc khi mẫu hỏng
-        const double target=turn_direction_*TurnSteer(params,turn_direction_,barrier_turn_);
+        const double target=turn_direction_*TurnSteer(params,turn_direction_,barrier_turn_,barrier_wide_turn_);
         sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
             std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
         command_ms_=now_ms;
@@ -331,6 +343,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
     lane_.SetSwerve(swerve_!=Swerve::NONE ? 1 : returning ? -1 : 0);  // pair_mode=1: theo vạch phân làn khi chuyển làn
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
+    if(returning) return_e_=result.debug.e;
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
