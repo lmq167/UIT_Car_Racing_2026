@@ -23,6 +23,7 @@ struct Rig {
     int64_t now=1000;
     Rig() {
         p.obstacle_action=1; p.start_wait_green=0;
+        p.avoid_min_width_ratio=0.4;
         p.lane1_width_frac={0.8,0.8};  // đường cột 20..180 là một làn
         in.mask=Mask(0,0); in.go=true; step(); in.go=false;
     }
@@ -70,30 +71,30 @@ void Params(const char *yaml, const char *temporary) {
     struct Cleanup { const char *p; ~Cleanup() { std::remove(p); } } cleanup{temporary};
     std::ostringstream report;
     const auto defaults=ControlParams::Load(yaml,report);
-    Check(defaults.obstacle_action==2 && defaults.obstacle_hole_frac==0.10 && defaults.obstacle_pass_cm==40,"Mặc định YAML");
+    Check(defaults.obstacle_action==2 && defaults.obstacle_hole_ratio==0.25 && defaults.obstacle_pass_cm==40,"Mặc định YAML");
     Check(report.str().find("obstacle_action =")==std::string::npos &&
-          report.str().find("obstacle_hole_frac =")==std::string::npos &&
+          report.str().find("obstacle_hole_ratio =")==std::string::npos &&
           report.str().find("obstacle_pass_cm =")==std::string::npos,"YAML thiếu khóa mới");
     auto load=[&](const std::string &body) {
         { std::ofstream out(temporary); out << "%YAML:1.0\n---\n" << body; }
         return ControlParams::Load(temporary,report);
     };
     const auto missing=load("{}");
-    Check(missing.obstacle_action==2 && missing.obstacle_hole_frac==0.10,"Mặc định khi thiếu khóa");
+    Check(missing.obstacle_action==2 && missing.obstacle_hole_ratio==0.25,"Mặc định khi thiếu khóa");
     for(bool action:{false,true}) {
         auto invalid=missing;
-        if(action) invalid.obstacle_action=3; else invalid.obstacle_hole_frac=0.01;
+        if(action) invalid.obstacle_action=3; else invalid.obstacle_hole_ratio=0;
         bool rejected=false;
         try { invalid.Validate(); } catch(const std::exception &) { rejected=true; }
         Check(rejected,"Validate bỏ qua miền khóa mới");
     }
-    for(const auto &body:{"obstacle_action: 0\nobstacle_hole_frac: 0.02\n",
-                          "obstacle_action: 1\nobstacle_hole_frac: 0.5\n",
+    for(const auto &body:{"obstacle_action: 0\nobstacle_hole_ratio: 0.02\n",
+                          "obstacle_action: 1\nobstacle_hole_ratio: 0.5\n",
                           "obstacle_action: 2\nobstacle_pass_cm: 10\n", "obstacle_pass_cm: 200\n"}) load(body);
     for(const auto &body:{"obstacle_action: -1", "obstacle_action: 3", "obstacle_action: 0.5",
-                          "obstacle_action: abc", "obstacle_action: [1]", "obstacle_hole_frac: 0.019",
-                          "obstacle_hole_frac: 0.501", "obstacle_hole_frac: .Nan",
-                          "obstacle_hole_frac: abc", "obstacle_hole_frac: [0.1]",
+                          "obstacle_action: abc", "obstacle_action: [1]", "obstacle_hole_ratio: 0",
+                          "obstacle_hole_ratio: 1.001", "obstacle_hole_ratio: .Nan",
+                          "obstacle_hole_ratio: abc", "obstacle_hole_ratio: [0.1]",
                           "obstacle_pass_cm: 9.99", "obstacle_pass_cm: 200.01",
                           "obstacle_pass_cm: .Nan", "obstacle_pass_cm: abc", "obstacle_pass_cm: [40]"}) {
         bool rejected=false;
@@ -149,13 +150,13 @@ void SwerveTests() {
       }
       Check(r.step().reason=="VE_PHAI","Lỗ lại làm kẹt pha");
     }
-    { Rig r; r.p.obstacle_hole_frac=0.2; r.left();
-      r.in.mask=Mask(100,20); // Tỉ lệ giữa ngưỡng thả 0,1 và ngưỡng vào 0,2.
-      for(int n=0;n<10;++n) Check(r.step().reason=="NE_TRAI","Ngưỡng trễ né bị thả sớm");
+    { Rig r; r.p.obstacle_hole_ratio=0.1; r.left();
+      r.in.mask=Mask(100,20); // Khe 20 px vượt ngưỡng nhận 0,1·160; khe 5 px không đủ.
+      for(int n=0;n<10;++n) Check(r.step().reason=="NE_TRAI","Khe đủ rộng né bị thả sớm");
       r.in.mask=Mask(100,5); for(int n=0;n<r.p.vote_window-1;++n) r.step();
       r.in.mask=Mask(100,20); Check(r.step().reason=="NE_TRAI","Không ngắt chuỗi sạch");
       r.in.mask=Mask(0,0); for(int n=1;n<=r.p.vote_window;++n)
-          Check(r.step().reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Chuỗi ngưỡng trễ né");
+          Check(r.step().reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Chuỗi sạch né");
     }
     for(bool passing:{false,true}) for(int cancel=0;cancel<4;++cancel) {
         Rig r; if(passing) r.pass(); else r.left();
@@ -247,7 +248,7 @@ void SwerveTests() {
     { Rig r; r.p.obstacle_pass_cm=10; r.pass(); r.p.approach_cms=0;
       for(int n=0;n<250;++n) Check(r.step().reason=="NE_QUA","Tốc độ 0 vẫn cộng quãng"); }
     for(int action:{1,2}) {
-        Rig r; r.p.obstacle_hole_frac=16.0/161;
+        Rig r; r.p.obstacle_hole_ratio=8.0/160;
         if(action==1) r.latch(); else r.left();
         r.in.mask=Mask(100,8);
         for(int n=0;n<r.p.vote_window+1;++n) {
@@ -255,15 +256,15 @@ void SwerveTests() {
             Check(action==1 ? plan.state==PlannerState::DUNG_VAT_CAN : plan.reason=="NE_TRAI",
                   "Ngưỡng thả phải dùng nhỏ hơn, không gồm bằng");
         }
-        r.p.obstacle_hole_frac=std::nextafter(r.p.obstacle_hole_frac,1.0);
+        r.p.obstacle_hole_ratio=std::nextafter(r.p.obstacle_hole_ratio,1.0);
         for(int n=1;n<=r.p.vote_window;++n) {
             const auto plan=r.step();
             Check(action==1 ? (plan.state==PlannerState::BAM_LAN)==(n==r.p.vote_window) :
                   plan.reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Biên dưới ngưỡng thả");
         }
     }
-    { Rig r; r.p.obstacle_hole_frac=0.2; r.latch(); r.in.mask=Mask(100,20);
-      for(int n=0;n<10;++n) Check(r.step().cmd.cms==0,"Ngưỡng trễ dừng bị thả sớm");
+    { Rig r; r.p.obstacle_hole_ratio=0.1; r.latch(); r.in.mask=Mask(100,20);
+      for(int n=0;n<10;++n) Check(r.step().cmd.cms==0,"Khe đủ rộng dừng bị thả sớm");
       r.in.mask=Mask(100,5);
       for(int n=1;n<=r.p.vote_window;++n)
           Check((r.step().state==PlannerState::BAM_LAN)==(n==r.p.vote_window),"Ngưỡng thả G1b mới"); }
@@ -271,18 +272,17 @@ void SwerveTests() {
 
 void Unit() {
     for(bool above:{false,true}) {
-        Rig r; r.in.mask=Mask(); r.p.obstacle_hole_frac=40.0/161;
-        if(above) r.p.obstacle_hole_frac=std::nextafter(r.p.obstacle_hole_frac,1.0);
+        Rig r; r.in.mask=Mask(); r.p.obstacle_hole_ratio=40.0/160;
+        if(above) r.p.obstacle_hole_ratio=std::nextafter(r.p.obstacle_hole_ratio,1.0);
         Plan plan;
         for(int n=0;n<r.p.vote_min;++n) plan=r.step();
         Check((plan.state==PlannerState::DUNG_VAT_CAN)==!above,"Biên tỉ lệ lỗ dùng sai >=");
     }
-    for(int center:{69,70,170,171}) {
-        Rig r; r.in.mask=Mask(center-10,21);
-        r.in.mask.colRange(181,196).setTo(1); r.in.mask.col(195).setTo(2);
-        Plan plan;
-        for(int n=0;n<r.p.vote_min;++n) plan=r.step();
-        Check((plan.state==PlannerState::DUNG_VAT_CAN)==(center>=70 && center<=170),"Biên hành lang trọng tâm");
+    // Khe không bao quanh (cắt tới biên đường) không tạo vật cản.
+    for(int first:{0,160}) {
+        Rig r; r.in.mask=Mask(first,40); Plan plan;
+        for(int n=0;n<r.p.vote_window;++n) plan=r.step();
+        Check(plan.state==PlannerState::BAM_LAN,"Khe hở ra ngoài đường gây dừng");
     }
     { Rig r; r.latch(); r.in.mask=Mask(0,0);
       for(int n=1;n<=r.p.vote_window;++n) {
@@ -296,7 +296,7 @@ void Unit() {
       r.in.mask=Mask(); r.step(); r.in.mask=Mask(0,0);
       for(int n=1;n<r.p.vote_window;++n) Check(r.step().cmd.cms==0,"Chuỗi sạch phải liên tiếp");
       Check(r.step().state==PlannerState::BAM_LAN,"Không thả sau chuỗi sạch mới"); }
-    for(auto mask:{Mask(25,35),Mask(100,5),cv::Mat(100,200,CV_8UC1,cv::Scalar(0))}) {
+    for(auto mask:{Mask(20,35),Mask(100,5),cv::Mat(100,200,CV_8UC1,cv::Scalar(0))}) {
         Rig r; r.in.mask=mask;
         for(int n=0;n<12;++n) Check(r.step().state==PlannerState::BAM_LAN,"Lỗ ngoài hành lang/nhỏ/rỗng gây dừng");
     }

@@ -1,5 +1,6 @@
 // Unit DEV cho ExtractCorridor (T79 0c): mask tổng hợp 192x320, tham số mặc định control.yaml.
 #include "control/LaneController.h"
+#include "control/Planner.h"
 #include <opencv2/imgproc.hpp>
 #include <cmath>
 #include <iostream>
@@ -30,6 +31,84 @@ cv::Mat Road(const ControlParams &p, double cx, double scale, unsigned char valu
     return mask;
 }
 int ValidRows(const Corridor &c) { int n=0; for(const auto &r:c.rows) n+=r.valid; return n; }
+
+// Kiểm Planner bằng mask một làn cố định: hàng gần nguyên vẹn, các hàng trên có khe.
+struct ObstacleRig {
+    Planner planner;
+    PlannerInput in;
+    ControlParams p;
+    int64_t now=1000;
+    ObstacleRig() {
+        p.start_wait_green=0; p.lane1_width_frac={0.8,0.8}; p.avoid_min_width_ratio=0.4;
+        p.kd=0; p.obstacle_pass_cm=10;
+        Mask(false); in.go=true; Step(); in.go=false;
+    }
+    void Mask(bool hole) {
+        in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
+        in.mask.colRange(20,181).setTo(1);
+        if(hole) in.mask(cv::Rect(90,60,40,35)).setTo(0);
+    }
+    Plan Step(bool sensor=true) {
+        now+=50; in.image_ms=in.mask_ms=now; in.sensor_ms=now; in.sensor_ok=sensor;
+        return planner.Step(in,now,p);
+    }
+    Plan Left() {
+        Mask(true); Plan plan;
+        for(int i=0;i<p.vote_min;++i) plan=Step();
+        Check(plan.reason=="NE_TRAI","Đủ phiếu phải né");
+        return plan;
+    }
+    Plan Pass() {
+        Left(); Mask(false); Plan plan;
+        for(int i=0;i<p.vote_window;++i) plan=Step();
+        Check(plan.reason=="NE_QUA","Đủ mask sạch phải qua");
+        return plan;
+    }
+};
+void PlannerObstacle() {
+    // Một hàng gần có khe chưa đủ phiếu true; hai hàng gần mới đủ.
+    for(int count:{1,2}) {
+        ObstacleRig r;
+        r.Mask(false);
+        const auto rows=ExtractCorridor(r.in.mask,r.p,TrajMode::LANE).rows;
+        for(int i=1;i<=count;++i) r.in.mask(cv::Rect(90,rows[i].y,40,1)).setTo(0);
+        Plan plan;
+        for(int i=0;i<r.p.vote_window;++i) plan=r.Step();
+        Check((plan.reason=="NE_TRAI")== (count==2),"Ứng viên cần ít nhất hai hàng gần");
+    }
+    { ObstacleRig r; r.Left(); r.p.avoid_min_width_ratio=0.75;
+      const auto plan=r.Step();
+      Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" &&
+            plan.cmd.cms==0 && plan.cmd.deg==0,"Mất đường né giữa NE_TRAI phải dừng 0,0");
+      r.Mask(false);
+      for(int n=1;n<=r.p.vote_window;++n) {
+          const auto cleared=r.Step();
+          Check((cleared.state==PlannerState::BAM_LAN)==(n==r.p.vote_window),
+                "Dừng thiếu đường né chỉ nhả sau đủ cửa sổ mask sạch");
+          // Lặp chính mask không được tạo thêm lượt sạch hoặc làm mất số lượt đang đếm.
+          r.now+=1; r.in.image_ms=r.in.sensor_ms=r.now;
+          const auto repeated=r.planner.Step(r.in,r.now,r.p);
+          Check(repeated.state==cleared.state,"Mask trùng làm nhả dừng thiếu đường né");
+      } }
+    { ObstacleRig r; r.Pass();
+      for(int i=0;i<100;++i) Check(r.Step().reason=="NE_QUA","Encoder đứng yên không được cộng quãng lệnh");
+      r.in.odo_cm+=r.p.obstacle_pass_cm;
+      Check(r.Step().reason=="VE_PHAI","Encoder đủ quãng phải về phải");
+      for(int i=0;i<100;++i) Check(r.Step().reason=="VE_PHAI","Encoder đứng yên không kết thúc về phải");
+      r.in.odo_cm+=r.p.obstacle_pass_cm;
+      Check(r.Step().reason=="BAM_LAN","Encoder đủ quãng và e nhỏ phải kết thúc về phải"); }
+    { ObstacleRig r; auto plan=r.Pass(); double distance=0;
+      for(int i=0;i<1000;++i) {
+          distance+=plan.cmd.cms*0.05; r.in.odo_cm+=1000;
+          plan=r.Step(false);
+          if(plan.reason=="VE_PHAI") {
+              Check(distance>=r.p.obstacle_pass_cm,"Cảm biến hỏng không được dùng bước nhảy odo");
+              break;
+          }
+          Check(plan.reason=="NE_QUA" && i<999,"Tích phân lệnh khi cảm biến hỏng phải kết thúc pha");
+      }
+      Check(r.Step().reason=="VE_PHAI","Hồi cảm biến phải lấy mốc mới, không cộng nhảy odo"); }
+}
 
 void OneLane() {
     ControlParams p;
@@ -84,6 +163,7 @@ void Jump() {
     Check(jump,"Thiếu cờ NHAY");
 }
 void Hole() {
+    PlannerObstacle();
     ControlParams p;
     auto mask=Road(p,160,1.0);
     cv::rectangle(mask,cv::Point(170,100),cv::Point(185,175),cv::Scalar(0),cv::FILLED);
