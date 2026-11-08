@@ -28,11 +28,14 @@ const char *TrajModeName(TrajMode mode) {
         case TrajMode::AVOID_LEFT: return "NE_TRAI";
         case TrajMode::RETURN_RIGHT: return "VE_PHAI";
         case TrajMode::ROUNDABOUT: return "VONG_XUYEN";
+        case TrajMode::TURN_LEFT: return "RE_HANH_LANG_TRAI";
+        case TrajMode::TURN_RIGHT: return "RE_HANH_LANG_PHAI";
         default: return "BAM_LAN";
     }
 }
 Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajMode mode) {
     CheckMask(mask);
+    const bool branch=mode==TrajMode::ROUNDABOUT || mode==TrajMode::TURN_LEFT || mode==TrajMode::TURN_RIGHT;
     const int W=mask.cols, H=mask.rows, n=params.corridor_rows;
     const double axis=W/2.0+params.center_offset_frac*W;
     const double y_near=std::lround(params.corridor_bottom_frac*H), y_far=std::lround(params.corridor_top_frac*H);
@@ -65,7 +68,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
                 if(distance<=best) { best=distance; pick={s}; if(distance==0) break; }
             }
             // Khe chứa trục ở hàng gần: giữ hai đoạn đã qua lọc nhiễu để truy vết vật cản.
-            if(mode!=TrajMode::ROUNDABOUT) for(size_t k=1;k<segs.size();++k) {
+            if(!branch) for(size_t k=1;k<segs.size();++k) {
                 if(segs[k-1].r<axis && segs[k].l>axis &&
                    segs[k].r-segs[k-1].l<=params.two_lane_ratio*w*kMergeFactor) {
                     pick={segs[k-1],segs[k]};
@@ -76,9 +79,9 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
             std::vector<Seg> overlap;
             for(const auto &s:segs) if(s.r>=lower_raw.l && s.l<=lower_raw.r) overlap.push_back(s);
             if(overlap.empty()) { stopped=true; corridor.rows.push_back(row); continue; }
-            if(overlap.size()>=2 && mode!=TrajMode::ROUNDABOUT &&
+            if(overlap.size()>=2 && !branch &&
                overlap.back().r-overlap.front().l<=params.two_lane_ratio*w*kMergeFactor) pick=overlap;
-            else if(mode==TrajMode::ROUNDABOUT) pick={overlap.back()};
+            else if(branch) pick={mode==TrajMode::TURN_LEFT ? overlap.front() : overlap.back()};
             else {
                 int best=-1;
                 for(const auto &s:overlap) {
@@ -110,7 +113,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
             const double center=below ? (below->left+below->right)/2 : (raw.l+raw.r)/2.0;
             row.left=center-reference/2; row.right=center+reference/2;
         }
-        if(mode==TrajMode::ROUNDABOUT) {
+        if(branch) {
             row.left=std::max(row.left,double(raw.l));
             row.right=std::min(row.right,double(raw.r));
             if(row.left>row.right) { row.left=raw.l; row.right=raw.r; }  // tâm hàng dưới nằm ngoài đoạn thô

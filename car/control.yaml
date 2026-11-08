@@ -46,6 +46,7 @@ green_box_min_area_frac: 0.0001 # Diện tích xanh tối thiểu, W*H
 off_box_min_area_frac: 0.0001 # Diện tích tắt tối thiểu, W*H
 approach_cms: 5.0 # Tốc độ tiếp cận đỏ, cm/s
 red_stop_x_frac: 0.90 # Mép phải hộp đỏ để dừng, W
+imu_fallback: 0 # TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt
 turn_enable: 1 # Rẽ theo biển bằng IMU và encoder; mặc định bật
 turn_yaw_deg: 80 # TẠM, CHƯA ĐO: góc quay đích, độ (30–120)
 turn_steer_deg: 25 # TẠM, CHƯA ĐO: góc lái cố định, độ (5 đến steer_max_deg)

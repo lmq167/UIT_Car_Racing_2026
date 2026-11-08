@@ -7,7 +7,7 @@
 
 namespace control {
 // Chế độ quỹ đạo do Planner chọn; LaneController chỉ đổi điểm mục tiêu theo chế độ.
-enum class TrajMode { LANE, AVOID_LEFT, RETURN_RIGHT, ROUNDABOUT };
+enum class TrajMode { LANE, AVOID_LEFT, RETURN_RIGHT, ROUNDABOUT, TURN_LEFT, TURN_RIGHT };
 const char *TrajModeName(TrajMode mode);  // "BAM_LAN","NE_TRAI","VE_PHAI","VONG_XUYEN"
 struct Command { double cms=0, deg=0; };
 // Một hàng hành lang (pixel mask). flag_*: "THAT" | "MEP_ANH" | "NHAY".

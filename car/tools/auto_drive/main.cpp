@@ -245,6 +245,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         pi.go=goPending && input.enabled;
                         pi.stop=!input.enabled;
                         const auto now=nowMs();
+                        pi.encoder_ok=std::isfinite(pi.odo_cm) && pi.sensor_ms>=0 &&
+                            pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
@@ -362,6 +364,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 float cm=0;
                 const bool encoderOk=motor.GetPositionCm(&cm);
                 if (encoderOk) sensor.odo_cm=cm;
+                // IMU lỗi khởi tạo không ghi giờ mẫu: dùng giờ đọc encoder để Planner xét encoder_ok (sensor_ok vẫn sai).
+                if (encoderOk && sensor.sensor_ms<0) sensor.sensor_ms=nowMs();
                 sensor.sensor_ok=imuOk && encoderOk && std::isfinite(sensor.yaw_deg) && std::isfinite(sensor.odo_cm);
                 // Giữ nguyên mẫu lỗi tới khi vòng an toàn đã nhận lệnh Planner xử lý đúng mẫu đó.
                 if (!sensorFaultPending) {

@@ -17,6 +17,7 @@ struct PlannerInput {
     double yaw=0, encoder=0;
     double yaw_deg=0, odo_cm=0;
     bool sensor_ok=false;
+    bool encoder_ok=false; // Encoder riêng: hữu hạn và tươi, không phụ thuộc yaw.
     int64_t sensor_ms=-1;
     bool go=false, stop=false;
 };
@@ -70,6 +71,8 @@ private:
     std::string reason_="CHO_G";
     int turn_direction_=0;
     bool turning_=false, turn_fault_=false; // Lỗi rẽ tạm: hết khi cảm biến tươi liên tục 1 s.
+    bool corridor_turn_=false;
+    int corridor_clear_=0;
     int64_t sensor_good_ms_=-1, sensor_bad_since_=-1;
     bool sensor_hold_=false; // Mẫu cảm biến hỏng thoáng qua: dừng giữ góc, chưa hủy rẽ.
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
