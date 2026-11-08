@@ -24,7 +24,7 @@ namespace fs=std::filesystem;
 namespace fs=std::experimental::filesystem;
 #endif
 namespace {
-std::vector<float> ReadNpy(const fs::path &path, const perception::InfoJson &info) {
+std::vector<float> ReadNpy(const fs::path &path, const perception::InfoJson &info, int channels) {
     std::ifstream file(path.string(),std::ios::binary);
     auto fail=[&]() { throw std::runtime_error("NPY v1 <f4 NCHW không hợp lệ: "+path.string()); };
     unsigned char prefix[10]{};
@@ -38,20 +38,22 @@ std::vector<float> ReadNpy(const fs::path &path, const perception::InfoJson &inf
     if(!std::regex_match(header,dims,std::regex(
            "\\s*\\{\\s*'descr'\\s*:\\s*'<f4'\\s*,\\s*"
            "'fortran_order'\\s*:\\s*False\\s*,\\s*"
-           "'shape'\\s*:\\s*\\(\\s*1\\s*,\\s*3\\s*,\\s*([1-9][0-9]*)\\s*,\\s*([1-9][0-9]*)\\s*,?\\s*\\)"
+           "'shape'\\s*:\\s*\\(\\s*1\\s*,\\s*([1-9][0-9]*)\\s*,\\s*([1-9][0-9]*)\\s*,\\s*([1-9][0-9]*)\\s*,?\\s*\\)"
            "\\s*,?\\s*\\}\\s*")) ||
-       std::stoull(dims[1].str())!=size_t(info.input.height) ||
-       std::stoull(dims[2].str())!=size_t(info.input.width)) fail();
+       std::stoull(dims[1].str())!=size_t(channels) ||
+       std::stoull(dims[2].str())!=size_t(info.input.height) ||
+       std::stoull(dims[3].str())!=size_t(info.input.width)) fail();
     const auto payload_pos=file.tellg();
     file.seekg(0,std::ios::end);
     const auto end=file.tellg();
-    const size_t bytes=info.Elements()*sizeof(float);
+    const size_t elements=size_t(info.input.height)*info.input.width*channels;
+    const size_t bytes=elements*sizeof(float);
     if(bytes>size_t(std::numeric_limits<std::streamsize>::max())) fail();
     if(end<payload_pos || static_cast<uint64_t>(end-payload_pos)!=bytes) fail();
     file.seekg(payload_pos);
     const uint16_t endian=1;
     if(*reinterpret_cast<const unsigned char*>(&endian)!=1 || sizeof(float)!=4) fail();
-    std::vector<float> data(info.Elements());
+    std::vector<float> data(elements);
     if(!file.read(reinterpret_cast<char*>(data.data()),bytes)) fail();
     for(float value:data) if(!std::isfinite(value)) fail();
     return data;
@@ -119,8 +121,8 @@ int main(int argc, char **argv) {
         for(size_t index=0;index<images.size();++index) {
             std::ostringstream stem;
             stem<<std::setw(3)<<std::setfill('0')<<index;
-            const auto input_ref=ReadNpy(ref/(stem.str()+"_input.npy"),info);
-            const auto logits_ref=ReadNpy(ref/(stem.str()+"_logits.npy"),info);
+            const auto input_ref=ReadNpy(ref/(stem.str()+"_input.npy"),info,3);
+            const auto logits_ref=ReadNpy(ref/(stem.str()+"_logits.npy"),info,info.num_classes);
             cv::Mat blob;
             const float *input=input_ref.data();
             size_t input_size=input_ref.size();
@@ -131,24 +133,34 @@ int main(int argc, char **argv) {
             }
             const auto comparison=perception::CompareInput(input,input_size,input_ref.data(),input_ref.size());
             double logits_error=0;
-            std::vector<float> logits(info.Elements());
+            std::vector<float> logits(info.OutputElements());
             engine.Infer(input,logits.data());
             const auto mask=road.Decode(logits.data()), reference=road.Decode(logits_ref.data());
             size_t same=0, intersection=0, union_count=0;
             for(size_t i=0;i<mask.total();++i) {
                 const auto a=mask.ptr<unsigned char>()[i], b=reference.ptr<unsigned char>()[i];
-                same+=(a==b); intersection+=(a==2 && b==2); union_count+=(a==2 || b==2);
+                same+=(a==b);
+                if(info.num_classes==3) {
+                    int predicted=0, expected=0;
+                    for(int c=1;c<info.num_classes;++c) {
+                        if(logits[c*mask.total()+i]>logits[predicted*mask.total()+i]) predicted=c;
+                        if(logits_ref[c*mask.total()+i]>logits_ref[expected*mask.total()+i]) expected=c;
+                    }
+                    intersection+=(predicted==2 && expected==2);
+                    union_count+=(predicted==2 || expected==2);
+                }
             }
             for(size_t i=0;i<logits.size();++i)
                 logits_error=std::max(logits_error,std::abs(double(logits[i])-logits_ref[i]));
             const double match=double(same)/mask.total();
-            const double line_iou=union_count ? double(intersection)/union_count : 1;
             const bool ok=match>=0.995 && comparison.passed;
             passed=passed && ok;
             if(!cv::imwrite((masks/(stem.str()+"_mask.png")).string(),road.Restore(mask)))
                 throw std::runtime_error("Không ghi được mask PNG");
-            std::cout<<images[index]<<'\t'<<comparison.max_abs<<'\t'<<match<<'\t'<<line_iou<<'\t'
-                     <<logits_error<<'\t'<<(ok ? "ĐẠT" : "KHÔNG ĐẠT")<<'\t'
+            std::cout<<images[index]<<'\t'<<comparison.max_abs<<'\t'<<match<<'\t';
+            if(info.num_classes==3) std::cout<<(union_count ? double(intersection)/union_count : 1);
+            else std::cout<<"NA";
+            std::cout<<'\t'<<logits_error<<'\t'<<(ok ? "ĐẠT" : "KHÔNG ĐẠT")<<'\t'
                      <<comparison.max_levels<<'\t'<<comparison.different<<'\t'<<comparison.over_one<<'\n';
         }
         std::cout<<(passed ? "ĐẠT" : "KHÔNG ĐẠT")<<": "<<images.size()<<" ảnh\n";

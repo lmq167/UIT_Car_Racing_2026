@@ -76,7 +76,7 @@ TrtEngine::TrtEngine(const std::string &path, const InfoJson *info) : impl_(new 
             count*=size_t(dims.d[j]);
         }
         p.bytes[i]=count*sizeof(float);
-        if(info && (dims.nbDims!=4 || dims.d[1]!=3 || dims.d[2]!=info->input.height || dims.d[3]!=info->input.width))
+        if(info && (dims.nbDims!=4 || dims.d[1]!=(i==p.input ? 3 : info->num_classes) || dims.d[2]!=info->input.height || dims.d[3]!=info->input.width))
             throw std::runtime_error("Shape engine không khớp metadata");
     }
     if(p.input<0 || p.output<0) throw std::runtime_error("Thiếu binding input/output");

@@ -12,12 +12,16 @@ import numpy as np
 
 def load_info(path):
     info = json.loads(Path(path).read_text(encoding="utf-8"))
+    twinlite = info.get("class_names") == ["background", "road"]
+    classes = 2 if twinlite else 3
     fixed = {
-        "task": "segmentation", "class_names": ["background", "track_surface", "line"],
-        "num_classes": 3, "input_dtype": "float32", "color_order": "RGB",
+        "task": "segmentation",
+        "class_names": ["background", "road"] if twinlite else ["background", "track_surface", "line"],
+        "num_classes": classes, "input_dtype": "float32", "color_order": "RGB",
         "layout": "NCHW", "output_type": "logits",
         "activation": "softmax_over_channels_argmax",
-        "resize": "cv2.resize INTER_AREA (crop -> input)",
+        "resize": ("cv2.resize INTER_LINEAR (full -> input)" if twinlite else
+                   "cv2.resize INTER_AREA (crop -> input)"),
         "preprocessing_in_model": False, "fake_data": False, "dynamic": False,
     }
     for key, value in fixed.items():
@@ -33,16 +37,29 @@ def load_info(path):
     x0, x1 = info["crop_x"]
     if min(h, w, sh, sw) <= 0 or not (0 <= y0 < y1 <= sh and 0 <= x0 < x1 <= sw):
         raise ValueError("Crop hoặc cỡ ảnh không hợp lệ")
-    for key in ("input_shape", "output_shape"):
+    if twinlite and (info["crop_y"] != [0, sh] or info["crop_x"] != [0, sw]):
+        raise ValueError("TwinLite phải resize toàn bộ ảnh")
+    for key, channels in (("input_shape", 3), ("output_shape", classes)):
         shape = info.get(key)
-        if shape != [1, 3, h, w] or any(type(v) is not int for v in shape):
+        if shape != [1, channels, h, w] or any(type(v) is not int for v in shape):
             raise ValueError("Shape không hợp lệ: " + key)
     norm = info.get("normalization", {})
-    if (not isinstance(norm, dict) or norm.get("scale") != 1 / 255
-            or norm.get("mean") != [0, 0, 0] or norm.get("std") != [1, 1, 1]):
+    if (not isinstance(norm, dict) or type(norm.get("scale")) not in (float, int)
+            or norm["scale"] != 1 / 255):
+        raise ValueError("normalization scale phải là /255")
+    if twinlite:
+        for key in ("mean", "std"):
+            values = norm.get(key)
+            if (not isinstance(values, list) or len(values) != 3
+                    or any(type(v) not in (float, int) or not np.isfinite(v) for v in values)):
+                raise ValueError("normalization không hợp lệ: " + key)
+            with np.errstate(over="ignore", under="ignore"):
+                converted = np.asarray(values, dtype=np.float32)
+            if not np.isfinite(converted).all() or (key == "std" and (converted <= 0).any()):
+                raise ValueError("normalization vượt giới hạn float32: " + key)
+    elif norm.get("mean") != [0, 0, 0] or norm.get("std") != [1, 1, 1]:
         raise ValueError("normalization phải là /255, mean=0, std=1")
-    if (type(norm["scale"]) not in (float, int)
-            or any(type(v) is not int for key in ("mean", "std") for v in norm[key])):
+    elif any(type(v) is not int for key in ("mean", "std") for v in norm[key]):
         raise ValueError("Kiểu normalization không hợp lệ")
     for key in ("input_name", "output_name"):
         if not isinstance(info.get(key), str) or not info[key].strip():
@@ -58,12 +75,15 @@ def preprocess(image, info):
     y0, y1 = info["crop_y"]
     x0, x1 = info["crop_x"]
     h, w = info["input_hw"]
-    resized = cv2.resize(image[y0:y1, x0:x1], (w, h), interpolation=cv2.INTER_AREA)
+    interpolation = cv2.INTER_LINEAR if info["num_classes"] == 2 else cv2.INTER_AREA
+    resized = cv2.resize(image[y0:y1, x0:x1], (w, h), interpolation=interpolation)
     if resized.dtype != np.uint8:
         raise ValueError("Ảnh resize phải là uint8 trước khi chia 255")
     rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-    return np.ascontiguousarray((rgb.astype(np.float32) * np.float32(info["normalization"]["scale"]))
-                                .transpose(2, 0, 1)[None], dtype="<f4")
+    norm = info["normalization"]
+    scaled = rgb.astype(np.float32) * np.float32(norm["scale"])
+    normalized = (scaled - np.asarray(norm["mean"], dtype=np.float32)) / np.asarray(norm["std"], dtype=np.float32)
+    return np.ascontiguousarray(normalized.transpose(2, 0, 1)[None], dtype="<f4")
 
 
 def read_rows(path, required):

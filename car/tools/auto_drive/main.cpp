@@ -554,6 +554,7 @@ int main(int argc,char** argv) {
 #else
         const perception::InfoJson info(options.info);
 #endif
+        warnRoadModel(info);
         std::unique_ptr<perception::IInferEngine> engine,yoloEngine;
         std::unique_ptr<perception::YoloInfo> yoloInfo;
         if (!options.noYolo) {

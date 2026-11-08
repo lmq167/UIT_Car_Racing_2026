@@ -11,19 +11,25 @@
 #endif
 #include <algorithm>
 #include <cstdint>
+#include <iostream>
 #include <mutex>
 #include <memory>
 #include <opencv2/imgcodecs.hpp>
 #include <vector>
 
 namespace auto_drive {
+inline void warnRoadModel(const perception::InfoJson& info) {
+    if (info.num_classes!=2)
+        std::cerr<<"CANH BAO: mask U-Net 3 lop, tham so quy dao chinh cho TwinLiteNetPlus\n";
+}
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
 // Dùng cùng Preprocess/Decode với xe, chỉ thay engine bằng logits từ PNG chỉ số lớp.
 class FakeRoadEngine : public perception::IInferEngine {
     std::vector<std::pair<uint64_t,cv::Mat>> masks_;
     cv::Mat current_;
+    int num_classes_;
 public:
-    FakeRoadEngine(const std::string& path, const perception::InfoJson& info) {
+    FakeRoadEngine(const std::string& path, const perception::InfoJson& info) : num_classes_(info.num_classes) {
         std::ifstream f(path); std::string line;
         if (!std::getline(f,line)) throw std::runtime_error("Thiếu tiêu đề ROAD_MASKS");
         if (!line.empty() && line.back()=='\r') line.pop_back();
@@ -41,7 +47,7 @@ public:
             auto mask=cv::imread(parentPath(path)+"/"+name,cv::IMREAD_UNCHANGED);
             if (mask.type()!=CV_8UC1 || mask.size()!=info.input) throw std::runtime_error("Sai PNG ROAD_MASKS");
             double min=0,max=0; cv::minMaxLoc(mask,&min,&max);
-            if (min<0 || max>2) throw std::runtime_error("Lớp mask ngoài 0/1/2");
+            if (min<0 || max>=num_classes_) throw std::runtime_error("Lớp mask ngoài metadata");
             masks_.emplace_back(id,mask); last=id;
         }
         if (f.bad() || masks_.empty()) throw std::runtime_error("ROAD_MASKS rỗng/lỗi đọc");
@@ -54,7 +60,7 @@ public:
     }
     void Infer(const float*, float* out) override {
         const auto n=current_.total();
-        std::fill(out,out+3*n,0.0f);
+        std::fill(out,out+num_classes_*n,0.0f);
         for (size_t i=0;i<n;++i) out[current_.ptr<unsigned char>()[i]*n+i]=1.0f;
     }
 };
