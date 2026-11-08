@@ -1,0 +1,2 @@
+add_executable(traj_eval main.cpp)
+target_link_libraries(traj_eval PRIVATE ucr_control opencv_imgproc opencv_imgcodecs)
