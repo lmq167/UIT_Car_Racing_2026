@@ -1368,7 +1368,8 @@ def t73_lane_check(run, mark, lane_mark=None):
     need(angles, 'Thiếu góc trước mẫu lỗi Q9', 'setup')
     exits = [e[0] for e in run.of('reason', mark)
              if e[0] > first_hold and e[2] != 'CAM_BIEN_CHO']
-    angle_end = min([end] + exits)
+    # Lệnh servo của chu kỳ thoát chờ có thể gửi trước khi lý do mới được ghi vết: bỏ một chu kỳ ở mép cuối.
+    angle_end = min([end] + exits) - period
     need(all(abs(e[2] - angles[-1][2]) < 0.01 for e in events
              if e[1] == 'servo_angle' and not e[3] and first_hold <= e[0] < angle_end),
          'CAM_BIEN_CHO không giữ góc', 't73_lane')
