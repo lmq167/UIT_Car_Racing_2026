@@ -19,7 +19,7 @@ corridor_top_frac: 0.62 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng xa n
 lane1_width_frac: [0.57, 0.17] # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng một làn [hàng gần, hàng xa] theo chiều rộng mặt nạ
 two_lane_ratio: 1.5 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng/kỳ vọng từ mức này là hai làn (1.2–3)
 max_jump_frac: 0.08 # TẠM, CHƯA ĐO: lệch biên giữa hai hàng và dịch lookahead mỗi khung tối đa, theo chiều rộng
-conf_min: 0.4 # TẠM, CHƯA ĐO: độ tin cậy hàng tối thiểu để khớp đường (0–1)
+corridor_conf_min: 0.4 # TẠM, CHƯA ĐO: độ tin cậy hàng tối thiểu để khớp đường (0–1)
 lookahead_frac: 0.75 # TẠM, CHƯA ĐO: hàng lookahead theo chiều cao (trong [top, bottom])
 avoid_min_width_ratio: 0.75 # TẠM, CHƯA ĐO: phần trống trái vật cản tối thiểu để né, theo bề rộng một làn
 center_offset_frac: 0 # Dịch tâm xe theo chiều rộng mặt nạ
