@@ -221,7 +221,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         // Rào gần mà không rẽ được (lỗi cảm biến tạm hoặc IMU lỗi từ khởi động): dừng trước rào, không đi thẳng.
         // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
-        barrier_fault_stop=params.work_barrier_action && params.turn_enable && (turn_fault_ || sensor_bad) && !fallback && !barrier_done_ && !rb_present &&
+        barrier_fault_stop=params.work_barrier_action && params.turn_enable && (turn_fault_ || sensor_bad) && !(fallback && corridor_turn_) && !barrier_done_ && !rb_present &&
             state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min;
         // Ngã T không biển sau vòng xuyến: đi thêm rb_turn1/2_cm rồi rẽ; còn phiếu round_barrier thì không rẽ.
         if(rb_pending_ && params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && !rb_present && !rb_holding_ &&
