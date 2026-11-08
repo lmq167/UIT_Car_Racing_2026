@@ -1,5 +1,5 @@
 add_executable(test_t79_acceptance ${CMAKE_CURRENT_LIST_DIR}/test_t79_acceptance.cpp)
-target_link_libraries(test_t79_acceptance PRIVATE ucr_control)
+target_link_libraries(test_t79_acceptance PRIVATE ucr_control opencv_imgproc)
 target_compile_options(test_t79_acceptance PRIVATE -Wall -Wextra)
 
 foreach(ca A01 A02 A03 A04 A05 A06 A07 A08 A09 A10 A11 A11b A12 A13 A14

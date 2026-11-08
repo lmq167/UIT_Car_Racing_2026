@@ -147,7 +147,7 @@ endforeach()
 
 # T79: hành lang (unit DEV) và test chấp nhận do phiên riêng viết.
 add_executable(test_t79_corridor test_t79_corridor.cpp)
-target_link_libraries(test_t79_corridor PRIVATE ucr_control)
+target_link_libraries(test_t79_corridor PRIVATE ucr_control opencv_imgproc)
 target_compile_options(test_t79_corridor PRIVATE -Wall -Wextra)
 foreach(scenario one_lane two_lanes image_edge jump hole split roundabout empty)
     add_test(NAME control_t79_corridor_${scenario} COMMAND test_t79_corridor ${scenario})
