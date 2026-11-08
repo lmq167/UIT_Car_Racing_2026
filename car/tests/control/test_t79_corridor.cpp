@@ -90,13 +90,48 @@ void PlannerObstacle() {
           const auto repeated=r.planner.Step(r.in,r.now,r.p);
           Check(repeated.state==cleared.state,"Mask trùng làm nhả dừng thiếu đường né");
       } }
+    for(bool active:{false,true}) {
+        ObstacleRig r;
+        if(active) r.Left();
+        r.Mask(false);
+        const auto rows=ExtractCorridor(r.in.mask,r.p,TrajMode::LANE).rows;
+        r.in.mask(cv::Rect(50,rows[1].y,40,1)).setTo(0);
+        r.in.mask(cv::Rect(90,rows[2].y,40,1)).setTo(0);
+        const auto mixed=ExtractCorridor(r.in.mask,r.p,TrajMode::LANE).rows;
+        Check(mixed[1].hole && !mixed[1].avoid_ok && mixed[2].hole && mixed[2].avoid_ok,
+              "Ca trộn phải có một hàng thiếu đường né và một hàng đủ đường né");
+        Plan plan;
+        for(int i=0;i<(active ? 1 : r.p.vote_min);++i) plan=r.Step();
+        Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" &&
+              plan.cmd.cms==0 && plan.cmd.deg==0,"Một hàng thiếu đường né phải dừng cả khi hàng khác đủ");
+    }
     { ObstacleRig r; r.Pass();
-      for(int i=0;i<100;++i) Check(r.Step().reason=="NE_QUA","Encoder đứng yên không được cộng quãng lệnh");
-      r.in.odo_cm+=r.p.obstacle_pass_cm;
-      Check(r.Step().reason=="VE_PHAI","Encoder đủ quãng phải về phải");
-      for(int i=0;i<100;++i) Check(r.Step().reason=="VE_PHAI","Encoder đứng yên không kết thúc về phải");
-      r.in.odo_cm+=r.p.obstacle_pass_cm;
-      Check(r.Step().reason=="BAM_LAN","Encoder đủ quãng và e nhỏ phải kết thúc về phải"); }
+      const double cap=2*r.p.max_speed_cms*0.05;
+      for(const std::string phase:{"NE_QUA","VE_PHAI"}) {
+          double distance=0;
+          do {
+              r.in.odo_cm+=1000; distance+=cap;
+              const auto plan=r.Step();
+              const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
+              Check(plan.reason==(distance>=r.p.obstacle_pass_cm ? next : phase),
+                    "Encoder nhảy lớn chỉ được cộng tối đa 2*max_speed_cms*dt mỗi bước");
+          } while(distance<r.p.obstacle_pass_cm);
+      } }
+    { ObstacleRig r; auto plan=r.Pass();
+      for(const std::string phase:{"NE_QUA","VE_PHAI"}) {
+          r.in.odo_cm+=1; plan=r.Step();
+          Check(plan.reason==phase,"Một cm chưa đủ kết thúc pha");
+          double distance=1; bool finished=false;
+          for(int n=1;n<=100;++n) {
+              if(n>=30) distance+=plan.cmd.cms*0.05;
+              plan=r.Step();
+              const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
+              Check(plan.reason==(distance>=r.p.obstacle_pass_cm ? next : phase),
+                    "Encoder đứng 1500 ms phải dùng tích phân từng bước, không cộng bù quãng cũ");
+              if(distance>=r.p.obstacle_pass_cm) { finished=true; break; }
+          }
+          Check(finished,"Encoder đứng yên phải kết thúc pha nhờ tích phân lệnh");
+      } }
     { ObstacleRig r; auto plan=r.Pass(); double distance=0;
       for(int i=0;i<1000;++i) {
           distance+=plan.cmd.cms*0.05; r.in.odo_cm+=1000;
@@ -147,6 +182,29 @@ void ImageEdge() {
         Near(r.target,40,3.0,"Thay biên giữ tâm đường thật");
     }
     Check(edge,"Thiếu cờ MEP_ANH");
+    const cv::Mat white(kH,kW,CV_8UC1,cv::Scalar(1));
+    for(auto mode:{TrajMode::LANE,TrajMode::AVOID_LEFT,TrajMode::RETURN_RIGHT,TrajMode::ROUNDABOUT}) {
+        for(const auto &r:ExtractCorridor(white,p,mode).rows) {
+            Check(r.valid && r.flag_left=="MEP_ANH" && r.flag_right=="MEP_ANH",
+                  "Mask toàn đường phải ghi hai biên mép ảnh");
+            Check(r.conf<p.conf_min,"Hai biên không thật phải dưới ngưỡng tin cậy mặc định");
+        }
+        ControlParams low=p; low.conf_min=0.2;
+        LaneController controller;
+        const auto initial=controller.Step(Road(low,160,1),1000,1000,low,mode);
+        Check(initial.debug.state=="BAM_LAN" && initial.cmd.cms>0,"Phải có làn thật trước khi thử mất biên");
+        ControlResult result;
+        for(int elapsed=50;elapsed<=low.lost_stop_ms+50;elapsed+=50)
+            result=controller.Step(white,1000+elapsed,1000+elapsed,low,mode);
+        if(mode==TrajMode::ROUNDABOUT) {
+            Check(result.debug.state=="BAM_LAN" && result.cmd.cms>0,
+                  "ROUNDABOUT không bị ép mất làn khi thiếu cả hai biên thật");
+        } else {
+            Check(result.debug.state=="MAT_LAN" && result.debug.reason=="MAT_LAN" &&
+                  result.cmd.cms==0 && result.cmd.deg==0,
+                  "Không có biên thật phải dừng 0,0 sau lost_stop_ms dù conf_min=0,2");
+        }
+    }
 }
 void Jump() {
     ControlParams p;
