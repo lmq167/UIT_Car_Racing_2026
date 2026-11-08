@@ -114,7 +114,7 @@ def mask_rows(mode):
     offset = {'straight': 0, 'left': -12, 'right': 12, 'empty': 0}[mode]
     for y in range(96):
         frac = y / 96.0
-        width = 160 * (0.40 + (frac - 0.45) * 0.75)
+        width = 160 * max(0.0, 0.57 - (0.95 - frac) * 1.2)  # phối cảnh một làn như mask TwinLiteNetPlus (T79)
         left, right = int(80 + offset - width / 2), int(80 + offset + width / 2)
         row = bytearray(160)
         if mode != 'empty':
@@ -732,7 +732,7 @@ def inspect_images(run, every=5):
     for p in masks:
         pixels = read_png(p.read_bytes())
         need(set(pixels) <= {0, 1, 2}, 'PNG không phải chỉ số lớp')
-        original = mask_rows('straight')
+        original = [bytearray(1 if v else 0 for v in r) for r in mask_rows('straight')]  # mask ghi là 0/1 (vạch 2 gộp vào đường)
         need(pixels == b''.join(bytes(r) for r in original), 'Mặt nạ ghi khác fixture')
     need(not list(folder.rglob('*.tmp')), 'Còn file ghi dở')
 
