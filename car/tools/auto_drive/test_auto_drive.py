@@ -1353,7 +1353,8 @@ def t73_lane_check(run, mark, lane_mark=None):
     end = min([deadline] + cancelled + ([] if recovered is None else [recovered + period + run.slack]))
     holds = [e for e in run.of('reason', mark) if e[2] == 'CAM_BIEN_CHO']
     if cancelled and holds:
-        need(T57_SENSOR_GLITCH_MS - period <= cancelled[0] - holds[0][0] <=
+        # Mốc là lúc tiêm lỗi (Planner không thể thấy lỗi sớm hơn); lý do CAM_BIEN_CHO đầu tiên có thể ghi trễ khi tải cao.
+        need(T57_SENSOR_GLITCH_MS - period <= cancelled[0] - start <=
              T57_SENSOR_GLITCH_MS + period + run.slack,
              'Hủy trước hoặc sau hạn lỗi liên tục Q9', 't73_lane')
     for e in zeros:
