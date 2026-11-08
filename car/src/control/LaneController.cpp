@@ -101,6 +101,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         row.flag_right=raw.r>=W-1 ? kEdge : below && below->flag_right==kThat && std::abs(raw.r-lower_raw.r)>jump ? kJump : kThat;
         const bool left_ok=row.flag_left==kThat, right_ok=row.flag_right==kThat;
         const double reference=below && below->flag_left==kThat && below->flag_right==kThat ? below->right-below->left : w;
+        row.raw_l=raw.l; row.raw_r=raw.r;
         row.left=raw.l; row.right=raw.r;
         if(!left_ok && right_ok) row.left=row.right-reference;
         else if(left_ok && !right_ok) row.right=row.left+reference;

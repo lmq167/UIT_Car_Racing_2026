@@ -40,6 +40,7 @@ const char *StateName(PlannerState state) {
     return "DUNG";
 }
 void Planner::ClearTurn() {
+    junction_votes_.clear(); last_junction_mask_ms_=-1;
     turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     for(auto &vote:votes_) vote.left=vote.right=false;
@@ -63,7 +64,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                           now_ms-input.mask_ms<=params.mask_max_age_ms;
     const bool sensor_bad=!input.sensor_ok || !std::isfinite(input.yaw_deg) || !std::isfinite(input.odo_cm) ||
         input.sensor_ms<0 || input.sensor_ms>now_ms || now_ms-input.sensor_ms>200;
-    bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, sign_batch=false;
+    bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false;
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
@@ -131,7 +132,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
             else if(barrier || roundabout) conf=kBarrierConfMin;
             else if(person) conf=kPersonConfMin;
-            else if(!(params.turn_enable && !turning_ && !turn_fault_ && (signLeft || signRight))) continue;  // đã chốt hướng vẫn theo dõi biển để biết khi nào nó rời khung
+            else if(!(params.turn_enable && !turning_ && !turn_fault_ && (signLeft || signRight))) continue;
             const auto &b=d.box;
             if(d.captured_ms!=batch.captured_ms || !std::isfinite(d.confidence) || d.confidence<conf || d.confidence>1 ||
                !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
@@ -158,7 +159,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(!fresh || red || off || !green) green_run_=0;
         if(batch.frame_id>last_frame_) {
             last_frame_=batch.frame_id;
-            sign_batch=fresh && (left || right);  // lô mới có biển hợp lệ (đủ rộng)
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
                 votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide});
@@ -209,9 +209,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && state_==PlannerState::BAM_LAN &&
            (lefts>=params.vote_min)!=(rights>=params.vote_min)) {  // mẫu hỏng: không chốt mốc quãng NaN
             turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm; rb_pending_=0;
-        } else if(params.turn_enable && !turn_fault_ && turn_direction_ && !turning_ && !sensor_bad && sign_batch &&
-                  (turn_direction_==1 ? left : right)) {
-            arm_odo_=input.odo_cm;  // biển còn trong ảnh: mốc rẽ dời theo, chỉ đếm turn_start_cm kể từ lúc biển rời khung hình
         }
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
         if(red_fresh && reds>=params.vote_min && red_x_>=params.red_stop_x_frac) {
@@ -309,6 +306,28 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
         lane_.Reset(); return_cm_=0; return_e_=1;
     }
+    // Phiếu giao lộ độc lập với phiếu vật cản, chỉ thêm một lần cho mỗi mask mới.
+    if(params.turn_enable && turn_direction_ && !turning_ && mask_fresh && image_fresh && !input.stop &&
+       input.mask_ms!=last_junction_mask_ms_) {
+        last_junction_mask_ms_=input.mask_ms;
+        const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
+        int opened=0, tee=0;
+        const double bottom=std::lround(params.corridor_bottom_frac*input.mask.rows);
+        const double top=std::lround(params.corridor_top_frac*input.mask.rows);
+        for(size_t i=0;i<corridor.rows.size();++i) {
+            const auto &row=corridor.rows[i];
+            if(!row.valid) continue;
+            const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-row.y)/(bottom-top))) : 0;
+            const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
+            const bool left_bad=row.flag_left!="THAT", right_bad=row.flag_right!="THAT";
+            if(turn_direction_>0 ? left_bad && !right_bad : right_bad && !left_bad) ++opened;
+            if(i>=corridor.rows.size()/2 && left_bad && right_bad && row.raw_r-row.raw_l>=params.two_lane_ratio*w) ++tee;
+        }
+        junction_votes_.push_back(opened>=2 || tee>=2);
+        while(junction_votes_.size()>size_t(params.vote_window)) junction_votes_.pop_front();
+    }
+    const bool junction_seen=std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
+    const char *turn_start_reason=nullptr;
     const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
        state_!=PlannerState::DUNG_VAT_CAN) {
@@ -322,7 +341,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Bắt đầu rẽ theo quãng encoder kể từ lúc biển đủ phiếu; đang né/về làn thì chờ bám làn thường.
             else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning && !rb_holding_ && !sensor_bad &&
                     !(rb_in_pass_ && !rb_losing_) &&  // còn đủ phiếu vòng xuyến thì chưa rẽ (đảo phía trước)
-                    std::abs(input.odo_cm-arm_odo_)>=params.turn_start_cm) {
+                    (std::abs(input.odo_cm-arm_odo_)>=params.turn_start_cm ||
+                     (junction_seen && std::abs(input.odo_cm-arm_odo_)>=0.5*params.turn_start_cm))) {
+                turn_start_reason=junction_seen && std::abs(input.odo_cm-arm_odo_)>=0.5*params.turn_start_cm ? "RE_GIAO_LO" : "RE_THEO_QUANG";
                 turning_=true; yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
@@ -337,7 +358,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
         command_ms_=now_ms;
         plan.cmd={person_stop_ || sensor_hold_ ? 0.0 : params.min_cms,sent_angle_};
-        plan.reason=person_stop_ ? "NGUOI_DI_BO" : sensor_hold_ ? "CAM_BIEN_CHO" : StateName(state_);
+        plan.reason=person_stop_ ? "NGUOI_DI_BO" : sensor_hold_ ? "CAM_BIEN_CHO" : turn_start_reason ? turn_start_reason : StateName(state_);
         plan.debug.state=StateName(state_); plan.debug.reason=plan.reason;
         plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=plan.cmd.cms;
         return plan;

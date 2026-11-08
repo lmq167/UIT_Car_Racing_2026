@@ -35,6 +35,8 @@ private:
     struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
+    std::deque<bool> junction_votes_;
+    int64_t last_junction_mask_ms_=-1;
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };

@@ -14,6 +14,7 @@ struct Command { double cms=0, deg=0; };
 struct RowDebug {
     int y=0;
     double left=-1, right=-1, target=-1, conf=0;
+    double raw_l=-1, raw_r=-1;    // đoạn thô được chọn (trước khi thay biên không THAT)
     double hole_l=-1, hole_r=-1;  // khe lớn nhất khi hole (pixel 0 đầu/cuối của khe)
     std::string flag_left, flag_right;
     int lanes=0;
