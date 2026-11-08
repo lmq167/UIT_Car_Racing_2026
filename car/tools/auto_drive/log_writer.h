@@ -41,5 +41,5 @@ public:
     void requestStop() noexcept;
     ~LogWriter();
 };
-std::string scanJson(const control::ControlDebug&, const control::ControlParams&, int width);
+std::string scanJson(const control::ControlDebug&, int width, int height);
 }

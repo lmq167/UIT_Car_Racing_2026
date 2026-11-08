@@ -13,11 +13,15 @@ steer_max_deg: 40 # Trần góc lái, độ; dương là trái
 steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
 kp: 30 # Hệ số tỉ lệ, độ
 kd: 2 # Hệ số vi phân, độ.s
-scan_rows: [0.85, 0.65, 0.45] # Vị trí hàng quét theo chiều cao mặt nạ
-row_weights: [0.5, 0.3, 0.2] # Trọng số tương ứng từng hàng
-lane_width_frac: [0.70, 0.55, 0.40] # Bề rộng làn theo chiều rộng mặt nạ
-lane_width_min_ratio: 0.6 # Tỉ lệ nhỏ nhất để ghép hai biên
-lane_width_max_ratio: 1.4 # Tỉ lệ lớn nhất để ghép hai biên
+corridor_rows: 8 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: số hàng hành lang (2–20)
+corridor_bottom_frac: 0.95 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng gần nhất theo chiều cao mặt nạ
+corridor_top_frac: 0.62 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng xa nhất theo chiều cao mặt nạ (0 < top < bottom)
+lane1_width_frac: [0.57, 0.17] # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng một làn [hàng gần, hàng xa] theo chiều rộng mặt nạ
+two_lane_ratio: 1.5 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng/kỳ vọng từ mức này là hai làn (1.2–3)
+max_jump_frac: 0.08 # TẠM, CHƯA ĐO: lệch biên giữa hai hàng và dịch lookahead mỗi khung tối đa, theo chiều rộng
+conf_min: 0.4 # TẠM, CHƯA ĐO: độ tin cậy hàng tối thiểu để khớp đường (0–1)
+lookahead_frac: 0.75 # TẠM, CHƯA ĐO: hàng lookahead theo chiều cao (trong [top, bottom])
+avoid_min_width_ratio: 0.75 # TẠM, CHƯA ĐO: phần trống trái vật cản tối thiểu để né, theo bề rộng một làn
 center_offset_frac: 0 # Dịch tâm xe theo chiều rộng mặt nạ
 min_valid_rows: 1 # Số hàng hợp lệ tối thiểu
 lost_hold_ms: 300 # Hạn giữ tốc độ khi mất làn, ms
@@ -25,16 +29,11 @@ lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
 regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
 record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi ảnh
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
-right_clip_frac: 0.99 # Ngưỡng vạch phải sát mép theo chiều rộng mặt nạ
-right_lost_ms: 500 # Hạn mất vạch phải, ms; 0 = tắt
-pair_mode: 0 # Chọn cặp vạch: 0 = như cũ, 1 = cặp bao quanh xe giữ liên tục giữa các hàng
-pair_max_shift_frac: 0.25 # Dịch ngang tối đa của một vạch giữa hai hàng liền nhau, theo chiều rộng mặt nạ
-pair_merge_frac: 0.08 # Gộp các vạch cách nhau dưới mức này trong một hàng (chỉ pair_mode=1); 0 = tắt
-kd_filter_ms: 0 # Hằng thời gian lọc đạo hàm sai số, ms; 0 = tắt
 work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
 work_barrier_y2_frac: 0.65 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_frac: 0.10 # Tỉ lệ lỗ tối thiểu trong mặt đường để bỏ phiếu vật cản
+obstacle_hole_ratio: 0.25 # TẠM, CHƯA ĐO: khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
 obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml
 start_wait_green: 1 # Chờ xanh khi xuất phát, 1
 vote_window: 5 # Cửa sổ bỏ phiếu, lô

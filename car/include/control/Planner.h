@@ -19,12 +19,11 @@ struct PlannerInput {
     bool sensor_ok=false;
     int64_t sensor_ms=-1;
     bool go=false, stop=false;
-    LaneRef reference=LaneRef::RIGHT;
 };
 struct Plan {
     PlannerState state=PlannerState::CHO_SAN_SANG;
     std::string reason="CHO_G";
-    LaneRef reference=LaneRef::RIGHT;
+    TrajMode mode=TrajMode::LANE;  // chế độ quỹ đạo đã gửi cho LaneController
     Command cmd;
     ControlDebug debug;
 };

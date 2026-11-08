@@ -27,6 +27,7 @@ const Parameter table[] = {
     {"work_barrier_y2_frac",0.65,&ControlParams::work_barrier_y2_frac,0.30,0.95,"H","Đáy hộp rào tối thiểu để bắt đầu rẽ"},
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
     {"obstacle_hole_frac",0.10,&ControlParams::obstacle_hole_frac,0.02,0.5,"1","Tỉ lệ lỗ tối thiểu để nhận vật cản"},
+    {"obstacle_hole_ratio",0.25,&ControlParams::obstacle_hole_ratio,0,1,"1","Khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn"},
     {"obstacle_pass_cm",40.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi thêm sau khi vật cản biến mất, gồm vùng mù khoảng 25 cm"},
     {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
@@ -66,24 +67,22 @@ const Parameter table[] = {
     {"steer_rate_dps",200.0,&ControlParams::steer_rate_dps,10,1000,"độ/s","Tốc độ đổi góc tối đa"},
     {"kp",30.0,&ControlParams::kp,0,200,"độ","Hệ số tỉ lệ"},
     {"kd",2.0,&ControlParams::kd,0,50,"độ.s","Hệ số vi phân"},
-    {"scan_rows",Values{0.85,0.65,0.45},&ControlParams::scan_rows,0,1,"H","Hàng quét theo chiều cao"},
-    {"row_weights",Values{0.5,0.3,0.2},&ControlParams::row_weights,0,1.7976931348623157e308,"1","Trọng số hàng quét"},
-    {"lane_width_frac",Values{0.70,0.55,0.40},&ControlParams::lane_width_frac,0,1,"W","Bề rộng làn theo chiều rộng"},
-    {"lane_width_min_ratio",0.6,&ControlParams::lane_width_min_ratio,0.1,1,"1","Tỉ lệ bề rộng nhỏ nhất"},
-    {"lane_width_max_ratio",1.4,&ControlParams::lane_width_max_ratio,1,3,"1","Tỉ lệ bề rộng lớn nhất"},
+    {"corridor_rows",8,&ControlParams::corridor_rows,2,20,"hàng","Số hàng hành lang, đều từ hàng gần tới hàng xa"},
+    {"corridor_bottom_frac",0.95,&ControlParams::corridor_bottom_frac,0,1,"H","Hàng hành lang gần nhất theo chiều cao"},
+    {"corridor_top_frac",0.62,&ControlParams::corridor_top_frac,0,1,"H","Hàng hành lang xa nhất theo chiều cao"},
+    {"lane1_width_frac",Values{0.57,0.17},&ControlParams::lane1_width_frac,0,1,"W","Bề rộng kỳ vọng một làn [hàng gần, hàng xa]"},
+    {"two_lane_ratio",1.5,&ControlParams::two_lane_ratio,1.2,3,"1","Bề rộng/kỳ vọng từ mức này là hai làn"},
+    {"max_jump_frac",0.08,&ControlParams::max_jump_frac,0,0.5,"W","Lệch biên tối đa giữa hai hàng và dịch lookahead tối đa mỗi khung"},
+    {"conf_min",0.4,&ControlParams::conf_min,0,1,"1","Độ tin cậy hàng tối thiểu để khớp đường"},
+    {"lookahead_frac",0.75,&ControlParams::lookahead_frac,0,1,"H","Hàng lookahead theo chiều cao"},
+    {"avoid_min_width_ratio",0.75,&ControlParams::avoid_min_width_ratio,0,2,"1","Phần trống trái lỗ tối thiểu để né, theo bề rộng một làn"},
     {"center_offset_frac",0.0,&ControlParams::center_offset_frac,-0.5,0.5,"W","Dịch tâm tham chiếu"},
     {"min_valid_rows",1,&ControlParams::min_valid_rows,1,5,"hàng","Số hàng hợp lệ tối thiểu"},
     {"lost_hold_ms",300,&ControlParams::lost_hold_ms,0,2000,"ms","Hạn giữ tốc độ khi mất làn"},
     {"lost_stop_ms",800,&ControlParams::lost_stop_ms,0,3000,"ms","Hạn trả góc về không"},
     {"regain_frames",3,&ControlParams::regain_frames,1,20,"khung","Số khung liên tiếp để phục hồi"},
     {"record_every_n",5,&ControlParams::record_every_n,0,40,"khung","Nhịp ghi ảnh và mặt nạ (0 = tắt ghi ảnh)"},
-    {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"},
-    {"right_clip_frac",0.99,&ControlParams::right_clip_frac,0.90,1.0,"W","Ngưỡng vạch phải sát mép"},
-    {"right_lost_ms",500,&ControlParams::right_lost_ms,0,2000,"ms","Hạn mất vạch phải (0 = tắt)"},
-    {"pair_mode",0,&ControlParams::pair_mode,0,1,"1","Chọn cặp vạch (0 = như cũ, 1 = bao quanh xe)"},
-    {"pair_max_shift_frac",0.25,&ControlParams::pair_max_shift_frac,0.05,0.6,"W","Dịch ngang tối đa của vạch giữa hai hàng"},
-    {"pair_merge_frac",0.08,&ControlParams::pair_merge_frac,0,0.12,"W","Gộp vạch gần nhau trong một hàng (0 = tắt)"},
-    {"kd_filter_ms",0,&ControlParams::kd_filter_ms,0,500,"ms","Hằng thời gian lọc đạo hàm sai số (0 = tắt)"}
+    {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"}
 };
 void Require(bool ok, const std::string &key) {
     if(!ok) throw std::runtime_error("Tham số điều khiển không hợp lệ: " + key);
@@ -119,16 +118,13 @@ void ControlParams::Validate() const {
             for(double value:values) check(value);
         } else check(this->*member);
     },entry.member);
-    Require(row_weights.size()==scan_rows.size(),"row_weights / scan_rows");
-    Require(lane_width_frac.size()==scan_rows.size(),"lane_width_frac / scan_rows");
-    double sum=0;
-    for(size_t i=0;i<scan_rows.size();++i) {
-        Require(scan_rows[i]>0 && scan_rows[i]<1,"scan_rows");
-        Require(lane_width_frac[i]>0,"lane_width_frac");
-        sum+=row_weights[i];
-    }
-    Require(std::isfinite(sum) && sum>0,"row_weights");
-    Require(min_valid_rows<=int(scan_rows.size()),"min_valid_rows / scan_rows");
+    Require(lane1_width_frac.size()==2 && lane1_width_frac[1]>0 && lane1_width_frac[0]>=lane1_width_frac[1],"lane1_width_frac");
+    Require(corridor_top_frac>0 && corridor_top_frac<corridor_bottom_frac,"corridor_top_frac / corridor_bottom_frac");
+    Require(lookahead_frac>=corridor_top_frac && lookahead_frac<=corridor_bottom_frac,"lookahead_frac");
+    Require(max_jump_frac>0,"max_jump_frac");
+    Require(avoid_min_width_ratio>0,"avoid_min_width_ratio");
+    Require(obstacle_hole_ratio>0,"obstacle_hole_ratio");
+    Require(min_valid_rows<=corridor_rows,"min_valid_rows / corridor_rows");
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");
     Require(lost_cms<=max_speed_cms,"lost_cms / max_speed_cms");
     Require(vote_min<=vote_window,"vote_min / vote_window");
@@ -137,10 +133,6 @@ void ControlParams::Validate() const {
     Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
-    Require(right_lost_ms==0 || (right_lost_ms>=200 && right_lost_ms<=2000),"right_lost_ms");
-    Require(pair_merge_frac==0 || pair_merge_frac>=0.02,"pair_merge_frac");
-    // B3 coi hàng đầu danh sách là hàng gần nhất (y_frac lớn nhất): chỉ ép thứ tự khi bật B3.
-    if(pair_mode==1) for(size_t i=1;i<scan_rows.size();++i) Require(scan_rows[i]<scan_rows[i-1],"scan_rows (pair_mode=1 cần giảm dần)");
 }
 ControlParams ControlParams::Load(const std::string &path, std::ostream &report) {
     ControlParams params;

@@ -14,9 +14,9 @@ namespace drive {
 inline bool debugMaskUsable(const PreviewDebug& d) {
     return d.mask_w > 0 && d.mask_h > 0 && int64_t(d.mask_w) * d.mask_h <= kDebugMaskBytes;
 }
-// Lớp 0 nền xám, 1 mặt đường xanh dương, 2 vạch vàng (BGR); khác tông với dấu xanh lá/đỏ của hàng quét.
+// Lớp 0 nền xám, 1 và 2 đều là mặt đường xanh dương (BGR); khác tông với dấu xanh lá/đỏ của hàng hành lang.
 inline cv::Scalar debugClassColor(int value) {
-    return value >= 2 ? cv::Scalar(0, 255, 255) : value == 1 ? cv::Scalar(200, 100, 30) : cv::Scalar(40, 40, 40);
+    return value >= 1 ? cv::Scalar(200, 100, 30) : cv::Scalar(40, 40, 40);
 }
 inline cv::Mat colorizeDebugMask(const PreviewDebug& d) {
     cv::Mat color(d.mask_h, d.mask_w, CV_8UC3);
@@ -42,11 +42,11 @@ inline cv::Mat renderDebugMask(const PreviewDebug& d, int scale = 2) {
     }
     cv::Mat big;
     cv::resize(colorizeDebugMask(d), big, cv::Size(d.mask_w * scale, d.mask_h * scale), 0, 0, cv::INTER_NEAREST);
-    debugText(big, "0 nen  1 mat duong  2 vach", cv::Point(4, big.rows - 6), cv::Scalar(255, 255, 255));
+    debugText(big, "0 nen  1/2 mat duong", cv::Point(4, big.rows - 6), cv::Scalar(255, 255, 255));
     return big;
 }
 
-// Cửa sổ 2: phủ mask (alpha), hàng quét, tâm làn, đích, lệnh, trạng thái và khung YOLO lên khung camera.
+// Cửa sổ 2: phủ mask (alpha), hành lang (biên trái/phải, target), lookahead, đích, lệnh, trạng thái và khung YOLO.
 inline void drawDebugOverlay(cv::Mat& display, const PreviewDebug& d, const PreviewState& s, int64_t frame_ms) {
     if (display.empty() || display.type() != CV_8UC3) return;
     const bool mask_ok = debugMaskUsable(d);
@@ -81,16 +81,16 @@ inline void drawDebugOverlay(cv::Mat& display, const PreviewDebug& d, const Prev
         const cv::Scalar color = row.valid ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255);
         const int y = Y(row.y);
         cv::line(display, cv::Point(region.x, y), cv::Point(region.x + region.width, y), color, 1);
-        const int lines = std::max(0, std::min<int>(row.nlines, kDebugMaxLines));
-        for (int k = 0; k < lines; ++k) cv::circle(display, cv::Point(X(row.lines[k]), y), 2, cv::Scalar(0, 255, 255), -1);
         for (double edge : {double(row.left), double(row.right)})
             if (edge >= 0) cv::line(display, cv::Point(X(edge), y - 4), cv::Point(X(edge), y + 4), cv::Scalar(255, 128, 0), 2);
-        if (row.center >= 0) cv::circle(display, cv::Point(X(row.center), y), 4, color, row.valid ? -1 : 2);
+        if (row.target >= 0) cv::circle(display, cv::Point(X(row.target), y), 4, color, row.valid ? -1 : 2);
     }
     if (mask_ok) {
         // Trục tham chiếu của xe (trắng) và đích điều khiển = trục + sai số e (tím).
         cv::line(display, cv::Point(X(d.ref_x), region.y), cv::Point(X(d.ref_x), region.y + region.height),
                  cv::Scalar(255, 255, 255), 1);
+        if (d.look_x >= 0) // Điểm lookahead (trắng, vòng).
+            cv::circle(display, cv::Point(X(d.look_x), Y(d.look_y)), 7, cv::Scalar(255, 255, 255), 2);
         if (d.valid_rows > 0)
             cv::circle(display, cv::Point(X(d.ref_x + d.e * mw / 2), region.y + region.height - 10), 6,
                        cv::Scalar(255, 0, 255), -1);

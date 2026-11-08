@@ -1,11 +1,11 @@
 /* Hợp đồng runs_auto P1 (UTF-8, CSV có tiêu đề, dấu phẩy, chuỗi có thể đặt trong ").
-   Bắt buộc: session.json (object JSON), control_log.csv, masks/<frame_id>.png CV_8UC1 lớp 0/1/2.
+   Bắt buộc: session.json (object JSON), control_log.csv, masks/<frame_id>.png CV_8UC1 lớp 0/1/2 (1 và 2 là đường).
    Cột bắt buộc: frame_id,t_ms,mask_file,cmd_cms,cmd_deg (lệnh đã gửi, cm/s và độ, + trái).
    t_ms là ms đơn điệu cùng gốc với mask_ms; frame_id chỉ gồm chữ số.
    mask_file là đường tương đối masks/<frame_id>.png; để trống khi không lưu mặt nạ.
    Cột tùy chọn: mask_ms (mặc định t_ms ở dòng có mask, thời điểm ảnh gốc),
    image_ms (mặc định t_ms nếu không có cột; thiếu cột thì không tái hiện mất ảnh), go,stop (0/1),
-   lane_ref (RIGHT/LEFT), planner_state (CHO_SAN_SANG/BAM_LAN/DUNG).
+   lane_ref (RIGHT/LEFT; từ T79 chỉ kiểm hợp lệ, không dùng), planner_state (CHO_SAN_SANG/BAM_LAN/DUNG).
    Có go/stop thì ghi cả hai ở MỌI dòng; stop thắng go. G ở dòng không lưu mask
    cần mask_ms để biết mặt nạ có tồn tại và tươi; G cũ bị bỏ ngay theo L7.
    Không có sự kiện thì
@@ -140,10 +140,10 @@ std::string RowField(const control::ControlDebug &debug, int field) {
         const auto &row=debug.rows[i];
         switch(field) {
             case 0: out << row.y; break;
-            case 1: for(size_t j=0;j<row.lines.size();++j) { if(j) out << '|'; out << row.lines[j]; } break;
-            case 2: out << row.left; break;
-            case 3: out << row.right; break;
-            case 4: out << row.center; break;
+            case 1: out << row.left; break;
+            case 2: out << row.right; break;
+            case 3: out << row.target; break;
+            case 4: out << row.conf; break;
             case 5: out << int(row.valid); break;
         }
     }
@@ -151,19 +151,24 @@ std::string RowField(const control::ControlDebug &debug, int field) {
 }
 cv::Mat Overlay(const cv::Mat &mask, const control::Plan &plan) {
     cv::Mat image(mask.size(),CV_8UC3);
-    for(int y=0;y<mask.rows;++y) for(int x=0;x<mask.cols;++x) {
-        const auto label=mask.at<unsigned char>(y,x);
-        image.at<cv::Vec3b>(y,x)=label==1 ? cv::Vec3b(40,100,40) : (label==2 ? cv::Vec3b(240,240,240) : cv::Vec3b(20,20,20));
-    }
-    for(const auto &row:plan.debug.rows) {
+    for(int y=0;y<mask.rows;++y) for(int x=0;x<mask.cols;++x)  // 1 và 2 đều là mặt đường
+        image.at<cv::Vec3b>(y,x)=mask.at<unsigned char>(y,x) ? cv::Vec3b(40,100,40) : cv::Vec3b(20,20,20);
+    const auto &debug=plan.debug;
+    for(const auto &row:debug.rows) {
         cv::line(image,{0,row.y},{mask.cols-1,row.y},cv::Scalar(90,90,90));
         if(row.left>=0) cv::circle(image,{cvRound(row.left),row.y},1,cv::Scalar(255,100,0),-1);
         if(row.right>=0) cv::circle(image,{cvRound(row.right),row.y},1,cv::Scalar(255,100,0),-1);
-        if(row.valid) cv::circle(image,{cvRound(row.center),row.y},2,cv::Scalar(0,0,255),-1);
+        if(row.valid) cv::circle(image,{cvRound(row.target),row.y},2,cv::Scalar(0,0,255),-1);
     }
+    if(debug.fit.size()==3 && !debug.rows.empty())  // đường khớp trong dải hành lang
+        for(int y=debug.rows.back().y;y<=debug.rows.front().y;++y) {
+            const double x=debug.fit[0]+debug.fit[1]*y+debug.fit[2]*y*y;
+            if(x>=0 && x<mask.cols) image.at<cv::Vec3b>(y,int(x))=cv::Vec3b(255,0,255);
+        }
     cv::line(image,{mask.cols/2,0},{mask.cols/2,mask.rows-1},cv::Scalar(0,255,255));
+    if(debug.look_x>=0) cv::circle(image,{cvRound(debug.look_x),cvRound(debug.look_y)},3,cv::Scalar(255,255,255),1);
     cv::resize(image,image,cv::Size(),3,3,cv::INTER_NEAREST);
-    std::ostringstream label; label << plan.debug.state << " " << plan.cmd.cms << "cm/s " << plan.cmd.deg << "deg";
+    std::ostringstream label; label << debug.state << " " << debug.mode << " " << plan.cmd.cms << "cm/s " << plan.cmd.deg << "deg";
     cv::putText(image,label.str(),{3,15},cv::FONT_HERSHEY_SIMPLEX,0.35,cv::Scalar(255,255,255));
     return image;
 }
@@ -236,7 +241,7 @@ int main(int argc, char **argv) {
         MakeDir(output); MakeDir(output+"/overlays");
         std::ofstream out(output+"/control_log.csv");
         Require(bool(out),"Không ghi được CSV kết quả");
-        out << "frame_id,t_ms,mask_ms,mask_file,cmd_cms,cmd_deg,old_cmd_cms,old_cmd_deg,planner_state,state,reason,lane_ref,e,p,d,valid_rows,row_y,row_lines,row_left,row_right,row_center,row_valid,control_hash\n" << std::setprecision(12);
+        out << "frame_id,t_ms,mask_ms,mask_file,cmd_cms,cmd_deg,old_cmd_cms,old_cmd_deg,planner_state,state,reason,mode,e,p,d,valid_rows,look_x,row_y,row_left,row_right,row_target,row_conf,row_valid,control_hash\n" << std::setprecision(12);
         control::Planner planner;
         bool running=false;
         size_t missingDetections=0,missingMasks=0;
@@ -315,13 +320,13 @@ int main(int argc, char **argv) {
             data.mask_ms=mask_ms; data.image_ms=image_ms;
             const auto reference=get("lane_ref","RIGHT");
             Require(reference=="RIGHT" || reference=="LEFT","CSV lane_ref phải là RIGHT/LEFT");
-            data.reference=reference=="RIGHT" ? control::LaneRef::RIGHT : control::LaneRef::LEFT;
             data.go=running;
             const double old_speed=Number(get("cmd_cms"),"cmd_cms"),old_angle=Number(get("cmd_deg"),"cmd_deg");
             const auto plan=planner.Step(data,now,params);
             out << frame << ',' << now << ',' << data.mask_ms << ',' << Quote(mask_file) << ',' << plan.cmd.cms << ',' << plan.cmd.deg << ','
                 << old_speed << ',' << old_angle << ',' << control::StateName(plan.state) << ',' << plan.debug.state << ',' << Quote(plan.reason) << ','
-                << reference << ',' << plan.debug.e << ',' << plan.debug.p << ',' << plan.debug.d << ',' << plan.debug.valid_rows;
+                << plan.debug.mode << ',' << plan.debug.e << ',' << plan.debug.p << ',' << plan.debug.d << ',' << plan.debug.valid_rows
+                << ',' << plan.debug.look_x;
             for(int field=0;field<6;++field) out << ',' << RowField(plan.debug,field);
             out << ',' << hash << '\n';
             Require(bool(out),"Lỗi ghi CSV kết quả");

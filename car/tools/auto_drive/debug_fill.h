@@ -27,7 +27,7 @@ inline void fillPreviewBoxes(drive::PreviewDebug& out, const control::Detections
     }
 }
 
-// plan có thể null (chưa có hàng quét). Mask rỗng/quá sức chứa thì mask_w = mask_h = 0.
+// plan có thể null (chưa có hành lang). Mask rỗng/quá sức chứa thì mask_w = mask_h = 0.
 inline void fillPreviewDebug(drive::PreviewDebug& out, const cv::Mat& mask, int64_t mask_ms, uint64_t frame_id,
                              const control::ControlDebug* plan, double center_offset_frac,
                              cv::Size source, cv::Rect crop) {
@@ -41,21 +41,22 @@ inline void fillPreviewDebug(drive::PreviewDebug& out, const cv::Mat& mask, int6
     out.ref_x = float(mask.cols / 2.0 + center_offset_frac * mask.cols);
     out.nrows = 0; out.valid_rows = 0; out.nboxes = 0;
     out.e = out.p = out.d = out.angle_deg = out.speed_cms = 0;
+    out.look_x = out.look_y = -1;
     std::memset(out.state, 0, sizeof(out.state)); std::memset(out.reason, 0, sizeof(out.reason));
     if (!plan) return;
     out.valid_rows = plan->valid_rows;
     out.e = float(plan->e); out.p = float(plan->p); out.d = float(plan->d);
     out.angle_deg = float(plan->angle_deg); out.speed_cms = float(plan->speed_cms);
+    out.look_x = float(plan->look_x); out.look_y = float(plan->look_y);
     std::snprintf(out.state, sizeof(out.state), "%s", plan->state.c_str());
     std::snprintf(out.reason, sizeof(out.reason), "%s", plan->reason.c_str());
     out.nrows = int(std::min<size_t>(plan->rows.size(), drive::kDebugMaxRows));
     for (int i = 0; i < out.nrows; ++i) {
         const auto& in = plan->rows[i];
         auto& row = out.rows[i];
-        row.y = in.y; row.left = float(in.left); row.right = float(in.right); row.center = float(in.center);
+        row.y = in.y; row.left = float(in.left); row.right = float(in.right);
+        row.target = float(in.target); row.conf = float(in.conf);
         row.valid = in.valid ? 1 : 0;
-        row.nlines = int(std::min<size_t>(in.lines.size(), drive::kDebugMaxLines));
-        for (int k = 0; k < row.nlines; ++k) row.lines[k] = float(in.lines[k]);
     }
 }
 }

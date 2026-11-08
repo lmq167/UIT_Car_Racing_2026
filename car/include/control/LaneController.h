@@ -3,48 +3,48 @@
 #include <opencv2/core.hpp>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace control {
-enum class LaneRef { RIGHT, LEFT };
+// Chế độ quỹ đạo do Planner chọn; LaneController chỉ đổi điểm mục tiêu theo chế độ.
+enum class TrajMode { LANE, AVOID_LEFT, RETURN_RIGHT, ROUNDABOUT };
+const char *TrajModeName(TrajMode mode);  // "BAM_LAN","NE_TRAI","VE_PHAI","VONG_XUYEN"
 struct Command { double cms=0, deg=0; };
+// Một hàng hành lang (pixel mask). flag_*: "THAT" | "MEP_ANH" | "NHAY".
 struct RowDebug {
     int y=0;
-    std::vector<double> lines;
-    double left=-1, right=-1, center=-1;
-    bool valid=false;
+    double left=-1, right=-1, target=-1, conf=0;
+    double hole_l=-1, hole_r=-1;  // khe lớn nhất khi hole (pixel 0 đầu/cuối của khe)
+    std::string flag_left, flag_right;
+    int lanes=0;
+    bool hole=false, avoid_ok=true, valid=false;
 };
+struct Corridor { std::vector<RowDebug> rows; };
 struct ControlDebug {
     std::vector<RowDebug> rows;
+    double look_x=-1, look_y=-1;   // pixel, sau kẹp hành lang và giới hạn nhảy; look_x<0: khung không hợp lệ
+    std::vector<double> fit;       // x = fit[0] + fit[1]·y + fit[2]·y² (y pixel); rỗng khi không hợp lệ
+    std::string mode="BAM_LAN";
     double e=0, p=0, d=0, angle_deg=0, speed_cms=0;
     int valid_rows=0;
     std::string state="MAT_LAN", reason="CHUA_CO_LAN";
 };
 struct ControlResult { Command cmd; ControlDebug debug; };
-RowDebug ScanLines(const cv::Mat &mask, int y, int &begin, int &end, bool &surface);
+// Hàm thuần, không trạng thái: hành lang theo hàng từ mask 0/1 (2 cũng là đường).
+Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajMode mode);
 class LaneController {
 public:
     ControlResult Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
-                       const ControlParams &params, LaneRef ref=LaneRef::RIGHT);
-    void Reset(bool keep_swerve=false);  // keep_swerve: chỉ giữ vạch phân làn khi chuyển NE_QUA sang VE_PHAI
-    // Chuyển làn (chỉ pair_mode=1): +1 sang làn trái, -1 về làn phải, 0 bám làn thường.
-    // Theo dõi vạch phân làn qua các khung; mục tiêu = vạch -/+ nửa bề rộng làn.
-    void SetSwerve(int dir);
+                       const ControlParams &params, TrajMode mode=TrajMode::LANE);
+    void Reset();
 private:
-    RowDebug SwerveRow(const cv::Mat &mask, int y, size_t i, double left, double right, bool edge_is_line,
-                       int64_t now_ms, const ControlParams &params);
-    int swerve_dir_=0;
-    std::vector<double> d_x_;      // vị trí vạch phân làn theo từng hàng quét
-    std::vector<char> d_valid_;
-    std::vector<int64_t> d_seen_ms_;  // lần cuối thấy vạch phân làn, theo hàng
     int64_t last_now_ms_=-1, last_mask_ms_=-1, last_valid_ms_=-1, regain_mask_ms_=-1;
-    int64_t right_clip_since_ms_=-1;
     double angle_=0, error_=0;
-    double filtered_derivative_=0;
-    bool filter_ready_=false;
-    double near_left_=0, near_right_=0;
-    bool have_near_=false;
-    bool lost_=false, derivative_ready_=false, right_lost_=false;
+    bool lost_=false, derivative_ready_=false;
     int regain_=0;
-    LaneRef reference_=LaneRef::RIGHT;
+    TrajMode mode_=TrajMode::LANE;
+    double look_x_=0;            // lookahead khung hợp lệ trước (giới hạn nhảy)
+    bool have_look_=false;
+    TrajMode look_mode_=TrajMode::LANE;
 };
 }

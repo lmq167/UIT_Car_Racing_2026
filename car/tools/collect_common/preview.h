@@ -151,11 +151,11 @@ private:
 };
 
 // Dữ liệu gỡ lỗi của ucr_auto: vòng điều khiển chỉ ghi (không chờ), con preview chỉ đọc và vẽ.
-constexpr int kDebugMaxRows = 5, kDebugMaxLines = 8, kDebugMaxBoxes = 8, kDebugMaskBytes = 32768;
-struct PreviewDebugRow {
-    int32_t y = 0, nlines = 0;
-    float lines[kDebugMaxLines] = {};
-    float left = -1, right = -1, center = -1;
+// kDebugMaxRows = trần corridor_rows (20); mask TwinLiteNetPlus 192x320 = 61440 byte.
+constexpr int kDebugMaxRows = 20, kDebugMaxBoxes = 8, kDebugMaskBytes = 61440;
+struct PreviewDebugRow { // Một hàng hành lang (pixel mask).
+    int32_t y = 0;
+    float left = -1, right = -1, target = -1, conf = 0;
     uint8_t valid = 0;
 };
 struct PreviewDebugBox { // Khung YOLO theo điểm ảnh của khung nguồn.
@@ -172,6 +172,7 @@ struct PreviewDebug {
     int32_t src_w = 0, src_h = 0, crop_x = 0, crop_y = 0, crop_w = 0, crop_h = 0;
     int32_t nrows = 0, valid_rows = 0, nboxes = 0;
     float ref_x = 0, e = 0, p = 0, d = 0, angle_deg = 0, speed_cms = 0;
+    float look_x = -1, look_y = -1; // điểm lookahead (pixel mask); < 0: khung không hợp lệ
     char state[24] = {}, reason[64] = {};
     PreviewDebugRow rows[kDebugMaxRows];
     PreviewDebugBox boxes[kDebugMaxBoxes];

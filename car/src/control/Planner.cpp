@@ -72,7 +72,7 @@ void Planner::Reset(bool preserve_lights) {
 }
 Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params) {
     params.Validate();
-    Plan plan; plan.reference=input.reference;
+    Plan plan;
     const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=kStaleImageMs;
     const bool mask_fresh=!input.mask.empty() && input.mask_ms>=0 && input.mask_ms<=now_ms &&
                           now_ms-input.mask_ms<=params.mask_max_age_ms;
@@ -262,9 +262,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         pass_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
     // Pha về làn phải (VE_PHAI) dài bằng quãng né obstacle_pass_cm, kẹp tốc độ như pha né.
     if(return_cm_>=0 && swerve_ms_>=0 && now_ms>swerve_ms_) return_cm_+=sent_cms_*(now_ms-swerve_ms_)/1000.0;
-    // Về làn phải: tối thiểu obstacle_pass_cm; với pair_mode=1 chờ tới khi về tới làn (sai số nhỏ) hoặc đủ kReturnCapFactor lần quãng đó.
+    // Về làn phải: tối thiểu obstacle_pass_cm, rồi chờ tới khi về tới làn (sai số nhỏ) hoặc đủ kReturnCapFactor lần quãng đó.
     if(return_cm_>=params.obstacle_pass_cm &&
-       (params.pair_mode!=1 || std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
+       (std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
@@ -301,7 +301,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(true); return_cm_=0; return_e_=1;
+        lane_.Reset(); return_cm_=0; return_e_=1;
     }
     const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
@@ -340,9 +340,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         sent_angle_=0; command_ms_=now_ms;
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
     }
-    if(swerve_!=Swerve::NONE) plan.reference=LaneRef::LEFT;
-    lane_.SetSwerve(swerve_!=Swerve::NONE ? 1 : returning ? -1 : 0);  // pair_mode=1: theo vạch phân làn khi chuyển làn
-    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.reference);
+    plan.mode=swerve_!=Swerve::NONE ? TrajMode::AVOID_LEFT : returning ? TrajMode::RETURN_RIGHT : TrajMode::LANE;
+    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode);
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
@@ -386,12 +385,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
                 swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; return_cm_=-1;
                 obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
-                plan=Plan{}; plan.reference=input.reference; plan.state=state_; plan.reason=reason_;
+                plan=Plan{}; plan.state=state_; plan.reason=reason_;
                 plan.debug.state=StateName(state_); plan.debug.reason=reason_;
                 return plan;
             }
             swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0;
-            obstacle_votes_.clear(); last_mask_ms_=-1; plan.reference=input.reference;
+            obstacle_votes_.clear(); last_mask_ms_=-1;
         } else if(swerve_!=Swerve::NONE || returning) {
             plan.cmd.cms=std::min(plan.cmd.cms,params.approach_cms);
             plan.reason=returning ? "VE_PHAI" : swerve_==Swerve::LEFT ? "NE_TRAI" : "NE_QUA";

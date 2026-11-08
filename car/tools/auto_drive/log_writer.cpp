@@ -260,18 +260,19 @@ void LogWriter::run() noexcept {
         detectionsDropped+=detections_.size(); detections_.clear();
     }
 }
-std::string scanJson(const control::ControlDebug& debug,const control::ControlParams& params,int width) {
+// Cột scan_rows (giữ tên cũ): mỗi hàng hành lang một đối tượng; center_frac = target (điểm mục tiêu hàng).
+std::string scanJson(const control::ControlDebug& debug,int width,int height) {
     std::ostringstream out; out<<'[';
-    const auto frac=[&](double v) {
-        if (v<0 || width<=0) return std::string("null");
-        std::ostringstream s; s<<std::max(0.0,std::min(1.0,v/width)); return s.str();
+    const auto frac=[&](double v,int size) {
+        if (v<0 || size<=0) return std::string("null");
+        std::ostringstream s; s<<std::max(0.0,std::min(1.0,v/size)); return s.str();
     };
-    for (size_t i=0;i<params.scan_rows.size();++i) {
+    for (size_t i=0;i<debug.rows.size();++i) {
         if (i) out<<',';
-        const control::RowDebug row=i<debug.rows.size() ? debug.rows[i] : control::RowDebug{};
-        out<<"{\"y_frac\":"<<params.scan_rows[i]<<",\"left_frac\":"<<frac(row.left)
-           <<",\"right_frac\":"<<frac(row.right)<<",\"center_frac\":"<<frac(row.center)
-           <<",\"valid\":"<<(row.valid ? "true" : "false")<<'}';
+        const auto& row=debug.rows[i];
+        out<<"{\"y_frac\":"<<frac(row.y,height)<<",\"left_frac\":"<<frac(row.left,width)
+           <<",\"right_frac\":"<<frac(row.right,width)<<",\"center_frac\":"<<frac(row.target,width)
+           <<",\"conf\":"<<row.conf<<",\"valid\":"<<(row.valid ? "true" : "false")<<'}';
     }
     return out.str()+']';
 }
