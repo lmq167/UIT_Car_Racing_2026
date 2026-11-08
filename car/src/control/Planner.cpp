@@ -313,7 +313,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         lane_.Reset(); return_cm_=0; return_e_=1;
     }
     // Phiếu giao lộ độc lập với phiếu vật cản, chỉ thêm một lần cho mỗi mask mới.
-    if(params.turn_enable && turn_direction_ && !turning_ && mask_fresh && image_fresh && !input.stop &&
+    if(params.turn_enable && turn_direction_ && !turning_ && !rb_in_pass_ && mask_fresh && image_fresh && !input.stop &&
        input.mask_ms!=last_junction_mask_ms_) {
         last_junction_mask_ms_=input.mask_ms;
         const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
@@ -326,13 +326,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-row.y)/(bottom-top))) : 0;
             const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
             const bool left_bad=row.flag_left!="THAT", right_bad=row.flag_right!="THAT";
-            if(turn_direction_>0 ? left_bad && !right_bad : right_bad && !left_bad) ++opened;
+            if(i<size_t(params.corridor_rows/2) && (turn_direction_>0 ? left_bad && !right_bad : right_bad && !left_bad)) ++opened;
             if(i>=corridor.rows.size()/2 && left_bad && right_bad && row.raw_r-row.raw_l>=params.two_lane_ratio*w) ++tee;
         }
         junction_votes_.push_back(opened>=2 || tee>=2);
         while(junction_votes_.size()>size_t(params.vote_window)) junction_votes_.pop_front();
     }
-    const bool junction_seen=std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
+    const bool junction_seen=!rb_in_pass_ && std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
     const char *turn_start_reason=nullptr;
     const bool returning=return_cm_>=0;
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&

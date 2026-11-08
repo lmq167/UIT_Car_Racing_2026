@@ -72,7 +72,7 @@ const Parameter table[] = {
     {"lane1_width_frac",Values{0.57,0.17},&ControlParams::lane1_width_frac,0,1,"W","Bề rộng kỳ vọng một làn [hàng gần, hàng xa]"},
     {"two_lane_ratio",1.5,&ControlParams::two_lane_ratio,1.2,3,"1","Bề rộng/kỳ vọng từ mức này là hai làn"},
     {"max_jump_frac",0.08,&ControlParams::max_jump_frac,0,0.5,"W","Lệch biên tối đa giữa hai hàng và dịch lookahead tối đa mỗi khung"},
-    {"corridor_conf_min",0.4,&ControlParams::conf_min,0.2,1,"1","Độ tin cậy hàng tối thiểu để khớp đường"},
+    {"corridor_conf_min",0.4,&ControlParams::conf_min,0.35,1,"1","Độ tin cậy hàng tối thiểu để khớp đường"},
     {"lookahead_frac",0.75,&ControlParams::lookahead_frac,0,1,"H","Hàng lookahead theo chiều cao"},
     {"avoid_min_width_ratio",0.75,&ControlParams::avoid_min_width_ratio,0,2,"1","Phần trống trái lỗ tối thiểu để né, theo bề rộng một làn"},
     {"center_offset_frac",0.0,&ControlParams::center_offset_frac,-0.5,0.5,"W","Dịch tâm tham chiếu"},
