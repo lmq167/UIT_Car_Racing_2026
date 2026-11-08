@@ -26,9 +26,9 @@ cv::Mat roadMask() {
 control::ControlDebug planFixture() {
     control::ControlDebug plan;
     plan.state = "BAM_LAN"; plan.reason = "BAM_LAN"; plan.valid_rows = 1; plan.e = 0.9; plan.p = 27; plan.d = 1;
-    control::RowDebug good; good.y = 80; good.left = 40; good.right = 120; good.center = 80; good.valid = true;
-    control::RowDebug bad; bad.y = 60; bad.valid = false; bad.lines = {70.0, 90.0};
-    plan.rows = {good, bad};
+    control::RowDebug good; good.y = 80; good.left = 40; good.right = 120; good.target = 80; good.conf = 1; good.valid = true;
+    control::RowDebug bad; bad.y = 60; bad.valid = false; bad.left = 70; bad.right = 90;
+    plan.rows = {good, bad}; plan.look_x = 100; plan.look_y = 70;
     return plan;
 }
 
@@ -53,7 +53,7 @@ void maskWindow() {
     CHECK(view.cols == 160 && view.rows == 96 && view.type() == CV_8UC3);
     CHECK(near(view.at<cv::Vec3b>(2, 2), 40, 40, 40, 0));       // nền
     CHECK(near(view.at<cv::Vec3b>(12, 25), 200, 100, 30, 0));     // mặt đường
-    CHECK(near(view.at<cv::Vec3b>(12, 61), 0, 255, 255, 0));     // vạch
+    CHECK(near(view.at<cv::Vec3b>(12, 61), 200, 100, 30, 0));    // lớp 2 cũng là mặt đường
     d->mask_w = 0;
     const cv::Mat blank = drive::renderDebugMask(*d, 2);
     CHECK(blank.cols == 320 && blank.rows == 192);               // placeholder có kích thước cố định
@@ -95,7 +95,7 @@ void overlay() {
     CHECK(orange);
     // Dữ liệu hỏng: không ném ngoại lệ, không vẽ mask.
     auto broken = overlayFixture();
-    broken->nrows = 99; broken->nboxes = -3; broken->mask_w = 100000; broken->rows[0].nlines = 99;
+    broken->nrows = 99; broken->nboxes = -3; broken->mask_w = 100000;
     cv::Mat plain(360, 640, CV_8UC3, cv::Scalar(100, 100, 100));
     drive::drawDebugOverlay(plain, *broken, state, 0);
     CHECK(near(plain.at<cv::Vec3b>(190, 241), 100, 100, 100, 0));
@@ -110,17 +110,18 @@ void fill() {
     auto_drive::fillPreviewDebug(*d, roadMask(), 1234, 9, &plan, 0.1, cv::Size(1280, 720), cv::Rect(0, 288, 1280, 432));
     CHECK(d->mask_w == 160 && d->mask_h == 96 && d->mask[80] == 2 && d->mask[10] == 0);
     CHECK(d->nrows == 2 && d->valid_rows == 1 && d->rows[0].valid == 1 && d->rows[1].valid == 0);
-    CHECK(d->rows[1].nlines == 2 && d->rows[1].lines[1] == 90.0f);
+    CHECK(d->rows[1].left == 70.0f && d->rows[1].right == 90.0f && d->rows[0].target == 80.0f && d->rows[0].conf == 1.0f);
+    CHECK(d->look_x == 100.0f && d->look_y == 70.0f);
     CHECK(std::abs(d->ref_x - (80 + 0.1f * 160)) < 1e-4 && d->mask_ms == 1234 && d->frame_id == 9);
     CHECK(std::string(d->state) == "BAM_LAN" && d->crop_y == 288);
     // Cắt theo sức chứa, luôn kết thúc chuỗi bằng NUL.
-    plan.rows.assign(9, plan.rows[1]); plan.rows[0].lines.assign(20, 1.0);
+    plan.rows.assign(drive::kDebugMaxRows + 5, plan.rows[1]);
     plan.reason = std::string(200, 'x');
     auto_drive::fillPreviewDebug(*d, cv::Mat(300, 300, CV_8UC1, cv::Scalar(1)), 1, 2, &plan, 0, cv::Size(1280, 720), cv::Rect());
-    CHECK(d->mask_w == 0 && d->nrows == drive::kDebugMaxRows && d->rows[0].nlines == drive::kDebugMaxLines);
+    CHECK(d->mask_w == 0 && d->nrows == drive::kDebugMaxRows);
     CHECK(std::strlen(d->reason) == sizeof(d->reason) - 1);
     auto_drive::fillPreviewDebug(*d, roadMask(), 1, 2, nullptr, 0, cv::Size(1280, 720), cv::Rect());
-    CHECK(d->nrows == 0 && d->state[0] == 0 && d->mask_w == 160);
+    CHECK(d->nrows == 0 && d->state[0] == 0 && d->mask_w == 160 && d->look_x < 0);
 }
 
 void fillBoxes() {

@@ -33,7 +33,7 @@ struct Rig {
     bool sensor_fresh=true;
     Rig(bool sensor_ok=true) {
         p.turn_enable=1; p.start_wait_green=0; p.kd=0;
-        p.lane_width_frac={0.4,0.4,0.4};
+        p.lane1_width_frac={0.4,0.4};
         p.steer_max_deg=30; p.steer_rate_dps=1000;
         p.cruise_cms=p.max_speed_cms=15; p.approach_cms=5; p.min_cms=4;
         p.rb_lost_cm=30; p.rb_turn1_cm=p.rb_turn2_cm=60;
@@ -128,7 +128,7 @@ void Lane(const Plan& p, const std::string& why) {
     Expect(p.state==PlannerState::BAM_LAN && p.cmd.cms>0,p,why);
 }
 void Same(const Plan& a, const Plan& b, const std::string& why) {
-    bool same=a.state==b.state && a.reason==b.reason && a.reference==b.reference &&
+    bool same=a.state==b.state && a.reason==b.reason && a.mode==b.mode &&
         a.cmd.cms==b.cmd.cms && a.cmd.deg==b.cmd.deg && a.debug.e==b.debug.e &&
         a.debug.p==b.debug.p && a.debug.d==b.debug.d && a.debug.angle_deg==b.debug.angle_deg &&
         a.debug.speed_cms==b.debug.speed_cms && a.debug.valid_rows==b.debug.valid_rows &&
@@ -136,8 +136,8 @@ void Same(const Plan& a, const Plan& b, const std::string& why) {
         a.debug.rows.size()==b.debug.rows.size();
     for (size_t i=0;same && i<a.debug.rows.size();++i) {
         const auto& x=a.debug.rows[i]; const auto& y=b.debug.rows[i];
-        same=x.y==y.y && x.lines==y.lines && x.left==y.left && x.right==y.right &&
-             x.center==y.center && x.valid==y.valid;
+        same=x.y==y.y && x.left==y.left && x.right==y.right && x.conf==y.conf &&
+             x.target==y.target && x.valid==y.valid;
     }
     Expect(same,a,why+"; đối chứng "+Observed(b));
 }
@@ -214,7 +214,7 @@ void T74(const std::string& name) {
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
             r.in.yaw_deg=5+sign*r.p.turn_yaw_deg; plan=r.send({"work_barrier"});
-            Expect(plan.state==PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT,plan,"Đủ |yaw-yaw0| về BAM_LAN RIGHT");
+            Expect(plan.state==PlannerState::BAM_LAN && plan.mode==control::TrajMode::LANE,plan,"Đủ |yaw-yaw0| về BAM_LAN RIGHT");
         }
     } else if (name=="barrier_types") {
         // Work 1 (hộp giữa, vào đường 1 làn): rẽ gắt 1,12*turn_steer_deg, kích hoạt sớm 0,05; work 2 (hộp lệch phải): 0,8*turn_steer_deg.
@@ -654,7 +654,7 @@ void T77(const std::string& name) {
                     baseline.in.mask.at<unsigned char>(y,x)=0;
                 }
                 const auto obstacle=baseline.votes({},baseline.p.vote_window+2);
-                Expect(obstacle.reason=="NE_TRAI" || obstacle.reference==control::LaneRef::LEFT,obstacle,"Đối chứng cùng mask ngoài vòng xuyến phải kích né");
+                Expect(obstacle.reason=="NE_TRAI" || obstacle.mode==control::TrajMode::AVOID_LEFT,obstacle,"Đối chứng cùng mask ngoài vòng xuyến phải kích né");
             }
             for (int i=0;i<r.p.vote_window+2;++i) {
                 r.in.odo_cm+=1;

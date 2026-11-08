@@ -22,7 +22,8 @@ struct Rig {
     PlannerInput in;
     int64_t now=1000;
     Rig() {
-        p.obstacle_action=1; p.start_wait_green=0; p.right_lost_ms=0;
+        p.obstacle_action=1; p.start_wait_green=0;
+        p.lane1_width_frac={0.8,0.8};  // đường cột 20..180 là một làn
         in.mask=Mask(0,0); in.go=true; step(); in.go=false;
     }
     Plan step(bool new_mask=true) {
@@ -35,12 +36,12 @@ struct Rig {
         for(int n=1;n<=p.vote_min;++n) {
             plan=step();
             Check((plan.reason=="NE_TRAI")== (n==p.vote_min),"Né sai số phiếu");
-            if(n<p.vote_min) Check(step(false).reference==LaneRef::RIGHT,"Đếm trùng phiếu né");
+            if(n<p.vote_min) Check(step(false).mode==TrajMode::LANE,"Đếm trùng phiếu né");
         }
-        Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::LEFT &&
+        Check(plan.state==PlannerState::BAM_LAN && plan.mode==TrajMode::AVOID_LEFT &&
               plan.cmd.cms>0 && plan.cmd.cms<=p.approach_cms,"Pha trái sai tham chiếu/tốc độ");
         LaneController expected;
-        const auto left=expected.Step(in.mask,in.mask_ms,now,p,LaneRef::LEFT);
+        const auto left=expected.Step(in.mask,in.mask_ms,now,p,TrajMode::AVOID_LEFT);
         Check(std::abs(plan.debug.e-left.debug.e)<1e-12,"Planner không truyền LEFT vào bộ bám làn");
         return plan;
     }
@@ -108,13 +109,13 @@ void SwerveTests() {
           distance+=plan.cmd.cms*0.05;
           plan=r.step();
           if(distance+1e-9<r.p.obstacle_pass_cm) {
-              Check(plan.reason=="NE_QUA" && plan.reference==LaneRef::LEFT,"Về trước đủ quãng");
+              Check(plan.reason=="NE_QUA" && plan.mode==TrajMode::AVOID_LEFT,"Về trước đủ quãng");
           } else {
-              Check(plan.reason=="VE_PHAI" && plan.reference==LaneRef::RIGHT,"Không về đúng quãng");
+              Check(plan.reason=="VE_PHAI" && plan.mode==TrajMode::RETURN_RIGHT,"Không về đúng quãng");
               double return_distance=0;
               for(int m=0;m<1000;++m) {
                   Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
-                        plan.reference==LaneRef::RIGHT && plan.cmd.cms>0 &&
+                        plan.mode==TrajMode::RETURN_RIGHT && plan.cmd.cms>0 &&
                         plan.cmd.cms<=r.p.approach_cms && plan.debug.reason=="VE_PHAI",
                         "Suốt pha về phải giữ RIGHT/VE_PHAI và kẹp tốc độ né");
                   return_distance+=plan.cmd.cms*0.05;
@@ -123,7 +124,7 @@ void SwerveTests() {
                       Check(plan.reason=="VE_PHAI","Kết thúc về phải trước đủ quãng");
                   else {
                       Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
-                            plan.reference==LaneRef::RIGHT && plan.cmd.cms==normal_cms,
+                            plan.mode==TrajMode::LANE && plan.cmd.cms==normal_cms,
                             "Hết quãng về phải phải trả BAM_LAN và tốc độ thường");
                       break;
                   }
@@ -165,22 +166,22 @@ void SwerveTests() {
         if(cancel==3) { r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
             auto plan=r.step();
             Check(plan.state==PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0 &&
-                  plan.reason=="MAT_LAN_NE" && plan.reference==LaneRef::RIGHT &&
+                  plan.reason=="MAT_LAN_NE" && plan.mode==TrajMode::LANE &&
                   plan.debug.state=="DUNG" && plan.debug.reason=="MAT_LAN_NE" &&
                   plan.debug.speed_cms==0 && plan.debug.angle_deg==0,"Mất làn khi né phải dừng hẳn"); }
         r.in.mask=Mask(0,0);
         if(cancel!=2) for(int n=0;n<r.p.regain_frames+2;++n) {
             const auto stopped=r.step();
             Check(stopped.state==PlannerState::DUNG && stopped.cmd.cms==0 && stopped.cmd.deg==0 &&
-                  stopped.reference==LaneRef::RIGHT,"Hủy né tự chạy trước G mới");
+                  stopped.mode==TrajMode::LANE,"Hủy né tự chạy trước G mới");
             if(cancel==3) Check(stopped.reason=="MAT_LAN_NE","Mất lý do chốt mất làn né");
         }
         r.in.go=true;
         auto plan=r.step(); r.in.go=false;
-        Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+        Check(plan.state==PlannerState::BAM_LAN && plan.mode==TrajMode::LANE &&
               plan.reason=="BAM_LAN" && plan.cmd.cms>0,"G mới không bám lại RIGHT");
         for(int n=0;n<r.p.regain_frames+1;++n) plan=r.step();
-        Check(plan.reference==LaneRef::RIGHT && plan.reason=="BAM_LAN","Hủy pha giữ tham chiếu trái");
+        Check(plan.mode==TrajMode::LANE && plan.reason=="BAM_LAN","Hủy pha giữ tham chiếu trái");
         r.left();
     }
     for(bool passing:{false,true}) for(bool stale:{false,true}) {
@@ -189,7 +190,7 @@ void SwerveTests() {
         else { r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0)); r.now+=r.p.lost_stop_ms; }
         const auto plan=r.step(!stale);
         Check(plan.state==PlannerState::DUNG && plan.reason=="MAT_LAN_NE" &&
-              plan.cmd.cms==0 && plan.cmd.deg==0 && plan.reference==LaneRef::RIGHT,
+              plan.cmd.cms==0 && plan.cmd.deg==0 && plan.mode==TrajMode::LANE,
               "MAT_LAN/MAT_NAN_CU khi né phải dừng hẳn");
     }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); double distance=0;
@@ -197,17 +198,17 @@ void SwerveTests() {
           distance+=plan.cmd.cms*0.05; plan=r.step();
       }
       r.in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0)); plan=r.step();
-      Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+      Check(plan.state==PlannerState::BAM_LAN && plan.mode==TrajMode::RETURN_RIGHT &&
             plan.reason=="MAT_LAN" && plan.cmd.cms==0 && plan.cmd.deg==0,
             "Đã đủ quãng về phải không được chốt MAT_LAN_NE"); }
     for(int action:{0,1,2}) {
         Rig r; r.p.obstacle_action=action; LaneController expected;
-        expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,LaneRef::RIGHT);
+        expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,TrajMode::LANE);
         for(int n=0;n<30;++n) {
             r.in.mask=n<2 || n>=20 ? Mask(0,0) : cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
             const auto plan=r.step();
-            const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,LaneRef::RIGHT);
-            Check(plan.state==PlannerState::BAM_LAN && plan.reference==LaneRef::RIGHT &&
+            const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,TrajMode::LANE);
+            Check(plan.state==PlannerState::BAM_LAN && plan.mode==TrajMode::LANE &&
                   plan.cmd.cms==lane.cmd.cms && plan.cmd.deg==lane.cmd.deg &&
                   plan.reason==lane.debug.reason && plan.debug.state==lane.debug.state,
                   "Mất làn ngoài pha né/action 0/1 đổi hành vi cũ");
@@ -232,12 +233,12 @@ void SwerveTests() {
           r.now+=dt-50; plan=r.step();
           if(distance<r.p.obstacle_pass_cm-1e-9)
               Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
-                    plan.reference==LaneRef::RIGHT && plan.cmd.cms>=0 &&
+                    plan.mode==TrajMode::RETURN_RIGHT && plan.cmd.cms>=0 &&
                     plan.cmd.cms<=r.p.approach_cms,
                     "Pha về phải nhịp/tốc độ thay đổi phải tích phân lệnh đã gửi");
           else {
               Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
-                    plan.reference==LaneRef::RIGHT,"Nhịp không đều không kết thúc về phải đủ quãng");
+                    plan.mode==TrajMode::LANE,"Nhịp không đều không kết thúc về phải đủ quãng");
               break;
           }
           Check(n<99,"Nhịp không đều kẹt pha về phải");
@@ -344,9 +345,9 @@ void Unit() {
               Check(a.state==PlannerState::DUNG && a.cmd.cms==0 && a.cmd.deg==0,"Action 0 bỏ qua Space");
               lane.Reset();
           } else {
-              const auto b=lane.Step(r.in.mask,r.now,r.now,r.p,r.in.reference);
+              const auto b=lane.Step(r.in.mask,r.now,r.now,r.p,TrajMode::LANE);
               Check(a.state==PlannerState::BAM_LAN && a.cmd.cms==b.cmd.cms && a.cmd.deg==b.cmd.deg &&
-                    a.reason==b.debug.reason && a.reference==r.in.reference,"Action 0 đổi bám làn gốc");
+                    a.reason==b.debug.reason && a.mode==TrajMode::LANE,"Action 0 đổi bám làn gốc");
           }
       }
     }

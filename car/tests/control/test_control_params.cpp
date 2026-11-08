@@ -50,7 +50,7 @@ int main(int argc, char **argv) {
             Reject([&] { load(body,header); },key,context+'\"');
         };
         const auto missing=load("kp: 42.\n");
-        Check(missing.kp==42 && missing.cruise_cms==15 && missing.scan_rows==defaults.scan_rows,"Thiếu khóa phải dùng mặc định");
+        Check(missing.kp==42 && missing.cruise_cms==15 && missing.lane1_width_frac==defaults.lane1_width_frac,"Thiếu khóa phải dùng mặc định");
         Check(missing.max_speed_cms==15 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
               "Thiếu khóa tốc độ phải giữ mặc định 15/15/5/4/4");
         Check(report.str().find("cruise_cms = 15 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
@@ -63,17 +63,17 @@ int main(int argc, char **argv) {
             const auto cap20=load("max_speed_cms: 20\ncruise_cms: 20\napproach_cms: 10\nmin_cms: 10\nlost_cms: 10\n",header);
             Check(cap20.max_speed_cms==20 && cap20.cruise_cms==20 && cap20.approach_cms==10 &&
                   cap20.min_cms==10 && cap20.lost_cms==10,"Phải nhận trần 20 và giữ biên 10 của approach/min/lost");
-            for(int value:{0,200,2000,500})
-                Check(load("right_lost_ms: "+std::to_string(value)+"\n",header).right_lost_ms==value,"Hạn mất vạch phải hợp lệ phải nạp được");
-            const auto plain=load("kp: 42.\nscan_rows: [0.85, 0.65, 0.45]\n",header);
-            Check(plain.kp==42 && plain.scan_rows==defaults.scan_rows,"YAML thường phải nạp như YAML OpenCV");
+            for(int value:{2,8,20})
+                Check(load("corridor_rows: "+std::to_string(value)+"\n",header).corridor_rows==value,"Số hàng hành lang hợp lệ phải nạp được");
+            const auto plain=load("kp: 42.\nlane1_width_frac: [0.57, 0.17]\n",header);
+            Check(plain.kp==42 && plain.lane1_width_frac==defaults.lane1_width_frac,"YAML thường phải nạp như YAML OpenCV");
             for(const auto &body:{"", "{}\n", "# Chỉ chú thích\n  # dòng hai\n", "\n {} # map rỗng\r\n", "{ \n }\n", "{}\t# map rỗng\r\n", "{}\n...\n"}) {
                 const auto empty=load(body,header);
                 std::ostringstream table; empty.PrintTable(table);
                 Check(table.str()==b.str(),"Tài liệu/map rỗng phải dùng toàn bộ mặc định");
                 Check(report.str().find("kp = 30 độ (mặc định)")!=std::string::npos,"Map rỗng phải báo mặc định và đơn vị");
             }
-            for(const auto &body:{"kp: [\n", "kp: [4\n", "scan_rows: [0.5}\n", "{kp: 4\n", "[]\n", "kp: 4\n---\nkp: 5\n", "{}#sai\n", "---#sai\n", "  %YAML:1.0\n",
+            for(const auto &body:{"kp: [\n", "kp: [4\n", "lane1_width_frac: [0.5}\n", "{kp: 4\n", "[]\n", "kp: 4\n---\nkp: 5\n", "{}#sai\n", "---#sai\n", "  %YAML:1.0\n",
                                   "kp: 4\n...\nkp: 5\n", "kp: 4\n...\n---\nkp: 5\n", "{}\n---\n{}\n", "...\n...\n",
                                   "# chú thích\n%YAML:1.0\n", "{}x\n", "{ }#sai\n", "scalar\n", "- kp: 4\n", "-\n  kp: 4\n"})
                 rejectLoad(body,header,temporary);
@@ -131,33 +131,41 @@ int main(int argc, char **argv) {
             {"record_every_n: -1\n","record_every_n"}, {"record_every_n: 41\n","record_every_n"},
             {"record_every_n: 0.5\n","record_every_n"},
             {"cruise_cms: \"8\"\n","cruise_cms"}, {"kp: []\n","kp"},
-            {"kp:\n","kp"}, {"scan_rows: []\n","scan_rows"},
-            {"scan_rows: [0, 0.6, 0.4]\n","scan_rows"}, {"scan_rows: [1, 0.6, 0.4]\n","scan_rows"},
-            {"scan_rows: [0.9,0.8,0.7,0.6,0.5,0.4]\n","scan_rows"},
-            {"row_weights: [0,0,0]\n","row_weights"}, {"row_weights: [-1,1,1]\n","row_weights"},
-            {"row_weights: [1,1]\n","row_weights"}, {"row_weights: [.Nan,1,1]\n","row_weights"},
-            {"lane_width_frac: [0,0.5,0.4]\n","lane_width_frac"},
-            {"lane_width_frac: [1.1,0.5,0.4]\n","lane_width_frac"},
-            {"min_valid_rows: 4\n","min_valid_rows"},
+            {"kp:\n","kp"}, {"lane1_width_frac: []\n","lane1_width_frac"},
+            {"lane1_width_frac: [0.1, 0.2]\n","lane1_width_frac"}, {"lane1_width_frac: [0.5]\n","lane1_width_frac"},
+            {"lane1_width_frac: [0.5, 0.2, 0.1]\n","lane1_width_frac"}, {"lane1_width_frac: [0.5, 0]\n","lane1_width_frac"},
+            {"lane1_width_frac: [1.1, 0.2]\n","lane1_width_frac"}, {"lane1_width_frac: [.Nan, 0.2]\n","lane1_width_frac"},
+            {"corridor_rows: 1\n","corridor_rows"}, {"corridor_rows: 21\n","corridor_rows"}, {"corridor_rows: 8.5\n","corridor_rows"},
+            {"corridor_bottom_frac: 1.01\n","corridor_bottom_frac"}, {"corridor_top_frac: 0.96\n","corridor_top_frac"},
+            {"corridor_top_frac: 0\n","corridor_top_frac"},
+            {"two_lane_ratio: 1.19\n","two_lane_ratio"}, {"two_lane_ratio: 3.01\n","two_lane_ratio"},
+            {"max_jump_frac: 0\n","max_jump_frac"}, {"max_jump_frac: 0.51\n","max_jump_frac"},
+            {"conf_min: 1.01\n","conf_min"}, {"conf_min: -0.01\n","conf_min"},
+            {"lookahead_frac: 0.5\n","lookahead_frac"}, {"lookahead_frac: 0.96\n","lookahead_frac"},
+            {"avoid_min_width_ratio: 0\n","avoid_min_width_ratio"}, {"avoid_min_width_ratio: 2.01\n","avoid_min_width_ratio"},
+            {"obstacle_hole_ratio: 0\n","obstacle_hole_ratio"}, {"obstacle_hole_ratio: 1.01\n","obstacle_hole_ratio"},
+            {"corridor_rows: 3\nmin_valid_rows: 4\n","min_valid_rows"},
             {"lost_stop_ms: 200\n","lost_stop_ms"}, {"min_cms: 9\ncruise_cms: 8\n","min_cms"},
             {"max_speed_cms: 7\n","cruise_cms"}, {"lost_cms: 9\nmax_speed_cms: 8\ncruise_cms: 8\n","lost_cms"},
-            {"right_lost_ms: 199\n","right_lost_ms"}, {"right_lost_ms: 2001\n","right_lost_ms"},
-            {"right_lost_ms: -1\n","right_lost_ms"}, {"right_lost_ms: 500.5\n","right_lost_ms"},
-            {"right_clip_frac: 0.89\n","right_clip_frac"}, {"right_clip_frac: 1.01\n","right_clip_frac"},
-            {"pair_mode: -1\n","pair_mode"}, {"pair_mode: 2\n","pair_mode"}, {"pair_mode: 0.5\n","pair_mode"},
-            {"pair_max_shift_frac: 0.04\n","pair_max_shift_frac"}, {"pair_max_shift_frac: 0.61\n","pair_max_shift_frac"},
+            // Khóa thuật toán làn cũ đã bỏ (T79): nay là khóa lạ.
+            {"scan_rows: [0.85, 0.65, 0.45]\n","scan_rows"}, {"row_weights: [0.5, 0.3, 0.2]\n","row_weights"},
+            {"lane_width_frac: [0.7, 0.55, 0.4]\n","lane_width_frac"}, {"right_lost_ms: 500\n","right_lost_ms"},
+            {"right_clip_frac: 0.99\n","right_clip_frac"}, {"pair_mode: 0\n","pair_mode"},
+            {"pair_max_shift_frac: 0.25\n","pair_max_shift_frac"}, {"pair_merge_frac: 0.08\n","pair_merge_frac"},
+            {"kd_filter_ms: 0\n","kd_filter_ms"}, {"lane_width_min_ratio: 0.6\n","lane_width_min_ratio"},
+            {"lane_width_max_ratio: 1.4\n","lane_width_max_ratio"},
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");
         invalid=defaults; invalid.record_every_n=0; invalid.Validate();
         invalid.record_every_n=-1;
         Reject([&] { invalid.Validate(); },"record_every_n");
-        invalid=defaults; invalid.row_weights={1e308,1e308,0};
-        Reject([&] { invalid.Validate(); },"row_weights");
+        invalid=defaults; invalid.lane1_width_frac={0.1,0.2};
+        Reject([&] { invalid.Validate(); },"lane1_width_frac");
         const auto zeroSpeed=load("max_speed_cms: 0\ncruise_cms: 0\nmin_cms: 0\nlost_cms: 0\napproach_cms: 5\n");
         Check(zeroSpeed.max_speed_cms==0 && zeroSpeed.approach_cms==5,"Trần tốc độ 0 vẫn nạp được approach_cms 5");
-        const auto one=load("scan_rows: [0.5]\nrow_weights: [2]\nlane_width_frac: [1]\nmin_valid_rows: 1\n");
-        Check(one.scan_rows.size()==1 && one.row_weights[0]==2,"Trọng số không cần chuẩn hóa hoặc <= 1");
+        const auto two=load("corridor_rows: 2\nmin_valid_rows: 2\nlane1_width_frac: [0.3, 0.3]\n");
+        Check(two.corridor_rows==2 && two.lane1_width_frac[0]==two.lane1_width_frac[1],"Bề rộng gần bằng xa và 2 hàng phải hợp lệ");
         { std::ofstream out(temporary,std::ios::binary); out << "hello"; }
         Check(control::ControlParams::FileHash(temporary)=="a430d84680aabd0b","Sai FNV-1a 64 của hello");
         { std::ofstream out(temporary,std::ios::binary|std::ios::trunc); }

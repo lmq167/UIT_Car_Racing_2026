@@ -5,11 +5,6 @@ add_test(NAME control_params COMMAND test_control_params
 add_executable(test_lane_controller test_lane_controller.cpp)
 target_link_libraries(test_lane_controller PRIVATE ucr_control opencv_imgcodecs)
 add_test(NAME control_lane COMMAND test_lane_controller)
-add_executable(test_t65_clip_center test_t65_clip_center.cpp)
-target_link_libraries(test_t65_clip_center PRIVATE ucr_control)
-add_test(NAME acc_t65_clip_center COMMAND test_t65_clip_center)
-set_tests_properties(acc_t65_clip_center PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-
 # Một ca tạo run, gọi replay thật, rồi đọc lại CSV và ảnh kết quả.
 file(GENERATE OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/replay_test_$<CONFIG>.cmake CONTENT "
 set(root \"${CMAKE_CURRENT_BINARY_DIR}/replay_fixture\")
@@ -46,67 +41,6 @@ endif()
 ")
 add_test(NAME control_replay COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_BINARY_DIR}/replay_test_$<CONFIG>.cmake)
 set_tests_properties(control_params control_lane control_replay PROPERTIES LABELS "control" TIMEOUT 60)
-
-# T55a: hợp đồng luật làn; golden chỉ sinh bằng lệnh riêng trên cây khung.
-add_executable(test_t55_lane_rules test_t55_lane_rules.cpp)
-target_link_libraries(test_t55_lane_rules PRIVATE ucr_control)
-target_compile_definitions(test_t55_lane_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
-target_compile_options(test_t55_lane_rules PRIVATE -Wall -Wextra)
-add_test(NAME acc_t55_mask COMMAND test_t55_lane_rules --check-mask)
-set_tests_properties(acc_t55_mask PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-foreach(scenario disabled replay_b1 threshold below all_valid invalid_rows
-        counter_reset clock_reset stale_reset replay_b1_8218 recovery disabled_empty)
-    add_test(NAME acc_t55_${scenario} COMMAND test_t55_lane_rules ${scenario})
-    set_tests_properties(acc_t55_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
-add_test(NAME acc_t55_params COMMAND test_t55_lane_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_params.yaml)
-set_tests_properties(acc_t55_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-
-# T55c: B3 theo hợp đồng; khung 6100 chỉ chạy tay, chưa được xác nhận.
-add_executable(test_t55_pair_rules test_t55_pair_rules.cpp)
-target_link_libraries(test_t55_pair_rules PRIVATE ucr_control opencv_imgcodecs)
-target_compile_definitions(test_t55_pair_rules PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
-target_compile_options(test_t55_pair_rules PRIVATE -Wall -Wextra)
-foreach(scenario off 6010 single_right single_left empty exact near_previous near_other near_none
-        near_tie outside upper_gap upper_tie shift_limit near_invalid anchor_far_invalid reset stale invalid_reset width offset)
-    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
-    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
-add_test(NAME acc_t55_pair_params COMMAND test_t55_pair_rules params ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_params.yaml)
-set_tests_properties(acc_t55_pair_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-
-# T55d: chỉ thêm ca theo đặc tả; nhóm D chạy tay, chờ Quân.
-foreach(scenario near_boundary_left near_boundary_right match_boundary_left match_boundary_right
-        replay_b1_pair empty_mat_commands single_commands near_invalid_commands
-        merge_mean merge_exact merge_chain merge_disabled merge_noise merge_off
-        merge_near_outer merge_upper_roles merge_7675_930
-        merge_default_gap_0p07 merge_upper_anchor_row1
-        regress_A regress_B regress_C regress_total)
-    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario})
-    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
-foreach(scenario params_order params_merge)
-    add_test(NAME acc_t55_pair_${scenario} COMMAND test_t55_pair_rules ${scenario}
-        ${CMAKE_CURRENT_BINARY_DIR}/t55_pair_${scenario}.yaml)
-    set_tests_properties(acc_t55_pair_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
-
-# T56f: đạo hàm lọc theo đặc tả, dùng trường/khóa sẽ được DEV bổ sung.
-add_executable(test_t56_kd_filter test_t56_kd_filter.cpp)
-target_link_libraries(test_t56_kd_filter PRIVATE ucr_control)
-target_compile_definitions(test_t56_kd_filter PRIVATE
-    T56_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"
-    T56_CONTROL_YAML="${CMAKE_CURRENT_SOURCE_DIR}/../../control.yaml")
-target_compile_options(test_t56_kd_filter PRIVATE -Wall -Wextra)
-foreach(scenario yaml_default step_noise off_exact lost stale reset ref recovery)
-    add_test(NAME acc_t56_kd_${scenario} COMMAND test_t56_kd_filter ${scenario})
-    set_tests_properties(acc_t56_kd_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
-foreach(scenario golden params)
-    add_test(NAME acc_t56_kd_${scenario} COMMAND test_t56_kd_filter ${scenario}
-        ${CMAKE_CURRENT_BINARY_DIR}/t56_kd_${scenario}.yaml)
-    set_tests_properties(acc_t56_kd_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
-endforeach()
 
 add_executable(test_t66_obstacle test_t66_obstacle.cpp)
 target_link_libraries(test_t66_obstacle PRIVATE ucr_control)
@@ -211,19 +145,12 @@ foreach(scenario hold_2of5 release_2of5 hold_1of5 start_2of5 default_3of5 stale_
     set_tests_properties(acc_t58_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
 endforeach()
 
-add_executable(test_t59_pair_hold test_t59_pair_hold.cpp)
-target_link_libraries(test_t59_pair_hold PRIVATE ucr_control)
-target_compile_definitions(test_t59_pair_hold PRIVATE T55_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures")
-target_compile_options(test_t59_pair_hold PRIVATE -Wall -Wextra)
-foreach(scenario jump_left straight_stable straight_seq far_not_worse no_row_loss flip pair0_golden)
-    add_test(NAME acc_t59_${scenario} COMMAND test_t59_pair_hold ${scenario})
-    set_tests_properties(acc_t59_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+# T79: hành lang (unit DEV) và test chấp nhận do phiên riêng viết.
+add_executable(test_t79_corridor test_t79_corridor.cpp)
+target_link_libraries(test_t79_corridor PRIVATE ucr_control)
+target_compile_options(test_t79_corridor PRIVATE -Wall -Wextra)
+foreach(scenario one_lane two_lanes image_edge jump hole split roundabout empty)
+    add_test(NAME control_t79_corridor_${scenario} COMMAND test_t79_corridor ${scenario})
+    set_tests_properties(control_t79_corridor_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
-
-# Chuyển làn khi né trên đường hai làn (pair_mode=1): theo vạch phân làn.
-add_executable(test_swerve_lane test_swerve_lane.cpp)
-target_link_libraries(test_swerve_lane PRIVATE ucr_control)
-foreach(scenario left arrived lost_divider return_right keep_across_reset reset_clears pair0_return_keeps_right_lost pair0_unchanged planner_cycle return_end)
-    add_test(NAME test_swerve_lane_${scenario} COMMAND test_swerve_lane ${scenario})
-    set_tests_properties(test_swerve_lane_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
-endforeach()
+include(${CMAKE_CURRENT_SOURCE_DIR}/t79_acceptance.cmake)

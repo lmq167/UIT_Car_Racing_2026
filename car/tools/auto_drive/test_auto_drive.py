@@ -85,13 +85,12 @@ BOUNDS = {
     'min_cms': (4, 0, 10, 'cm/s'), 'lost_cms': (4, 0, 10, 'cm/s'),
     'slow_per_deg': (0.1, 0, 1, 'cm/s/'), 'steer_max_deg': (30, 0, 40, ''),
     'steer_rate_dps': (200, 10, 1000, '/s'), 'kp': (30, 0, 200, ''),
-    'kd': (2, 0, 50, ''), 'lane_width_min_ratio': (0.6, 0.1, 1, ''),
-    'lane_width_max_ratio': (1.4, 1, 3, ''), 'center_offset_frac': (0, -0.5, 0.5, ''),
+    'kd': (2, 0, 50, ''), 'corridor_rows': (8, 2, 20, ''), 'two_lane_ratio': (1.5, 1.2, 3, ''),
+    'conf_min': (0.4, 0, 1, ''), 'center_offset_frac': (0, -0.5, 0.5, ''),
     'min_valid_rows': (1, 1, 5, ''), 'lost_hold_ms': (300, 0, 2000, 'ms'),
     'lost_stop_ms': (800, 0, 3000, 'ms'), 'regain_frames': (3, 1, 20, ''),
     'record_every_n': (5, 0, 40, ''), 'yolo_every_n': (3, 1, 10, '')}
-VECTORS = {'scan_rows': [0.85, 0.65, 0.45], 'row_weights': [0.5, 0.3, 0.2],
-           'lane_width_frac': [0.70, 0.55, 0.40]}
+VECTORS = {'lane1_width_frac': [0.57, 0.17]}
 CSV_FIELDS = ('t_ms frame_id image_age_ms mask_age_ms det_age_ms planner_state '
               'scan_rows e p d requested_steer_deg requested_speed_cms sent_steer_deg '
               'sent_speed_cms reason road_ms yolo_ms loop_ms dropped csv_dropped').split()
@@ -701,7 +700,7 @@ def inspect_session(run, sha256_failed=False):
             need(math.isfinite(float(row[name])), 'Tuổi CSV không hữu hạn')
         scan = json.loads(row['scan_rows'])
         if int(row['frame_id']) > 0:
-            need(len(scan) == len(run.values.get('scan_rows', VECTORS['scan_rows'])), 'CSV thiếu hàng quét')
+            need(len(scan) == run.values.get('corridor_rows', BOUNDS['corridor_rows'][0]), 'CSV thiếu hàng hành lang')
             need(all(set(('y_frac', 'left_frac', 'right_frac', 'center_frac', 'valid')) <= set(s) for s in scan),
                  'CSV thiếu biên/tâm từng hàng')
             for s in scan:
@@ -2219,12 +2218,12 @@ def test_case(case, cfg, root):
                 for key in ('approach_cms', 'min_cms', 'lost_cms')]
         for key in VECTORS:
             bad.extend(({key: []}, {key: [0.5] * 6}, {key: 'sai_kieu'}, {key: [-0.1, 0.5, 0.5]}))
-        bad += [{'scan_rows': [0, 0.65, 0.45]}, {'scan_rows': [1, 0.65, 0.45]},
-                {'lane_width_frac': [0, 0.55, 0.4]}, {'lane_width_frac': [1.01, 0.55, 0.4]},
-                {'row_weights': [0, 0, 0]}, {'row_weights': [1]}, {'lane_width_frac': [0.5]},
-                {'scan_rows': [0.5]}, {'ki': 1}, {'lane_width_px': 100}, {'center_offset_px': 0},
+        bad += [{'lane1_width_frac': [0.1, 0.2]}, {'lane1_width_frac': [1.01, 0.2]},
+                {'lane1_width_frac': [0.5, 0]}, {'lane1_width_frac': [0.5]},
+                {'scan_rows': [0.85, 0.65, 0.45]}, {'pair_mode': 0}, {'kd_filter_ms': 0},
+                {'ki': 1}, {'lane_width_px': 100}, {'center_offset_px': 0},
                 {'unknown': 1}, {'max_speed_cms': 7}, {'min_cms': 9}, {'lost_cms': 9, 'max_speed_cms': 8},
-                {'lost_hold_ms': 900}, {'min_valid_rows': 4}]
+                {'lost_hold_ms': 900}, {'corridor_rows': 3, 'min_valid_rows': 4}]
         for i, values in enumerate(bad):
             with running(cfg, root / str(i), values=values) as r:
                 reject(r)
@@ -2246,12 +2245,10 @@ def test_case(case, cfg, root):
                     values['lost_stop_ms'] = max(800, bound)
                 if key == 'lost_stop_ms':
                     values['lost_hold_ms'] = 0
-                if key == 'min_valid_rows':
-                    values.update(scan_rows=[0.2, 0.35, 0.5, 0.65, 0.85], row_weights=[1] * 5, lane_width_frac=[0.5] * 5)
                 variants.append(values)
         variants += [dict(max_speed_cms=20, cruise_cms=20, steer_max_deg=40),
-                     dict(scan_rows=[0.5], row_weights=[1], lane_width_frac=[1]),
-                     dict(scan_rows=[0.1, 0.3, 0.5, 0.7, 0.9], row_weights=[0, 0, 0, 0, 1], lane_width_frac=[1] * 5)]
+                     dict(corridor_rows=2, lane1_width_frac=[0.3, 0.3]),
+                     dict(corridor_rows=20, conf_min=0, lane1_width_frac=[1, 0.1])]
         for i, values in enumerate(variants):
             with running(cfg, root / str(i), values=values) as r:
                 r.boot(); r.frames(3); r.finish(); inspect_session(r)

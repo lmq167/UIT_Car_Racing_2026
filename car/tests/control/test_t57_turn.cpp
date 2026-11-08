@@ -18,7 +18,7 @@ struct Rig {
     uint64_t frame=0;
     Rig(bool sensor_ok=true) {
         p.turn_enable=1; p.start_wait_green=0; p.kd=0;
-        p.lane_width_frac={0.4,0.4,0.4};
+        p.lane1_width_frac={0.8,0.8};  // cả hai fixture (cột 60..140, 20..180) là đường một làn
         in.yolo_enabled=true; in.sensor_ok=sensor_ok;
         mask(60,140);
         in.go=true; step(); in.go=false;
@@ -87,7 +87,7 @@ struct Rig {
         control::Plan plan;
         for (int i=0;i<p.vote_min;++i) { now+=40; plan=step(); }
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
-              plan.reference==control::LaneRef::LEFT,"Thiết lập phải đang né trái");
+              plan.mode==control::TrajMode::AVOID_LEFT,"Thiết lập phải đang né trái");
     }
 };
 void Cancelled(const control::Plan& plan, const control::ControlParams& p) {
@@ -260,7 +260,7 @@ void Case(const std::string& name) {
         const bool cancel=name=="t68_arm_distance";
         auto plan=r.advance(cancel?r.p.turn_arm_cm:r.p.turn_start_cm);
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
-              plan.reference==control::LaneRef::LEFT,"Đủ quãng khi NE_TRAI không được rẽ/hủy ở đúng80");
+              plan.mode==control::TrajMode::AVOID_LEFT,"Đủ quãng khi NE_TRAI không được rẽ/hủy ở đúng80");
         if (cancel) {
             plan=r.advance(0.01);
             Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE","Quá80cm khi né phải HUY_RE");
@@ -269,7 +269,7 @@ void Case(const std::string& name) {
         r.obstacle(false);
         for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA" &&
-              plan.reference==control::LaneRef::LEFT,"Đủ quãng khi NE_QUA không được rẽ");
+              plan.mode==control::TrajMode::AVOID_LEFT,"Đủ quãng khi NE_QUA không được rẽ");
         bool returning=false, returned=false;
         double return_distance=0;
         for (int i=0;i<400;++i) {
@@ -282,14 +282,14 @@ void Case(const std::string& name) {
                       (!cancel && plan.state==control::PlannerState::RE_TRAI),
                       "Hết VE_PHAI mới được bắt đầu rẽ nếu còn armed");
                 if (plan.state==control::PlannerState::BAM_LAN)
-                    Check(plan.reason=="BAM_LAN" && plan.reference==control::LaneRef::RIGHT,
+                    Check(plan.reason=="BAM_LAN" && plan.mode==control::TrajMode::LANE,
                           "Hết VE_PHAI khi chưa rẽ phải trở về bám làn phải; nhận "+plan.reason+
-                          " ref="+std::to_string(static_cast<int>(plan.reference))+
+                          " ref="+std::to_string(static_cast<int>(plan.mode))+
                           " quãng="+std::to_string(return_distance));
                 returned=true; break;
             }
             if (plan.reason=="VE_PHAI") {
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==control::TrajMode::RETURN_RIGHT &&
                       plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms,
                       "Suốt VE_PHAI phải trả làn, kẹp tốc độ và không rẽ");
                 returning=true; continue;
@@ -311,7 +311,7 @@ void Case(const std::string& name) {
             Check(plan.reason=="NE_QUA","Thiết lập Q8 phải qua NE_QUA");
             for (int i=0;i<1000 && plan.reason=="NE_QUA";++i) { r.now+=100; plan=r.step(); }
             Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
-                  plan.reference==control::LaneRef::RIGHT && plan.cmd.cms>0,"Thiết lập Q8 phải đang VE_PHAI");
+                  plan.mode==control::TrajMode::RETURN_RIGHT && plan.cmd.cms>0,"Thiết lập Q8 phải đang VE_PHAI");
             return plan;
         };
         // Quãng kiểm tra lấy từ lệnh vừa gửi; encoder chỉ phục vụ điều kiện rẽ biển.
@@ -332,7 +332,7 @@ void Case(const std::string& name) {
                     tick(r,plan,distance,sign); if (sign) ++votes;
                     if (distance+1e-9<r.p.obstacle_pass_cm)
                         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
-                              plan.reference==control::LaneRef::RIGHT,
+                              plan.mode==control::TrajMode::RETURN_RIGHT,
                               "Biển ở đầu/giữa VE_PHAI phải chờ hết quãng; nhận "+plan.reason+
                               " state="+control::StateName(plan.state)+" quãng="+std::to_string(distance));
                 }
@@ -360,7 +360,7 @@ void Case(const std::string& name) {
             auto plan=returning(r); double distance=0;
             for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm;++i) {
                 Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
-                      plan.reference==control::LaneRef::RIGHT && plan.cmd.cms==r.p.cruise_cms &&
+                      plan.mode==control::TrajMode::RETURN_RIGHT && plan.cmd.cms==r.p.cruise_cms &&
                       plan.debug.speed_cms==plan.cmd.cms,
                       "VE_PHAI phải giữ cruise_cms=5 khi approach_cms=6, không tăng tốc");
                 tick(r,plan,distance);
@@ -384,7 +384,7 @@ void Case(const std::string& name) {
             r.in.go=true; tick(r,plan,distance); r.in.go=false;
             for (int i=0;i<10;++i) {
                 Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
-                      plan.reference==control::LaneRef::RIGHT && plan.cmd.cms==r.p.cruise_cms,
+                      plan.mode==control::TrajMode::LANE && plan.cmd.cms==r.p.cruise_cms,
                       "G sau Space phải BAM_LAN/RIGHT ở cruise; nhận "+plan.reason+
                       " state="+control::StateName(plan.state)+" cms="+std::to_string(plan.cmd.cms)+
                       " cruise="+std::to_string(r.p.cruise_cms));
@@ -398,7 +398,7 @@ void Case(const std::string& name) {
                 for (int i=0;i<1000 && distance+1e-9<cm;++i) {
                     last_cm=plan.cmd.cms*0.1;
                     tick(r,plan,distance);
-                    Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                    Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==(distance+1e-9<cm?control::TrajMode::RETURN_RIGHT:control::TrajMode::LANE) &&
                           plan.reason==(distance+1e-9<cm?"VE_PHAI":"BAM_LAN"),
                           "VE_PHAI phải kết thúc đúng obstacle_pass_cm, không dùng quãng cố định");
                 }
@@ -411,14 +411,14 @@ void Case(const std::string& name) {
         } else {
             Rig r; auto plan=returning(r);
             control::LaneController expected;
-            expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::LaneRef::RIGHT);
+            expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::TrajMode::RETURN_RIGHT);
             const auto last_valid=r.now;
             r.in.mask.setTo(0);
             for (int elapsed:{1,r.p.lost_hold_ms-1,r.p.lost_hold_ms,r.p.lost_stop_ms-1,r.p.lost_stop_ms}) {
                 r.now=last_valid+elapsed; plan=r.step();
-                const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::LaneRef::RIGHT);
+                const auto lane=expected.Step(r.in.mask,r.in.mask_ms,r.now,r.p,control::TrajMode::RETURN_RIGHT);
                 const double speed=lane.cmd.cms<r.p.approach_cms?lane.cmd.cms:r.p.approach_cms;
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT &&
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==control::TrajMode::RETURN_RIGHT &&
                       plan.reason!="MAT_LAN_NE" && plan.debug.reason!="MAT_LAN_NE" && plan.cmd.cms==speed,
                       "Mất làn trong VE_PHAI phải theo LaneController thường, không chốt MAT_LAN_NE");
             }
@@ -518,7 +518,7 @@ void Case(const std::string& name) {
         r.obstacle(true);
         for (int i=0;i<r.p.vote_window+3;++i) {
             const auto plan=r.send({"round_barrier"});
-            Check(plan.reason!="NE_TRAI" && plan.reference==control::LaneRef::RIGHT,"Đang qua vòng xuyến không được né");
+            Check(plan.reason!="NE_TRAI" && plan.mode==control::TrajMode::LANE,"Đang qua vòng xuyến không được né");
         }
         Rig outside; outside.avoid();
     } else if (name=="obstacle_stop_no_turn") {
