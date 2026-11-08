@@ -210,7 +210,7 @@ void Case(const std::string& name) {
             r.arm(sign); Check(r.advance(r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"Chưa đủ quãng chưa rẽ");
             const auto plan=r.advance(1);
             Check(control::StateName(plan.state)==std::string(left?"RE_TRAI":"RE_PHAI") &&
-                  plan.reason==control::StateName(plan.state) && plan.debug.state==plan.reason &&
+                  plan.reason=="RE_THEO_QUANG" && plan.debug.state==control::StateName(plan.state) &&
                   plan.debug.reason==plan.reason,"Sai hướng/lý do/debug biển");
         }
     } else if (name=="t68_no_sign") {
@@ -341,12 +341,9 @@ void Case(const std::string& name) {
                 Check(votes>=r.p.vote_min && distance+1e-9>=r.p.obstacle_pass_cm,
                       "Thiết lập biển phải đủ phiếu và hoàn tất quãng VE_PHAI");
                 if (plan.state==control::PlannerState::BAM_LAN) tick(r,plan,distance,true);
-                // Biển còn trong ảnh thì mốc rẽ dời theo; rẽ chỉ bắt đầu sau turn_start_cm kể từ lúc biển rời khung hình.
-                Check(plan.state==control::PlannerState::BAM_LAN,"Biển còn trong ảnh chưa rẽ; nhận "+plan.reason);
-                const double last_seen=r.in.odo_cm; int ticks=0;
-                while (plan.state!=control::PlannerState::RE_TRAI && ticks++<400) tick(r,plan,distance,false);
-                Check(plan.state==control::PlannerState::RE_TRAI && r.in.odo_cm-last_seen>=r.p.turn_start_cm-1e-9,
-                      "Biển rời khung hình rồi đi turn_start_cm phải rẽ; nhận "+plan.reason);
+                // Đủ quãng từ lần đủ phiếu đầu: hết VE_PHAI phải rẽ dù biển còn trong ảnh.
+                Check(plan.state==control::PlannerState::RE_TRAI && plan.reason=="RE_THEO_QUANG",
+                      "Hết VE_PHAI, đủ quãng từ mốc đầu phải rẽ; nhận "+plan.reason);
             }
             Rig fresh; auto plan=returning(fresh); double distance=0;
             for (int i=0;i<1000 && distance+1e-9<fresh.p.obstacle_pass_cm;++i) tick(fresh,plan,distance);
@@ -496,16 +493,15 @@ void Case(const std::string& name) {
             Check(turned==(width>=45.0f),"Chỉ biển rộng >= 45 px được tính, rộng "+std::to_string(width));
         }
     } else if (name=="sign_exit_anchor") {
-        // Biển còn trong ảnh: mốc rẽ dời theo; rời khung hình rồi đi turn_start_cm mới rẽ.
+        // Biển còn trong ảnh không đổi mốc đủ phiếu đầu.
         Rig r; r.arm("left");
-        for (int i=0;i<5;++i) { r.advance(10); r.send({"left"}); }
-        const double last_seen=r.in.odo_cm;
-        Check(r.send({"left"}).state==control::PlannerState::BAM_LAN,"Biển còn trong ảnh chưa rẽ");
-        r.in.detections={{},r.now,++r.frame};
-        control::Plan plan;
-        for (int i=0;i<40 && plan.state!=control::PlannerState::RE_TRAI;++i) { r.now+=40; r.in.odo_cm+=2; r.in.detections={{},r.now,++r.frame}; plan=r.step(); }
-        Check(plan.state==control::PlannerState::RE_TRAI,"Rời khung hình rồi đi đủ quãng phải rẽ");
-        Check(r.in.odo_cm-last_seen>=r.p.turn_start_cm-1e-9,"Quãng tính từ lúc biển rời khung hình");
+        for(int cm=1;cm<=r.p.turn_start_cm;++cm) {
+            r.in.odo_cm=cm;
+            const auto plan=r.send({"left"});
+            Check(plan.state==(cm<r.p.turn_start_cm ? control::PlannerState::BAM_LAN : control::PlannerState::RE_TRAI),
+                  "Biển liên tục không dời mốc đủ phiếu đầu");
+            if(cm==r.p.turn_start_cm) Check(plan.reason=="RE_THEO_QUANG","Khung đầu rẽ theo quãng");
+        }
     } else if (name=="turn_steer_by_type") {
         // Rẽ phải lái nhiều hơn (bán kính đường xe ~65 cm), rẽ trái do rào lái ít hơn (vào đường 2 làn ~95 cm).
         Rig left; left.turn(true); Rig right; right.turn(false);
@@ -802,8 +798,8 @@ void Case(const std::string& name) {
         Rig distance; distance.in.odo_cm=100; distance.arm(); distance.in.odo_cm=120;
         for (int i=0;i<distance.p.vote_window;++i) distance.send({"left"});
         distance.in.odo_cm=100+distance.p.turn_arm_cm+0.01; ++distance.now;
-        // Biển còn trong ảnh dời mốc armed theo (mốc rẽ tính từ lúc biển rời khung hình): không hủy theo mốc cũ.
-        Check(control::StateName(distance.step().state)==std::string("RE_TRAI"),"Biển mới dời mốc armed");
+        // Biển nhận lại không dời mốc đầu: quá turn_arm_cm khi chưa cua phải hủy.
+        Check(distance.step().reason=="HUY_RE","Biển mới không dời mốc armed");
         Rig travel; travel.turn(); const double turn_odo=travel.in.odo_cm; travel.in.odo_cm+=10;
         for (int i=0;i<travel.p.vote_window;++i) travel.send({"right"});
         travel.in.odo_cm=turn_odo+travel.p.turn_max_cm+0.01; ++travel.now;
@@ -824,7 +820,8 @@ void Case(const std::string& name) {
         Rig r; r.arm();
         r.mask(0,140);
         for (int i=0;i<4;++i) { r.now+=40; Check(r.step().state==control::PlannerState::BAM_LAN,"J1 đúng nhưng chưa đi đủ quãng không được rẽ"); }
-        Check(r.advance(r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"J1 đúng và29cm vẫn chưa rẽ");
+        Check(r.advance(0.5*r.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,"Giao lộ không cho rẽ trước nửa quãng");
+        Check(r.advance(1).reason=="RE_GIAO_LO","Đủ nửa quãng và phiếu giao lộ phải rẽ");
     } else if (name=="arm_distance") {
         for (double sign:{-1.0,1.0}) {
             Rig r; r.in.odo_cm=100; r.arm();

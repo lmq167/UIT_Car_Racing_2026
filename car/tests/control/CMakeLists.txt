@@ -154,3 +154,11 @@ foreach(scenario one_lane two_lanes image_edge jump hole split roundabout empty 
     set_tests_properties(control_t79_corridor_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
 include(${CMAKE_CURRENT_SOURCE_DIR}/t79_acceptance.cmake)
+
+add_executable(test_t79_turn test_t79_turn.cpp)
+target_link_libraries(test_t79_turn PRIVATE ucr_control)
+target_compile_options(test_t79_turn PRIVATE -Wall -Wextra)
+foreach(scenario R1 R2 R3 R4 R5 R6 R7)
+    add_test(NAME control_t79_turn_${scenario} COMMAND test_t79_turn ${scenario})
+    set_tests_properties(control_t79_turn_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+endforeach()
