@@ -28,6 +28,46 @@ def metadata():
     }
 
 
+def twin_metadata():
+    info = metadata()
+    info.update({"class_names": ["background", "road"], "num_classes": 2, "crop_y": [0, 7], "crop_x": [0, 11],
+                 "output_shape": [1, 2, 3, 4], "resize": "cv2.resize INTER_LINEAR (full -> input)",
+                 "normalization": {"scale": 1 / 255, "mean": [0.485, 0.456, 0.406],
+                                   "std": [0.229, 0.224, 0.225]}})
+    return info
+
+
+class TwinLiteTests(unittest.TestCase):
+    def test_twinlite_info_accepted_and_rejected(self):
+        info = twin_metadata()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "info.json"
+            path.write_text(json.dumps(info), encoding="utf-8")
+            self.assertEqual(ref.load_info(path), info)
+            for key, value in (("output_shape", [1, 3, 3, 4]), ("num_classes", 3), ("crop_y", [1, 7]),
+                               ("resize", "cv2.resize INTER_AREA (crop -> input)"),
+                               ("normalization", {"scale": 1 / 255, "mean": [0.485, 0.456, 0.406],
+                                                  "std": [0.229, 0, 0.225]}),
+                               ("normalization", {"scale": 1 / 255, "mean": [0.485, 0.456],
+                                                  "std": [0.229, 0.224, 0.225]})):
+                broken = copy.deepcopy(info)
+                broken[key] = value
+                path.write_text(json.dumps(broken), encoding="utf-8")
+                with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                    ref.load_info(path)
+
+    def test_twinlite_preprocess_linear_full_imagenet(self):
+        info = twin_metadata()
+        image = np.arange(7 * 11 * 3, dtype=np.uint8).reshape(7, 11, 3)
+        blob = ref.preprocess(image, info)
+        rgb = cv2.resize(image, (4, 3), interpolation=cv2.INTER_LINEAR)[:, :, ::-1].astype(np.float32)
+        mean = np.array([0.485, 0.456, 0.406], np.float32)
+        std = np.array([0.229, 0.224, 0.225], np.float32)
+        expected = np.moveaxis((rgb * np.float32(1 / 255) - mean) / std, -1, 0)[None]
+        np.testing.assert_allclose(blob, expected, rtol=0, atol=1e-6)
+        self.assertEqual(blob.dtype, np.dtype("<f4"))
+
+
 class ReferenceTests(unittest.TestCase):
     def test_info_required_and_types(self):
         info = metadata()
