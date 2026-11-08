@@ -239,11 +239,17 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
         }
     }
-    // Quãng pha: ưu tiên encoder tươi; mẫu hỏng dùng tích phân lệnh đã gửi.
+    // Quãng pha: kẹp bước encoder; mẫu hỏng/đứng 1,5 s dùng tích phân lệnh đã gửi.
+    if(sensor_bad || !swerve_odo_valid_ || swerve_ms_<0 || sent_cms_<=0 ||
+       swerve_progress_ms_<0 || std::abs(input.odo_cm-swerve_progress_odo_)>=1) {
+        swerve_progress_odo_=input.odo_cm; swerve_progress_ms_=now_ms;
+    }
     double distance=0;
     if(swerve_ms_>=0 && now_ms>swerve_ms_) {
-        distance=!sensor_bad && swerve_odo_valid_ ? std::abs(input.odo_cm-swerve_odo_) :
-            sent_cms_*(now_ms-swerve_ms_)/1000.0;
+        const double dt=(now_ms-swerve_ms_)/1000.0;
+        const bool use_encoder=!sensor_bad && swerve_odo_valid_ &&
+            !(sent_cms_>0 && now_ms-swerve_progress_ms_>=1500);
+        distance=use_encoder ? std::min(std::abs(input.odo_cm-swerve_odo_),2*params.max_speed_cms*dt) : sent_cms_*dt;
     }
     swerve_odo_=input.odo_cm; swerve_odo_valid_=!sensor_bad;
     if(swerve_==Swerve::PASS) pass_cm_+=distance;
@@ -255,7 +261,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         if(mask_fresh && input.mask_ms!=last_mask_ms_) {
             last_mask_ms_=input.mask_ms;
-            bool obstacle=false, near_hole=false, avoid_ok=false;
+            bool obstacle=false, near_hole=false, avoid_ok=true;
             if(!rb_in_pass_) {
                 const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
                 const double bottom=std::lround(params.corridor_bottom_frac*input.mask.rows);
@@ -263,7 +269,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 int candidates=0;
                 for(const auto &row:corridor.rows) {
                     if(!row.valid || !row.hole || row.y<(params.corridor_bottom_frac+params.corridor_top_frac)*input.mask.rows/2) continue;
-                    near_hole=true; avoid_ok=avoid_ok || row.avoid_ok;
+                    near_hole=true; avoid_ok=avoid_ok && row.avoid_ok;
                     const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-row.y)/(bottom-top))) : 0;
                     const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
                     // hole_l/r là các pixel 0, hai đoạn đường hai phía đã được ExtractCorridor chọn.

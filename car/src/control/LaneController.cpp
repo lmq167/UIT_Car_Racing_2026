@@ -7,6 +7,7 @@ namespace control {
 namespace {
 constexpr double kNoiseFrac=0.15;    // TẠM, CHƯA ĐO: đoạn hẹp hơn 0,15·w(y) là nhiễu
 constexpr double kConfPenalty=0.3;   // TẠM, CHƯA ĐO: mức trừ độ tin cậy mỗi dấu hiệu xấu
+constexpr double kNoRealEdgePenalty=0.1; // TẠM, CHƯA ĐO: hai biên không thật phải thấp hơn conf_min mặc định 0,4
 constexpr double kMergeFactor=1.5;   // TẠM, CHƯA ĐO: gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
 constexpr double kMinWidthRatio=0.6; // TẠM, CHƯA ĐO: bề rộng dưới 0,6·w(y) là bất thường
 constexpr double kRightLaneFrac=0.25, kLeftLaneFrac=0.75;  // tâm làn phải/trái của đường hai làn
@@ -124,7 +125,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         }
         const int bad_edges=int(!left_ok)+int(!right_ok);
         const bool odd_width=width<kMinWidthRatio*w || width>params.two_lane_ratio*kMergeFactor*w;
-        row.conf=Clamp(1-kConfPenalty*(bad_edges+int(row.hole)+int(odd_width)),0,1);
+        row.conf=Clamp(1-kConfPenalty*(bad_edges+int(row.hole)+int(odd_width))-(bad_edges==2 ? kNoRealEdgePenalty : 0),0,1);
         row.valid=true;
         corridor.rows.push_back(row);
         lower=int(corridor.rows.size())-1; lower_raw=raw;
@@ -161,7 +162,10 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         std::vector<const RowDebug*> usable;
         for(const auto &row:corridor.rows) if(row.valid && row.conf>=params.conf_min) usable.push_back(&row);
         result.debug.valid_rows=int(usable.size());
-        if(int(usable.size())>=std::max(2,params.min_valid_rows)) {
+        const bool real_edge=std::any_of(usable.begin(),usable.end(),[](const RowDebug *row) {
+            return row->flag_left==kThat || row->flag_right==kThat;
+        });
+        if((mode==TrajMode::ROUNDABOUT || real_edge) && int(usable.size())>=std::max(2,params.min_valid_rows)) {
             // Bình phương tối thiểu trọng số conf, biến y dịch tâm c cho ổn định số rồi đổi về y pixel.
             const int degree=usable.size()>=3 ? 2 : 1;
             double c=0, total=0;

@@ -44,6 +44,8 @@ private:
     double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
     int64_t swerve_ms_=-1;
     double swerve_odo_=0;
+    double swerve_progress_odo_=0; // mốc kiểm encoder tiến đủ 1 cm trong pha né/về
+    int64_t swerve_progress_ms_=-1;
     bool swerve_odo_valid_=false; // mốc encoder của bước trước phải hợp lệ để lấy hiệu quãng
     uint64_t last_frame_=0;
     int green_run_=0;
