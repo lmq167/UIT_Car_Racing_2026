@@ -53,8 +53,8 @@ def unchanged_commands(cfg, root):
                        'Goc cuoi chua on dinh: ' + repr(commands), 'debug_commands')
                 samples.append(commands)
                 if enabled:
-                    a.need(set(debug_rows(events)) == {3},
-                           'Sau G phai co debug nrows=3', 'debug_after_go')
+                    a.need(set(debug_rows(events)) == {8},  # corridor_rows mặc định (thuật toán cũ: 3 hàng quét)
+                           'Sau G phai co debug nrows=8', 'debug_after_go')
                 run.finish()
                 if not enabled:
                     a.need(not run.of('debug'), 'Tat co van co debug', 'debug_disabled')

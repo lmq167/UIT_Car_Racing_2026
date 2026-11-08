@@ -140,7 +140,7 @@ int main(int argc, char **argv) {
             {"corridor_top_frac: 0\n","corridor_top_frac"},
             {"two_lane_ratio: 1.19\n","two_lane_ratio"}, {"two_lane_ratio: 3.01\n","two_lane_ratio"},
             {"max_jump_frac: 0\n","max_jump_frac"}, {"max_jump_frac: 0.51\n","max_jump_frac"},
-            {"conf_min: 1.01\n","conf_min"}, {"conf_min: -0.01\n","conf_min"},
+            {"corridor_conf_min: 1.01\n","corridor_conf_min"}, {"corridor_conf_min: -0.01\n","corridor_conf_min"},
             {"lookahead_frac: 0.5\n","lookahead_frac"}, {"lookahead_frac: 0.96\n","lookahead_frac"},
             {"avoid_min_width_ratio: 0\n","avoid_min_width_ratio"}, {"avoid_min_width_ratio: 2.01\n","avoid_min_width_ratio"},
             {"obstacle_hole_ratio: 0\n","obstacle_hole_ratio"}, {"obstacle_hole_ratio: 1.01\n","obstacle_hole_ratio"},
