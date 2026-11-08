@@ -68,7 +68,7 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
        <<(imageMs<0 ? -1 : now-imageMs)<<','
        <<(model.frame.captured_ms<0 ? -1 : now-model.frame.captured_ms)<<','
        <<(command.yolo.detections.captured_ms<0 ? -1 : now-command.yolo.detections.captured_ms)<<','
-       <<csvString(scanJson(command.plan.debug,model.mask.cols,model.mask.rows))<<','
+       <<csvString(scanJson(command.plan.debug,params,model.mask.cols,model.mask.rows))<<','
        <<command.plan.debug.e<<','<<command.plan.debug.p<<','<<command.plan.debug.d<<','
        <<command.plan.cmd.deg<<','<<command.plan.cmd.cms<<','<<sentAngle<<','<<sentSpeed<<','
        <<csvString(reason)<<','<<model.road_ms<<','<<command.yolo.yolo_ms<<','<<command.loop_ms<<','

@@ -260,17 +260,20 @@ void LogWriter::run() noexcept {
         detectionsDropped+=detections_.size(); detections_.clear();
     }
 }
-// Cột scan_rows (giữ tên cũ): mỗi hàng hành lang một đối tượng; center_frac = target (điểm mục tiêu hàng).
-std::string scanJson(const control::ControlDebug& debug,int width,int height) {
+// Cột scan_rows (giữ tên cũ): luôn đủ corridor_rows hàng như hợp đồng log cũ; center_frac = target (điểm mục tiêu hàng).
+std::string scanJson(const control::ControlDebug& debug,const control::ControlParams& params,int width,int height) {
     std::ostringstream out; out<<'[';
     const auto frac=[&](double v,int size) {
         if (v<0 || size<=0) return std::string("null");
         std::ostringstream s; s<<std::max(0.0,std::min(1.0,v/size)); return s.str();
     };
-    for (size_t i=0;i<debug.rows.size();++i) {
+    const int n=params.corridor_rows;
+    for (int i=0;i<n;++i) {
         if (i) out<<',';
-        const auto& row=debug.rows[i];
-        out<<"{\"y_frac\":"<<frac(row.y,height)<<",\"left_frac\":"<<frac(row.left,width)
+        control::RowDebug row=size_t(i)<debug.rows.size() ? debug.rows[i] : control::RowDebug{};
+        const double y=params.corridor_bottom_frac+(params.corridor_top_frac-params.corridor_bottom_frac)*i/std::max(1,n-1);
+        out<<"{\"y_frac\":"<<(size_t(i)<debug.rows.size() && height>0 ? double(row.y)/height : y)
+           <<",\"left_frac\":"<<frac(row.left,width)
            <<",\"right_frac\":"<<frac(row.right,width)<<",\"center_frac\":"<<frac(row.target,width)
            <<",\"conf\":"<<row.conf<<",\"valid\":"<<(row.valid ? "true" : "false")<<'}';
     }
