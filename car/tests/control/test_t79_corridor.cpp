@@ -226,6 +226,55 @@ void Roundabout() {
     }
     Check(right && merged,"LANE gộp quanh đảo, ROUNDABOUT tách nhánh phải");
 }
+// Vật cản chạm đáy vẫn phải tạo khe ngay hàng gần.
+void BottomHole() {
+    ControlParams p;
+    auto mask=Road(p,160,1.6);
+    mask(cv::Rect(145,100,31,kH-100)).setTo(0);
+    for(auto mode:{TrajMode::LANE,TrajMode::AVOID_LEFT,TrajMode::RETURN_RIGHT}) {
+        const auto c=ExtractCorridor(mask,p,mode);
+        const auto &r=c.rows.front();
+        Check(r.valid && r.hole && r.lanes==2,"Vật cản chạm đáy: hàng gần phải có khe hai làn");
+        Near(r.hole_l,145,0,"Đầu khe chạm đáy");
+        Near(r.hole_r,175,0,"Cuối khe chạm đáy");
+    }
+    Check(!ExtractCorridor(mask,p,TrajMode::ROUNDABOUT).rows.front().hole,
+          "ROUNDABOUT không gộp khe hàng gần");
+}
+void RoundaboutJump() {
+    ControlParams p;
+    cv::Mat mask(kH,kW,CV_8UC1,cv::Scalar(0));
+    mask.colRange(40,301).setTo(1);
+    mask(cv::Rect(130,0,111,175)).setTo(0);
+    bool jump=false;
+    for(const auto &r:ExtractCorridor(mask,p,TrajMode::ROUNDABOUT).rows) if(r.valid) {
+        jump=jump || r.flag_left=="NHAY";
+        const int x=int(std::lround(r.target));
+        Check(x>=0 && x<kW && mask.at<unsigned char>(r.y,x)!=0,
+              "Target ROUNDABOUT phải nằm trên pixel đường");
+        if(r.y<=175) Check(r.left>=241 && r.right<=300,"Biên phải nằm trong nhánh thô");
+    }
+    Check(jump,"Ca vòng xuyến phải có biên trái NHAY");
+}
+void BottomUnchanged() {
+    ControlParams p;
+    p.lane1_width_frac={0.5,0.5};
+    for(auto mode:{TrajMode::LANE,TrajMode::AVOID_LEFT,TrajMode::RETURN_RIGHT}) {
+        for(bool contains:{false,true}) {
+            cv::Mat mask(kH,kW,CV_8UC1,cv::Scalar(0));
+            mask.colRange(contains ? 100 : 180,contains ? 221 : 241).setTo(1);
+            mask.colRange(270,301).setTo(1);
+            const auto c=ExtractCorridor(mask,p,mode);
+            const auto &r=c.rows.front();
+            Check(r.valid && !r.hole && r.lanes==1 && r.flag_left=="THAT" && r.flag_right=="THAT",
+                  "Không có khe quanh trục: giữ cờ và số làn cũ");
+            Near(r.left,contains ? 100 : 180,0,"Biên trái cũ");
+            Near(r.right,contains ? 220 : 240,0,"Biên phải cũ");
+            Near(r.target,contains ? 160 : 210,0,"Target cũ");
+            Near(r.conf,contains ? 1 : 0.7,1e-9,"Độ tin cậy cũ");
+        }
+    }
+}
 void Empty() {
     ControlParams p;
     const auto c=ExtractCorridor(cv::Mat(kH,kW,CV_8UC1,cv::Scalar(0)),p,TrajMode::LANE);
@@ -249,6 +298,9 @@ int main(int argc, char **argv) {
         else if(name=="hole") Hole();
         else if(name=="split") Split();
         else if(name=="roundabout") Roundabout();
+        else if(name=="bottom_hole") BottomHole();
+        else if(name=="roundabout_jump") RoundaboutJump();
+        else if(name=="bottom_unchanged") BottomUnchanged();
         else if(name=="empty") Empty();
         else throw std::runtime_error("Ca lạ: "+name);
         std::cout << "PASS " << name << '\n';
