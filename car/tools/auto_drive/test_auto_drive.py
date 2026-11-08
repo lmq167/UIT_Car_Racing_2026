@@ -2248,7 +2248,7 @@ def test_case(case, cfg, root):
                 variants.append(values)
         variants += [dict(max_speed_cms=20, cruise_cms=20, steer_max_deg=40),
                      dict(corridor_rows=2, lane1_width_frac=[0.3, 0.3]),
-                     dict(corridor_rows=20, conf_min=0, lane1_width_frac=[1, 0.1])]
+                     dict(corridor_rows=20, corridor_conf_min=0, lane1_width_frac=[1, 0.1])]
         for i, values in enumerate(variants):
             with running(cfg, root / str(i), values=values) as r:
                 r.boot(); r.frames(3); r.finish(); inspect_session(r)
