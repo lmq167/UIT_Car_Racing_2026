@@ -79,6 +79,7 @@ YOLO_BOXES = dict(empty=[], green=[('green', 800)], off=[('off', 800)],
                   red_050=[('red', 0.50 * 1280)], red_085=[('red', 0.85 * 1280)],
                   red_green=[('red', 1152), ('green', 800)])
 BOUNDS = {
+    'imu_fallback': (0, 0, 1, '1'),
     'control_period_ms': (50, 20, 100, 'ms'), 'mask_max_age_ms': (300, 50, 1000, 'ms'),
     'cmd_max_age_ms': (200, 50, 500, 'ms'), 'det_max_age_ms': (500, 50, 2000, 'ms'),
     'max_speed_cms': (10, 0, 20, 'cm/s'), 'cruise_cms': (8, 0, 20, 'cm/s'),

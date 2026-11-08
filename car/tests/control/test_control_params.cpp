@@ -29,6 +29,7 @@ int main(int argc, char **argv) {
         Check(defaults.cruise_cms==15 && defaults.steer_max_deg==40 && defaults.max_speed_cms==15 &&
               defaults.obstacle_action==2,"Mặc định thi phải là 15/40/15/2");
         Check(std::abs(defaults.slow_per_deg-1.0/6)<1e-9,"Mặc định giảm tốc phải cho khoảng 10 cm/s ở góc 30 độ, cruise 15");
+        Check(defaults.imu_fallback==0,"Dự phòng IMU phải mặc định tắt");
         Check(defaults.record_every_n==5,"Mặc định ghi ảnh vẫn là mỗi 5 khung");
         std::ostringstream a,b; sample.PrintTable(a); defaults.PrintTable(b);
         Check(a.str()==b.str(),"control.yaml mẫu phải đúng toàn bộ mặc định L2");
@@ -56,6 +57,10 @@ int main(int argc, char **argv) {
         Check(report.str().find("cruise_cms = 15 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
         Check(report.str().find("kp = 42 độ (mặc định)")==std::string::npos,"Khóa đã nạp không được báo mặc định");
         for(bool header:{false,true}) {
+            for(int value:{0,1})
+                Check(load("imu_fallback: "+std::to_string(value)+"\n",header).imu_fallback==value,"Phải nhận imu_fallback 0/1");
+            for(const auto &value:{"-1","2","0.5",".Nan",".Inf","\"1\""})
+                rejectLoad(std::string("imu_fallback: ")+value+"\n",header,"imu_fallback");
             const auto race=load("cruise_cms: 15\nmax_speed_cms: 15\nsteer_max_deg: 40\n",header);
             Check(race.cruise_cms==15 && race.max_speed_cms==15 && race.steer_max_deg==40,"Phải nhận tốc độ 15 và góc 40");
             for(int value:{0,1,5,40})
@@ -161,6 +166,7 @@ int main(int argc, char **argv) {
         }) for(bool header:{false,true}) rejectLoad(item.first,header,item.second);
         auto invalid=defaults; invalid.kp=std::numeric_limits<double>::quiet_NaN();
         Reject([&] { invalid.Validate(); },"kp");
+        for(int value:{-1,2}) { invalid=defaults; invalid.imu_fallback=value; Reject([&] { invalid.Validate(); },"imu_fallback"); }
         invalid=defaults; invalid.record_every_n=0; invalid.Validate();
         invalid.record_every_n=-1;
         Reject([&] { invalid.Validate(); },"record_every_n");
