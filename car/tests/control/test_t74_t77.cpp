@@ -31,13 +31,13 @@ struct Rig {
     int64_t now=1000;
     uint64_t frame=0;
     bool sensor_fresh=true;
-    Rig() {
+    Rig(bool sensor_ok=true) {
         p.turn_enable=1; p.start_wait_green=0; p.kd=0;
         p.lane_width_frac={0.4,0.4,0.4};
         p.steer_max_deg=30; p.steer_rate_dps=1000;
         p.cruise_cms=p.max_speed_cms=15; p.approach_cms=5; p.min_cms=4;
         p.rb_lost_cm=30; p.rb_turn1_cm=p.rb_turn2_cm=60;
-        in.yolo_enabled=true; in.sensor_ok=true;
+        in.yolo_enabled=true; in.sensor_ok=sensor_ok;
         mask(60,140); in.go=true;
         const auto plan=step(); in.go=false;
         Expect(plan.state==PlannerState::BAM_LAN && plan.cmd.cms>0,plan,"Thiết lập G/làn tốt");
@@ -50,11 +50,30 @@ struct Rig {
             if (end<200) in.mask.at<unsigned char>(y,end)=2;
         }
     }
+    // Planner chỉ hủy rẽ khi cảm biến hỏng liên tục từ 250 ms (mẫu ngắn hơn: dừng giữ góc), nên ca "cảm biến hỏng" mô phỏng hỏng kéo dài.
+    bool was_bad=false;
+    void PersistBad(bool fresh_mask, Plan &plan) {
+        const bool bad=!in.sensor_ok || !std::isfinite(in.yaw_deg) || !std::isfinite(in.odo_cm) ||
+                       in.sensor_ms<0 || in.sensor_ms>now || now-in.sensor_ms>200;
+        const bool first=!was_bad; was_bad=bad;
+        if(!bad || !first) return;  // chỉ kéo dài ở mẫu hỏng đầu tiên của đợt
+        bool cancelled=false; auto cancel_plan=plan;
+        for(int k=0;k<5;++k) {
+            now+=50; in.image_ms=now; if(fresh_mask) in.mask_ms=now;
+            // Camera vẫn gửi lô YOLO mới (cùng nội dung) trong lúc cảm biến hỏng; không có thì phiếu hết hạn, sai thực tế.
+            if(!in.detections.items.empty()) { in.detections.captured_ms=now; in.detections.frame_id=++frame; for(auto &d:in.detections.items) d.captured_ms=now; }
+            plan=planner.Step(in,now,p);
+            if(!cancelled && plan.reason=="HUY_RE_CAM_BIEN") { cancelled=true; cancel_plan=plan; }
+        }
+        if(cancelled) plan=cancel_plan;  // ca kiểm lượt hủy cần thấy đúng lệnh của khung hủy
+    }
     Plan step(bool fresh_mask=true, bool fresh_sensor=true, bool fresh_image=true) {
         if (fresh_image) in.image_ms=now;
         if (fresh_mask) in.mask_ms=now;
         if (fresh_sensor && sensor_fresh) in.sensor_ms=now;
-        return planner.Step(in,now,p);
+        auto plan=planner.Step(in,now,p);
+        PersistBad(fresh_mask,plan);
+        return plan;
     }
     Plan send(const std::vector<std::string>& names={}, float confidence=0.9f,
               float cx=0.5f, float y2=0.8f, int dt=40) {
@@ -159,9 +178,11 @@ void T74(const std::string& name) {
     if (name=="thresholds") {
         struct Sample { float conf,cx,y2_px; bool turn; };
         const Sample samples[]={{.499f,.5f,576,false},{.5f,.5f,576,true},
-            {.9f,.5f,467.9f,false},{.9f,.5f,468,true},
-            {.9f,.25f,576,true},{.9f,.75f,576,true},
-            {.9f,.2499f,576,false},{.9f,.7501f,576,false},{.9f,.86f,576,false}};
+            // Rào hẹp (cx<0,62, rào 1 đường 1 làn) kích hoạt sớm 0,05 so với y2_frac; rào rộng (cx 0,62-0,82, rào 2 đường 2 làn) theo y2_frac.
+            {.9f,.5f,431.9f,false},{.9f,.5f,432,true},
+            {.9f,.75f,467.9f,false},{.9f,.75f,468,true},
+            {.9f,.25f,576,true},{.9f,.81f,576,true},
+            {.9f,.2499f,576,false},{.9f,.8201f,576,false},{.9f,.86f,576,false}};
         for (const auto& s:samples) {
             Rig r; Plan plan;
             for (int i=0;i<r.p.vote_min;++i) {
@@ -189,12 +210,23 @@ void T74(const std::string& name) {
             Rig r; r.in.yaw_deg=5;
             auto plan=r.votes({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
-                   Near(plan.cmd.deg,r.p.turn_steer_deg),plan,"Rào gần vào lệnh rẽ IMU min_cms/+turn_steer_deg");
+                   Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Rào hẹp (cx 0,5) vào lệnh rẽ IMU min_cms/+1,12*turn_steer_deg (rào 1: rẽ trái vào đường 1 làn, bán kính nhỏ)");
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
             r.in.yaw_deg=5+sign*r.p.turn_yaw_deg; plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::BAM_LAN && plan.reference==control::LaneRef::RIGHT,plan,"Đủ |yaw-yaw0| về BAM_LAN RIGHT");
         }
+    } else if (name=="barrier_types") {
+        // Work 1 (hộp giữa, vào đường 1 làn): rẽ gắt 1,12*turn_steer_deg, kích hoạt sớm 0,05; work 2 (hộp lệch phải): 0,8*turn_steer_deg.
+        const double frac=Rig().p.work_barrier_y2_frac;
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.04));
+          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Work 1: sớm 0,04 và lái 1,12*turn_steer_deg"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.06));
+          Lane(plan,"Work 1: chưa tới đáy hộp thì chưa rẽ"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.75f,static_cast<float>(frac-.04));
+          Lane(plan,"Work 2: theo y2_frac đủ, không rẽ sớm hơn"); }
+        { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.78f,static_cast<float>(frac+.001));
+          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,0.8*r.p.turn_steer_deg),plan,"Work 2 (hộp cx 0,78): vào đường 2 làn, lái 0,8*turn_steer_deg"); }
     } else if (name=="box_moves") {
         Rig r; r.votes({"work_barrier"});
         for (int i=0;i<6;++i) {
@@ -224,16 +256,247 @@ void T74(const std::string& name) {
         const auto turning=r.votes({"work_barrier"});
         Expect(turning.state==PlannerState::RE_PHAI,turning,"Đang rẽ T57 không kích hoạt rào");
     } else if (name=="sensor_fault") {
-        for (bool stale:{false,true}) {
-            Rig r;
-            if (!stale) r.in.sensor_ok=false;
-            else { r.sensor_fresh=false; r.now+=201; r.step(true,false); }
-            for (int i=0;i<r.p.vote_window+1;++i) Lane(r.send({"work_barrier"}),"IMU lỗi không rẽ, không dừng");
+        std::string context;
+        auto stopped=[&](const Plan& plan) {
+            Expect(plan.state==PlannerState::BAM_LAN && plan.cmd.cms==0 &&
+                   plan.reason=="DUNG_RAO_LOI_CAM_BIEN",plan,"Q7: rào gần khi không dùng được rẽ phải dừng "+context);
+        };
+        for (int fault=0;fault<5;++fault) {
+            const bool startup=fault==0;
+            context="lỗi="+std::to_string(fault);
+            Rig r(!startup);
+            if (fault==1) r.in.sensor_ok=false;
+            if (fault==2) { r.sensor_fresh=false; r.now+=201; r.step(true,false); }
+            if (fault==3) r.in.yaw_deg=std::numeric_limits<double>::quiet_NaN();
+            if (fault==4) r.in.odo_cm=std::numeric_limits<double>::quiet_NaN();
+            const auto far=r.votes({"work_barrier"},r.p.vote_window,.9f,.5f,
+                                   static_cast<float>(r.p.work_barrier_y2_frac-.1));
+            Lane(far,"Q7: rào xa trong vùng tiếp cận chưa dừng khi cảm biến lỗi");
+            Expect(far.cmd.cms<=r.p.approach_cms,far,"Rào xa vẫn kẹp tốc độ tiếp cận");
+            for (int i=1;i<=r.p.vote_min;++i) {
+                const auto plan=r.send({"work_barrier"});
+                if (i<r.p.vote_min) Lane(plan,"Q7: rào gần chưa đủ phiếu không dừng");
+                else stopped(plan);
+            }
+            for (int i=0;i<r.p.vote_window+1;++i) stopped(r.send({"work_barrier"}));
+
+            Rig bypass=r;
+            bypass.in.stop=true; ++bypass.now; const auto space=bypass.step();
+            Expect(space.state==PlannerState::DUNG && space.reason=="SPACE" &&
+                   space.cmd.cms==0 && space.cmd.deg==0,space,"Q7: Space vẫn dừng motor/servo");
+            bypass.in.stop=false;
+            for (int i=0;i<3;++i) {
+                const auto held=bypass.send({"work_barrier"});
+                Expect(held.state==PlannerState::DUNG && held.cmd.cms==0 && held.cmd.deg==0,
+                       held,"Q7: chưa G mới thì vẫn dừng");
+            }
+            bypass.in.go=true; Lane(bypass.send({"work_barrier"}),"Q7: G từ dừng cho qua rào đang thấy");
+            bypass.in.go=false;
+            for (int i=0;i<bypass.p.vote_window+3;++i)
+                Lane(bypass.send({"work_barrier"}),"Q7: cùng rào sau Space/G không dừng/rẽ lại");
+            context="lỗi="+std::to_string(fault)+" rào mới sau Space/G";
+            bypass.clear(); stopped(bypass.votes({"work_barrier"}));
+
+            if (startup) {
+                // Lỗi khởi tạo giữ cảm biến không khả dụng suốt phiên, khác lỗi đọc tạm.
+                for (int i=0;i<30;++i) stopped(r.send({"work_barrier"}));
+                continue;
+            }
+            r.in.sensor_ok=true; r.sensor_fresh=true; r.in.yaw_deg=r.in.odo_cm=0;
+            const auto fresh_ms=r.now+40;
+            context="lỗi="+std::to_string(fault)+" trong 999 ms tươi";
+            stopped(r.send({"work_barrier"}));
+            while (r.now+40<fresh_ms+999) stopped(r.send({"work_barrier"}));
+            stopped(r.send({"work_barrier"},.9f,.5f,.8f,static_cast<int>(fresh_ms+999-r.now)));
+            const auto recovered=r.send({"work_barrier"},.9f,.5f,.8f,1);
+            Expect(recovered.state==PlannerState::RE_TRAI && Near(recovered.cmd.cms,r.p.min_cms),
+                   recovered,"Q7: đúng 1000 ms tươi phải tự rẽ trái qua rào gần");
+        }
+        struct Sample { float conf,cx,y2_px; bool stop; };
+        Rig defaults;
+        const float near=static_cast<float>(defaults.p.work_barrier_y2_frac*720);
+        const Sample samples[]={{.5f,.25f,near,true},{.5f,.75f,near,true},
+            {.499f,.5f,576,false},{.9f,.2499f,576,false},{.9f,.8201f,576,false},
+            {.9f,.75f,near-.1f,false},{.9f,.5f,near-36.1f,false},{.5f,.5f,near-36.f,true}};
+        for (const auto& s:samples) {
+            context="biên conf="+std::to_string(s.conf)+" tâm="+std::to_string(s.cx)+
+                    " đáy="+std::to_string(s.y2_px);
+            Rig r(false);
+            Plan plan;
+            for (int i=0;i<r.p.vote_window;++i) {
+                r.now+=40;
+                r.in.detections={{{"work_barrier",cv::Rect2f(s.cx*1280-40,s.y2_px-60,80,60),s.conf,r.now}},r.now,++r.frame};
+                plan=r.step();
+            }
+            if (s.stop) stopped(plan);
+            else Lane(plan,"Q7: rào ngoài miền gần/tâm/conf không gây dừng");
         }
     } else if (name=="disabled") {
         Rig a,b; a.p.work_barrier_action=b.p.work_barrier_action=0;
         for (int i=0;i<12;++i) Same(a.send({"work_barrier"}),b.send(),"Tắt rào giống không hộp");
     } else throw std::runtime_error("Ca T74 không tồn tại: "+name);
+}
+// Q7/DUNG: chỉ rào gần đủ phiếu mới dừng khi máy rẽ không khả dụng.
+void Q7(const std::string& name) {
+    auto stopped=[](const Plan& plan) {
+        Expect(plan.state==PlannerState::BAM_LAN && plan.cmd.cms==0 &&
+               plan.reason=="DUNG_RAO_LOI_CAM_BIEN",plan,"Q7: hủy rẽ và dừng trước rào");
+    };
+    if (name=="action0") {
+        for (bool startup:{false,true}) {
+            Rig r(!startup), baseline(!startup);
+            r.p.work_barrier_action=baseline.p.work_barrier_action=0;
+            r.in.sensor_ok=baseline.in.sensor_ok=false;
+            for (int i=0;i<40;++i) {
+                const auto plan=r.send({"work_barrier"});
+                Same(plan,baseline.send(),"Q7: action 0 bỏ qua rào cả khi cảm biến lỗi");
+                Lane(plan,"Q7: action 0 vẫn bám làn chạy");
+                Expect(plan.reason!="DUNG_RAO_LOI_CAM_BIEN",plan,"Q7 không áp dụng khi action 0");
+            }
+        }
+    } else if (name=="recover_barrier_moved") {
+        for (int moved=0;moved<4;++moved) {
+            Rig r; r.in.sensor_ok=false;
+            stopped(r.votes({"work_barrier"}));
+            const std::vector<std::string> labels=moved==0?std::vector<std::string>{}:
+                std::vector<std::string>{"work_barrier"};
+            const float cx=moved==2?.2499f:(moved==3?.8201f:.5f);
+            const float y2=moved==1?static_cast<float>(r.p.work_barrier_y2_frac-.1):.8f;
+            Lane(r.votes(labels,r.p.vote_window,.9f,cx,y2),"Q7: rào hết phiếu/xa/ngoài tâm thì nhả dừng");
+            r.in.sensor_ok=true;
+            Lane(r.send(labels,.9f,cx,y2,1),"Q7: bắt đầu hồi khi rào đã chuyển");
+            for (int elapsed=40;elapsed<=1000;elapsed+=40)
+                Lane(r.send(labels,.9f,cx,y2),"Q7: hồi đủ 1 s không rẽ theo vị trí rào cũ");
+        }
+    } else if (name=="fault_while_barrier_turn") {
+        for (int fault=0;fault<5;++fault) {
+            Rig r;
+            auto plan=r.votes({"work_barrier"});
+            Expect(plan.state==PlannerState::RE_TRAI && plan.cmd.cms>0,plan,"Q7: đang rẽ do rào");
+            if (fault==0) r.in.sensor_ok=false;
+            if (fault==1) { r.sensor_fresh=false; r.now+=201; }
+            if (fault==2) r.in.odo_cm+=r.p.turn_max_cm+.01;
+            if (fault>=3) {
+                const int duration=fault==3?1000:1500;
+                if (fault==3) r.p.turn_max_ms=duration;
+                const auto start=r.now;
+                while (r.now+100<start+duration) {
+                    if (fault==3) r.in.odo_cm+=.2;
+                    plan=r.send({"work_barrier"},.9f,.5f,.8f,100);
+                    Expect(plan.state==PlannerState::RE_TRAI,plan,"Q7: chưa quá hạn/chưa kẹt vẫn rẽ");
+                }
+                plan=r.send({"work_barrier"},.9f,.5f,.8f,
+                            static_cast<int>(start+duration-(fault==3?0:1)-r.now));
+                Expect(plan.state==PlannerState::RE_TRAI,plan,"Q7: đúng hạn ms hoặc 1499 ms chưa kẹt");
+                plan=r.send({"work_barrier"},.9f,.5f,.8f,1);
+            } else plan=r.send({"work_barrier"});
+            stopped(plan);
+            r.in.sensor_ok=true; r.sensor_fresh=true;
+            stopped(r.send({"work_barrier"},.9f,.5f,.8f,1));
+            for (int elapsed=100;elapsed<=900;elapsed+=100)
+                stopped(r.send({"work_barrier"},.9f,.5f,.8f,100));
+            stopped(r.send({"work_barrier"},.9f,.5f,.8f,99));
+            plan=r.send({"work_barrier"},.9f,.5f,.8f,1);
+            Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
+                   plan.cmd.deg>0 && plan.cmd.deg<=r.p.turn_steer_deg,plan,
+                   "Q7: đúng 1000 ms tươi rẽ lại rào còn gần; lỗi="+std::to_string(fault));
+        }
+    } else if (name=="vs_red") {
+        for (bool turning:{false,true}) {
+            Rig r;
+            if (turning) r.votes({"work_barrier"});
+            r.in.sensor_ok=false;
+            for (int i=0;i<r.p.vote_window+5;++i) {
+                r.now+=40;
+                r.in.detections={{{"work_barrier",cv::Rect2f(600,516,80,60),.9f,r.now},
+                                   {"red",cv::Rect2f(1160,500,80,80),.9f,r.now}},r.now,++r.frame};
+                const auto plan=r.step();
+                if (i>=r.p.vote_min-1)
+                    Expect(plan.state==PlannerState::DUNG_DEN_DO && plan.cmd.cms==0 && plan.cmd.deg==0 &&
+                           plan.reason=="DUNG_DEN_DO",plan,"Q7: đỏ thắng dừng lỗi rào, cả khi đang rẽ");
+            }
+        }
+    } else if (name=="startup_fault_barrier") {
+        Rig r(false);
+        for (int i=0;i<80;++i) {
+            r.in.odo_cm+=.5;
+            const auto plan=r.send({"work_barrier"});
+            Check(!r.in.sensor_ok && r.in.sensor_ms==r.now,"Q7: IMU khởi động lỗi, encoder vẫn tươi");
+            if (i>=r.p.vote_min-1) stopped(plan);
+        }
+        Check(r.now-1000>1000,"Q7: đã quan sát quá 1 s, không hồi lỗi khởi động");
+    } else throw std::runtime_error("Ca Q7 không tồn tại: "+name);
+}
+// Q9/TAM: đồng hồ hồi lỗi chỉ nhận khoảng tươi liên tục; bỏ lượt rẽ cũ.
+void Q9(const std::string& name) {
+    if (name=="flicker_resets_clock") {
+        Rig r; r.p.turn_start_cm=0; r.in.sensor_ok=false;
+        Lane(r.send({"left"}),"Q9: lỗi tạm khi đang bám làn");
+        for (int period=0;period<2;++period) {
+            r.in.sensor_ok=true;
+            Lane(r.send({"left"},.9f,.5f,.8f,1),"Q9: mẫu tươi đầu chưa cho rẽ");
+            for (int elapsed=40;elapsed<=600;elapsed+=40) {
+                r.in.odo_cm+=1;
+                Lane(r.send({"left"}),"Q9: 600 ms tươi chưa hồi, kể cả sau lần chớp lỗi");
+            }
+            if (period==0) {
+                r.in.sensor_ok=false;
+                Lane(r.send({"left"},.9f,.5f,.8f,1),"Q9: một mẫu lỗi phải đặt lại đồng hồ");
+            }
+        }
+        for (int elapsed=640;elapsed<=960;elapsed+=40)
+            Lane(r.send({"left"}),"Q9: chưa đủ 1000 ms liên tục vẫn khóa rẽ");
+        Lane(r.send({"left"},.9f,.5f,.8f,39),"Q9: 999 ms vẫn khóa rẽ");
+        Lane(r.send({},.9f,.5f,.8f,1),"Q9: đủ 1000 ms không hồi sinh biển trái cũ");
+        r.p.turn_start_cm=10;
+        Lane(r.votes({"right"}),"Q9: biển mới đủ phiếu nhưng chưa đủ quãng");
+        const double armed=r.in.odo_cm;
+        Lane(r.at(armed+9.99),"Q9: biển mới chưa đủ 10 cm");
+        const auto plan=r.at(armed+10);
+        Expect(plan.state==PlannerState::RE_PHAI && plan.cmd.cms>0,plan,"Q9: biển phải mới đủ phiếu/quãng rẽ được sau hồi");
+    } else if (name=="one_source_stale") {
+        for (bool stale:{false,true}) {
+            Rig r; r.p.turn_start_cm=0;
+            r.in.sensor_ok=false;
+            Lane(r.send(),"Q9: thiết lập lỗi tạm");
+            r.in.sensor_ok=stale; r.sensor_fresh=!stale;
+            if (stale) r.in.sensor_ms=r.now-201;
+            for (int i=0;i<35;++i) {
+                const auto plan=r.send({"left"});
+                Check(stale?(r.in.sensor_ok && r.now-r.in.sensor_ms>200):
+                            (!r.in.sensor_ok && r.in.sensor_ms==r.now),"Q9: đúng một điều kiện cảm biến còn lỗi");
+                Lane(plan,"Q9: chỉ timestamp cũ hoặc sensor_ok sai cũng không được hồi sau >1 s");
+            }
+            r.in.sensor_ok=true; r.sensor_fresh=true;
+            Lane(r.send({},.9f,.5f,.8f,1),"Q9: sửa nguồn cuối mới bắt đầu đồng hồ");
+            for (int elapsed=40;elapsed<=960;elapsed+=40)
+                Lane(r.send({"left"}),"Q9: sau sửa nguồn cuối chưa đủ 1 s");
+            Lane(r.send({"left"},.9f,.5f,.8f,39),"Q9: nguồn cuối tươi 999 ms chưa hồi");
+            Lane(r.send({},.9f,.5f,.8f,1),"Q9: nguồn cuối tươi đủ 1000 ms, không rẽ biển cũ");
+            const auto plan=r.votes({"right"});
+            Expect(plan.state==PlannerState::RE_PHAI,plan,"Q9: cả hai điều kiện tốt đủ 1 s thì biển mới rẽ được");
+        }
+    } else if (name=="rb_not_revived") {
+        Rig r; r.enter(); r.leave();
+        const double after_first=r.in.odo_cm;
+        Lane(r.at(after_first+r.p.rb_turn1_cm-1),"Q9: lượt 1 đang chờ đủ quãng rẽ");
+        r.in.sensor_ok=false;
+        Lane(r.send(),"Q9: lỗi lúc chờ vòng xuyến không dừng bám làn");
+        r.in.sensor_ok=true;
+        Lane(r.send({},.9f,.5f,.8f,1),"Q9: bắt đầu hồi sau khi bỏ lượt chờ");
+        r.in.odo_cm=after_first+r.p.rb_turn1_cm+10;
+        for (int elapsed=40;elapsed<=1000;elapsed+=40)
+            Lane(r.send(),"Q9: qua chỗ rẽ cũ và hồi đủ 1 s không hồi sinh lượt 1");
+        Lane(r.at(r.in.odo_cm+100),"Q9: đi xa hơn vẫn không rẽ muộn lượt 1");
+        r.enter(); r.clear(); const double lost0=r.in.odo_cm;
+        Lane(r.at(lost0+r.p.rb_lost_cm-.01),"Q9: lượt kế chưa đủ quãng mất phiếu");
+        Lane(r.at(lost0+r.p.rb_lost_cm),"Q9: kết thúc lượt 2, bắt đầu chờ rẽ phải");
+        Lane(r.at(lost0+r.p.rb_lost_cm+r.p.rb_turn2_cm-.01),"Q9: lượt 2 chưa đủ quãng rẽ");
+        const auto plan=r.at(lost0+r.p.rb_lost_cm+r.p.rb_turn2_cm);
+        Expect(plan.state==PlannerState::RE_PHAI,plan,"Q9: lần qua kế vẫn là lượt 2 và rẽ phải đúng quãng");
+        r.finish(false); r.enter(); r.leave();
+        Lane(r.at(r.in.odo_cm+400),"Q9: lượt 3 không đếm nhầm thành lượt 2");
+    } else throw std::runtime_error("Ca Q9 không tồn tại: "+name);
 }
 // T68b Chỉ làm §1–4: đếm lần bằng phiếu/encoder, không dùng yaw để đếm.
 void T68b(const std::string& name) {
@@ -530,6 +793,8 @@ int main(int argc, char** argv) {
         else if (group=="t68b") T68b(scenario);
         else if (group=="t77") T77(scenario);
         else if (group=="t75") T75(scenario);
+        else if (group=="q7") Q7(scenario);
+        else if (group=="q9") Q9(scenario);
         else throw std::runtime_error("Tiền tố không hợp lệ: "+group);
         std::cout<<"ĐẠT: acc_"<<name<<'\n'; return 0;
     } catch (const std::exception& e) {

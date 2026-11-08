@@ -33,14 +33,14 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
-    double pass_cm_=0, sent_cms_=0;
+    double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
     int64_t swerve_ms_=-1;
     uint64_t last_frame_=0;
     int green_run_=0;
@@ -55,13 +55,18 @@ private:
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
     bool rb_holding_=false; // Đang GIU_HUONG (bước trước): không bắt đầu rẽ/rào/né.
     bool person_stop_=false; // Đủ phiếu người đi bộ: lệnh tốc độ 0, giữ nguyên state.
+    bool barrier_turn_=false; // Lượt rẽ hiện tại do rào khởi động.
+    bool barrier_wide_turn_=false; // Rào lệch phải (work 2: vào đường 2 làn); sai: work 1 vào đường 1 làn.
+    double return_e_=1; // Sai số làn lần cuối khi về làn phải (VE_PHAI).
     bool barrier_done_=false; // Đã rẽ vì rào: bỏ qua rào tới khi hết phiếu rào (qua cả Space/G).
     bool approach_=false; // Đã xác nhận tiếp cận đỏ: giữ kẹp tới khi đỏ hết tươi/đủ xanh/dừng.
     LaneController lane_;
     PlannerState state_=PlannerState::CHO_SAN_SANG;
     std::string reason_="CHO_G";
     int turn_direction_=0;
-    bool turning_=false, turn_fault_=false; // Lỗi rẽ giữ hết phiên, kể cả Space/G/R và Reset.
+    bool turning_=false, turn_fault_=false; // Lỗi rẽ tạm: hết khi cảm biến tươi liên tục 1 s.
+    int64_t sensor_good_ms_=-1, sensor_bad_since_=-1;
+    bool sensor_hold_=false; // Mẫu cảm biến hỏng thoáng qua: dừng giữ góc, chưa hủy rẽ.
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
     void ClearTurn();
