@@ -63,6 +63,14 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
                 const double distance=std::max(0.0,std::max(s.l-axis,axis-s.r));
                 if(distance<=best) { best=distance; pick={s}; if(distance==0) break; }
             }
+            // Khe chứa trục ở hàng gần: giữ hai đoạn đã qua lọc nhiễu để truy vết vật cản.
+            if(mode!=TrajMode::ROUNDABOUT) for(size_t k=1;k<segs.size();++k) {
+                if(segs[k-1].r<axis && segs[k].l>axis &&
+                   segs[k].r-segs[k-1].l<=params.two_lane_ratio*w*kMergeFactor) {
+                    pick={segs[k-1],segs[k]};
+                    break;
+                }
+            }
         } else {
             std::vector<Seg> overlap;
             for(const auto &s:segs) if(s.r>=lower_raw.l && s.l<=lower_raw.r) overlap.push_back(s);
@@ -99,6 +107,11 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         else if(!left_ok && !right_ok) {
             const double center=below ? (below->left+below->right)/2 : (raw.l+raw.r)/2.0;
             row.left=center-reference/2; row.right=center+reference/2;
+        }
+        if(mode==TrajMode::ROUNDABOUT) {
+            row.left=std::max(row.left,double(raw.l));
+            row.right=std::min(row.right,double(raw.r));
+            if(row.left>row.right) { row.left=raw.l; row.right=raw.r; }  // tâm hàng dưới nằm ngoài đoạn thô
         }
         const double width=row.right-row.left;
         row.lanes=width>=params.two_lane_ratio*w ? 2 : 1;
