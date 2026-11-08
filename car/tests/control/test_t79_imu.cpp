@@ -144,6 +144,43 @@ void Run(const std::string &name) {
         Check(cancelled,"Quá turn_arm_cm phải HUY_RE");
         Rig wrong; wrong.arm(); wrong.mask(2);
         for(int i=0;i<70;++i) Check(wrong.step().state==PlannerState::BAM_LAN,"Giao lộ ngược hướng không được cua");
+    } else if(name=="barrier_fault" || name=="barrier_junction") {
+        Rig r;
+        Check(r.now-1000>=250 && !r.in.sensor_ok && r.in.encoder_ok,
+              "IMU phải lỗi ít nhất 250 ms, encoder vẫn tốt");
+        const auto barrier=[&](double cm=0) {
+            const int64_t captured=r.now+50;
+            r.in.detections={{{"work_barrier",cv::Rect2f(600,500,80,100),0.9f,captured}},captured,++r.frame};
+            return r.step("",cm,50,true,false);
+        };
+        for(int i=1;i<=r.p.vote_min;++i) barrier();
+        const double anchor=r.in.odo_cm;
+        const auto stopped=[&]() {
+            Check(r.last.cmd.cms==0 && r.last.reason=="DUNG_RAO_LOI_CAM_BIEN",
+                  "Rào đủ phiếu phải dừng mọi khung, không đi thẳng: "+r.last.reason);
+            Check(r.last.mode==TrajMode::LANE,"Không giao lộ thì không được cua");
+        };
+        stopped();
+        // Giữ rào đủ phiếu, kể cả đã vượt quãng dự phòng vẫn không đi thẳng.
+        for(int i=0;i<20;++i) { barrier(); stopped(); }
+        if(name=="barrier_fault") {
+            for(int i=0;i<2*r.p.turn_start_cm;++i) { barrier(1); stopped(); }
+        } else {
+            r.mask(1);
+            for(int i=0;i<r.p.vote_min;++i) { barrier(); stopped(); }
+            barrier(0.5*r.p.turn_start_cm-1); stopped();
+            barrier(1);
+            Check(r.in.odo_cm-anchor==0.5*r.p.turn_start_cm,
+                  "Chỉ bắt đầu ở nửa quãng turn_start_cm");
+            // Khung bắt đầu có thể còn lệnh dừng Q7; khung sau phải bám cua trái.
+            Check(r.last.state==PlannerState::RE_TRAI && r.last.mode==TrajMode::TURN_LEFT,
+                  "Giao lộ trái đủ quãng phải vào cua hành lang");
+            for(int i=0;i<5;++i) {
+                barrier();
+                Check(r.last.reason=="RE_HANH_LANG_TRAI" && r.last.cmd.cms==r.p.min_cms,
+                      "Phải tiếp tục cua hành lang trái: "+r.last.reason);
+            }
+        }
     } else if(name=="branch") {
         Rig r; r.mask(3);
         const auto l=ExtractCorridor(r.in.mask,r.p,TrajMode::TURN_LEFT);
