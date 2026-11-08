@@ -86,7 +86,7 @@ BOUNDS = {
     'slow_per_deg': (0.1, 0, 1, 'cm/s/'), 'steer_max_deg': (30, 0, 40, ''),
     'steer_rate_dps': (200, 10, 1000, '/s'), 'kp': (30, 0, 200, ''),
     'kd': (2, 0, 50, ''), 'corridor_rows': (8, 2, 20, ''), 'two_lane_ratio': (1.5, 1.2, 3, ''),
-    'corridor_conf_min': (0.4, 0.2, 1, ''), 'center_offset_frac': (0, -0.5, 0.5, ''),
+    'corridor_conf_min': (0.4, 0.35, 1, ''), 'center_offset_frac': (0, -0.5, 0.5, ''),
     'min_valid_rows': (1, 1, 5, ''), 'lost_hold_ms': (300, 0, 2000, 'ms'),
     'lost_stop_ms': (800, 0, 3000, 'ms'), 'regain_frames': (3, 1, 20, ''),
     'record_every_n': (5, 0, 40, ''), 'yolo_every_n': (3, 1, 10, '')}
@@ -2248,7 +2248,7 @@ def test_case(case, cfg, root):
                 variants.append(values)
         variants += [dict(max_speed_cms=20, cruise_cms=20, steer_max_deg=40),
                      dict(corridor_rows=2, lane1_width_frac=[0.3, 0.3]),
-                     dict(corridor_rows=20, corridor_conf_min=0.2, lane1_width_frac=[1, 0.1])]
+                     dict(corridor_rows=20, corridor_conf_min=0.35, lane1_width_frac=[1, 0.1])]
         for i, values in enumerate(variants):
             with running(cfg, root / str(i), values=values) as r:
                 r.boot(); r.frames(3); r.finish(); inspect_session(r)

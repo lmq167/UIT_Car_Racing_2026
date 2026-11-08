@@ -65,8 +65,8 @@ int main(int argc, char **argv) {
                   cap20.min_cms==10 && cap20.lost_cms==10,"Phải nhận trần 20 và giữ biên 10 của approach/min/lost");
             for(int value:{2,8,20})
                 Check(load("corridor_rows: "+std::to_string(value)+"\n",header).corridor_rows==value,"Số hàng hành lang hợp lệ phải nạp được");
-            for(double value:{0.2,1.0})
-                Check(load("corridor_conf_min: "+std::to_string(value)+"\n",header).conf_min==value,"Phải nhận hai biên corridor_conf_min 0.2 và 1");
+            for(double value:{0.35,1.0})
+                Check(load("corridor_conf_min: "+std::to_string(value)+"\n",header).conf_min==value,"Phải nhận hai biên corridor_conf_min 0.35 và 1");
             const auto plain=load("kp: 42.\nlane1_width_frac: [0.57, 0.17]\n",header);
             Check(plain.kp==42 && plain.lane1_width_frac==defaults.lane1_width_frac,"YAML thường phải nạp như YAML OpenCV");
             for(const auto &body:{"", "{}\n", "# Chỉ chú thích\n  # dòng hai\n", "\n {} # map rỗng\r\n", "{ \n }\n", "{}\t# map rỗng\r\n", "{}\n...\n"}) {
@@ -143,7 +143,8 @@ int main(int argc, char **argv) {
             {"two_lane_ratio: 1.19\n","two_lane_ratio"}, {"two_lane_ratio: 3.01\n","two_lane_ratio"},
             {"max_jump_frac: 0\n","max_jump_frac"}, {"max_jump_frac: 0.51\n","max_jump_frac"},
             {"corridor_conf_min: 1.01\n","corridor_conf_min"}, {"corridor_conf_min: -0.01\n","corridor_conf_min"},
-            {"corridor_conf_min: 0\n","corridor_conf_min"}, {"corridor_conf_min: 0.19\n","corridor_conf_min"},
+            {"corridor_conf_min: 0\n","corridor_conf_min"}, {"corridor_conf_min: 0.2\n","corridor_conf_min"},
+            {"corridor_conf_min: 0.349\n","corridor_conf_min"},
             {"lookahead_frac: 0.5\n","lookahead_frac"}, {"lookahead_frac: 0.96\n","lookahead_frac"},
             {"avoid_min_width_ratio: 0\n","avoid_min_width_ratio"}, {"avoid_min_width_ratio: 2.01\n","avoid_min_width_ratio"},
             {"obstacle_hole_ratio: 0\n","obstacle_hole_ratio"}, {"obstacle_hole_ratio: 1.01\n","obstacle_hole_ratio"},
@@ -165,8 +166,8 @@ int main(int argc, char **argv) {
         Reject([&] { invalid.Validate(); },"record_every_n");
         invalid=defaults; invalid.lane1_width_frac={0.1,0.2};
         Reject([&] { invalid.Validate(); },"lane1_width_frac");
-        for(double value:{0.2,1.0}) { invalid=defaults; invalid.conf_min=value; invalid.Validate(); }
-        for(double value:{0.19,1.01}) {
+        for(double value:{0.35,1.0}) { invalid=defaults; invalid.conf_min=value; invalid.Validate(); }
+        for(double value:{0.2,0.349,1.01}) {
             invalid=defaults; invalid.conf_min=value;
             Reject([&] { invalid.Validate(); },"corridor_conf_min");
         }

@@ -18,7 +18,7 @@ struct Rig {
         in.yolo_enabled=true; in.sensor_ok=true;
         mask(0); in.go=true; step(0); in.go=false;
     }
-    // 0: làn thẳng; 1: mở trái; 2: chữ T; 3: cong, hai biên cùng lệch.
+    // 0: thẳng; 1: mở phía rẽ; 2: chữ T; 3: cong hai biên; 4: mở phía rẽ chỉ ở xa; 5: đảo trên đường rộng.
     void mask(int shape, bool right=false) {
         in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
         for(int y=0;y<100;++y) {
@@ -26,7 +26,10 @@ struct Rig {
             if(shape==1) { if(right) r=199; else l=0; }
             if(shape==2 && y<79) { l=0; r=199; }
             if(shape==3) { const int d=((95-y)/5)%2 ? 20 : 0; l+=d; r+=d; }
+            if(shape==4 && y<79) { if(right) r=199; else l=0; }
+            if(shape==5) { l=0; r=199; }
             in.mask.row(y).colRange(l,r+1).setTo(1);
+            if(shape==5 && y>=80 && y<=90) in.mask.row(y).colRange(20,51).setTo(0);
         }
     }
     control::Plan step(double odo, const std::string &sign="", bool new_mask=true) {
@@ -49,7 +52,7 @@ void Turn(const control::Plan &plan, const std::string &reason, bool right=false
     Check(plan.debug.reason==reason && plan.reason==reason,"Sai lý do khung đầu: "+plan.reason);
 }
 void Run(const std::string &name) {
-    for(int variant=0;variant<(name=="R2"?4:2);++variant) {
+    for(int variant=0;variant<(name=="R2" || name=="R6" || name=="R7"?4:2);++variant) {
         const bool right=variant%2!=0;
         Rig r; r.arm(right);
         if(name=="R1" || name=="R2") {
@@ -63,6 +66,19 @@ void Run(const std::string &name) {
             }
             const auto after=r.step(r.in.odo_cm+1);
             Check(after.reason==(right?"RE_PHAI":"RE_TRAI"),"Khung sau giữ lý do máy rẽ");
+        } else if(name=="R6" && variant>=2) {
+            // Có phiếu giao lộ từ trước; cả phiếu cũ và mask đảo rộng đều không được làm rẽ sớm trong vòng xuyến.
+            r.mask(2);
+            for(int cm=1;cm<=r.p.vote_min;++cm) r.step(r.anchor+cm);
+            r.mask(5);
+            for(int cm=r.p.vote_min+1;cm<r.p.turn_start_cm;++cm) {
+                const auto plan=r.step(r.anchor+cm,cm<10?"round_barrier":"");
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason!="RE_GIAO_LO",
+                      "Đảo rộng trong vòng xuyến không được kích hoạt RE_GIAO_LO");
+                if(cm>=2*r.p.vote_min)
+                    Check(plan.mode==control::TrajMode::ROUNDABOUT,"Phải còn trong lần qua vòng xuyến");
+                if(cm>=15) Check(plan.reason=="VX_THOAT","Phải kiểm cả lúc mất phiếu nhưng chưa hết lần qua");
+            }
         } else if(name=="R3" || name=="R4" || name=="R6") {
             if(name=="R3") for(int cm=1;cm<=15;++cm)
                 Check(r.step(r.anchor+cm).state==control::PlannerState::BAM_LAN,"Chưa có giao lộ không rẽ sớm");
@@ -80,11 +96,17 @@ void Run(const std::string &name) {
             r.in.sensor_ok=true;
             Check(r.step(r.anchor+36).state==control::PlannerState::BAM_LAN,"Lỗi chưa hồi không rẽ lại");
         } else if(name=="R7") {
-            r.mask(3);
+            r.mask(variant>=2?4:3,right);
             const auto corridor=control::ExtractCorridor(r.in.mask,r.p,control::TrajMode::LANE);
-            int jumps=0;
-            for(const auto &row:corridor.rows) if(row.valid && row.flag_left=="NHAY" && row.flag_right=="NHAY") ++jumps;
-            Check(jumps>=2,"Fixture cong phải có hai hàng hai biên NHAY");
+            int jumps=0, near_open=0, far_open=0;
+            for(size_t i=0;i<corridor.rows.size();++i) {
+                const auto &row=corridor.rows[i];
+                if(row.valid && row.flag_left=="NHAY" && row.flag_right=="NHAY") ++jumps;
+                if(row.valid && (right ? row.flag_right!="THAT" && row.flag_left=="THAT" : row.flag_left!="THAT" && row.flag_right=="THAT"))
+                    ++(i<size_t(r.p.corridor_rows/2) ? near_open : far_open);
+            }
+            if(variant<2) Check(jumps>=2,"Fixture cong phải có hai hàng hai biên NHAY");
+            else Check(near_open==0 && far_open>=2,"Cua cùng chiều biển phải chỉ mở phía rẽ ở nửa xa");
             for(int cm=1;cm<=r.p.turn_start_cm;++cm) {
                 const auto plan=r.step(r.anchor+cm);
                 if(cm<r.p.turn_start_cm) Check(plan.state==control::PlannerState::BAM_LAN,"Cong không phải giao lộ");

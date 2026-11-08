@@ -189,21 +189,17 @@ void ImageEdge() {
                   "Mask toàn đường phải ghi hai biên mép ảnh");
             Check(r.conf<p.conf_min,"Hai biên không thật phải dưới ngưỡng tin cậy mặc định");
         }
-        ControlParams low=p; low.conf_min=0.2;
+        ControlParams low=p; low.conf_min=0.35;  // cận dưới cho phép
         LaneController controller;
         const auto initial=controller.Step(Road(low,160,1),1000,1000,low,mode);
         Check(initial.debug.state=="BAM_LAN" && initial.cmd.cms>0,"Phải có làn thật trước khi thử mất biên");
         ControlResult result;
         for(int elapsed=50;elapsed<=low.lost_stop_ms+50;elapsed+=50)
             result=controller.Step(white,1000+elapsed,1000+elapsed,low,mode);
-        if(mode==TrajMode::ROUNDABOUT) {
-            Check(result.debug.state=="BAM_LAN" && result.cmd.cms>0,
-                  "ROUNDABOUT không bị ép mất làn khi thiếu cả hai biên thật");
-        } else {
-            Check(result.debug.state=="MAT_LAN" && result.debug.reason=="MAT_LAN" &&
-                  result.cmd.cms==0 && result.cmd.deg==0,
-                  "Không có biên thật phải dừng 0,0 sau lost_stop_ms dù conf_min=0,2");
-        }
+        // Cận dưới 0,35 > conf 0,3 của hàng hai biên giả: mọi chế độ, kể cả ROUNDABOUT, đều dừng.
+        Check(result.debug.state=="MAT_LAN" && result.debug.reason=="MAT_LAN" &&
+              result.cmd.cms==0 && result.cmd.deg==0,
+              "Không có biên thật phải dừng 0,0 sau lost_stop_ms ở conf_min thấp nhất cho phép");
     }
 }
 void Jump() {
