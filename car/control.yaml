@@ -32,7 +32,6 @@ yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
 work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
 work_barrier_y2_frac: 0.65 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
-obstacle_hole_frac: 0.10 # Tỉ lệ lỗ tối thiểu trong mặt đường để bỏ phiếu vật cản
 obstacle_hole_ratio: 0.25 # TẠM, CHƯA ĐO: khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
 obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml
 start_wait_green: 1 # Chờ xanh khi xuất phát, 1

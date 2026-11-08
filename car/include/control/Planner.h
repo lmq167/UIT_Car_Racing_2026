@@ -41,6 +41,8 @@ private:
     Swerve swerve_=Swerve::NONE;
     double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
     int64_t swerve_ms_=-1;
+    double swerve_odo_=0;
+    bool swerve_odo_valid_=false; // mốc encoder của bước trước phải hợp lệ để lấy hiệu quãng
     uint64_t last_frame_=0;
     int green_run_=0;
     int64_t red_ms_=-1, wait_since_ms_=-1;
