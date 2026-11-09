@@ -16,7 +16,11 @@ constexpr double kNarrowBarrierSlowW=100, kWideBarrierSlowW=80;
 // Giao lộ trên mặt nạ (log 09/11 sáng, xe đi thẳng qua): đường phía trước kết thúc ở >= 0,69 chiều cao khi tới ngã T.
 constexpr double kRoadEndFrac=0.69;
 constexpr double kSideRoadEdgeFrac=0.10;  // đường ngang ở ngã T chạm vùng 10 % mép ảnh phía rẽ
-constexpr int64_t kRealSideMs=2000;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
+constexpr int64_t kRealSideMs=2000;
+// Lượt rẽ IMU (log 09/11 chiều tối): 4 cm/s x 8 s chỉ quay 18-32° rồi hết hạn → bám làn nhận khi mới quay một phần.
+// Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi đã quay >= 45° VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
+constexpr double kTurnCms=8.0, kHandoverYawDeg=45.0, kExitOffsetFrac=0.15;
+constexpr int kExitRealRows=3;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
@@ -49,7 +53,7 @@ const char *StateName(PlannerState state) {
     return "DUNG";
 }
 void Planner::ClearTurn() {
-    junction_votes_.clear(); last_junction_mask_ms_=-1;
+    junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0; last_exit_mask_ms_=-1;
     corridor_turn_=false; corridor_clear_=0;
     turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
@@ -428,6 +432,17 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         while(junction_votes_.size()>size_t(params.vote_window)) junction_votes_.pop_front();
     }
+    // Hành lang đường ra khi đang rẽ IMU: đủ hàng 2 cạnh thật và tâm hành lang gần trục xe, liên tiếp vote_min mặt nạ.
+    if(turning_ && !corridor_turn_ && mask_fresh && input.mask_ms!=last_exit_mask_ms_) {
+        last_exit_mask_ms_=input.mask_ms;
+        const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
+        int real_rows=0; double offset=0;
+        for(const auto &row:corridor.rows) if(row.valid && row.conf>=params.conf_min && row.flag_left=="THAT" && row.flag_right=="THAT") {
+            ++real_rows; offset+=((row.left+row.right)/2-input.mask.cols/2.0)/input.mask.cols;
+        }
+        const bool exit_ok=real_rows>=kExitRealRows && std::abs(offset/std::max(1,real_rows))<=kExitOffsetFrac;
+        exit_run_=exit_ok ? exit_run_+1 : 0;
+    }
     const bool junction_seen=!rb_in_pass_ && std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
     const char *turn_start_reason=nullptr;
     const bool returning=return_cm_>=0;
@@ -440,6 +455,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         } else if(!mask_fresh) {
             if(barrier_turn_) barrier_done_=false;  // rẽ rào bị hủy vì mặt nạ cũ: rào còn gần thì xét lại (rẽ hoặc dừng Q7)
             ClearTurn(); state_=PlannerState::BAM_LAN;
+        } else if(turning_ && !corridor_turn_ && !sensor_bad && std::isfinite(input.yaw_deg) &&
+                  std::abs(input.yaw_deg-yaw0_)>=kHandoverYawDeg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0) &&
+                  exit_run_>=params.vote_min) {  // giao bám làn: đã quay đủ để thấy đường ra và mặt nạ xác nhận
+            ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(turning_ && !corridor_turn_ && !sensor_bad && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0)) {  // mẫu hỏng (kể cả ±inf) không được coi là đã quay đủ
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(!turning_) {
@@ -477,7 +496,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
             std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
         command_ms_=now_ms;
-        plan.cmd={person_stop_ || sensor_hold_ ? 0.0 : params.min_cms,sent_angle_};
+        plan.cmd={person_stop_ || sensor_hold_ ? 0.0 : std::min(params.max_speed_cms,std::max(params.min_cms,kTurnCms)),sent_angle_};
         plan.reason=person_stop_ ? "NGUOI_DI_BO" : sensor_hold_ ? "CAM_BIEN_CHO" : turn_start_reason ? turn_start_reason : StateName(state_);
         plan.debug.state=StateName(state_); plan.debug.reason=plan.reason;
         plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=plan.cmd.cms;
