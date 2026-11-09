@@ -71,6 +71,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
+        rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
@@ -311,7 +312,18 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     // hole_l/r là các pixel 0, hai đoạn đường hai phía đã được ExtractCorridor chọn.
                     if(row.hole_r-row.hole_l+1>=params.obstacle_hole_ratio*w) ++candidates;
                 }
-                obstacle=candidates>=2;
+                // Vật chiếm trọn làn phải trên đường 2 làn không tạo lỗ: mép phải hàng trên thụt vào >= 0,5 làn so với hàng dưới.
+                // Bỏ hàng xa nhất (đường cụt ngã T) và lúc đã có ý định rẽ (log 09/11: 3/446 mask, 2 báo giả ở ngã T có biển).
+                bool intrusion=false;
+                for(size_t i=1;i+1<corridor.rows.size() && !turn_direction_;++i) {
+                    const auto &a=corridor.rows[i-1], &b=corridor.rows[i];
+                    if(!a.valid || !b.valid) continue;
+                    const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-b.y)/(bottom-top))) : 0;
+                    const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
+                    intrusion=intrusion || (a.lanes==2 && a.flag_right=="THAT" && b.flag_left=="THAT" && b.flag_right!="MEP_ANH" &&
+                        a.raw_r-b.raw_r>=0.5*w && b.raw_r-b.raw_l<=1.25*w);
+                }
+                obstacle=candidates>=2 || intrusion;
             } else obstacle_votes_.clear();
             obstacle_votes_.push_back(obstacle);
             while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
