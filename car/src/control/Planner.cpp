@@ -8,6 +8,9 @@ namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
 constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
+// Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).
+// Rào hẹp 115 px, rào lệch phải 90 px trùng thời điểm ngưỡng đáy hộp 0,60/0,65 đã chỉnh 07/11; đảo xa 100-233 px, vào thật >= 297 px.
+constexpr double kNarrowBarrierMinW=115, kWideBarrierMinW=90, kRoundMinW=280;
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
@@ -131,9 +134,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     person_stop_=false;
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
-        votes_.erase(std::remove_if(votes_.begin(),votes_.end(),[&](const Vote& vote) {
-            return vote.ms>now_ms || now_ms-vote.ms>params.det_max_age_ms;
-        }),votes_.end());
         if(fresh) for(const auto &d:batch.items) {
             const bool signLeft=d.class_name=="left" || d.class_name=="no_right";
             const bool signRight=d.class_name=="right" || d.class_name=="no_left";
@@ -155,7 +155,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
-            else if(roundabout) round=true;
+            else if(roundabout) round=round || b.width>=kRoundMinW;  // đảo xa (hộp nhỏ) chưa tính lần qua
             else if(person) people=true;
             else if(barrier) {
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
@@ -163,8 +163,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 barrier_seen=barrier_seen || bottom>=params.work_barrier_y2_frac-0.10;
                 // Work 2 (hộp lệch phải) vào đường 2 làn: dải tâm tới 0,82; work 1 (hộp giữa) kích hoạt sớm hơn 0,05 theo đáy hộp.
                 const bool wide=center>=kWideBarrierCx;
-                const bool near_wide=wide && bottom>=params.work_barrier_y2_frac && center<=kWideBarrierMaxCx;
-                const bool near_narrow=!wide && center>=0.25 && bottom>=params.work_barrier_y2_frac-kNarrowBarrierEarly;
+                const bool near_wide=wide && bottom>=params.work_barrier_y2_frac && center<=kWideBarrierMaxCx && b.width>=kWideBarrierMinW;
+                const bool near_narrow=!wide && center>=0.25 && bottom>=params.work_barrier_y2_frac-kNarrowBarrierEarly && b.width>=kNarrowBarrierMinW;
                 barrier_near=barrier_near || near_wide || near_narrow;
                 barrier_wide=barrier_wide || near_wide;
             }
@@ -180,6 +180,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
+        // Phiếu theo các lô gần nhất: tuổi tính từ lô mới nhất (YOLO ~230 ms/lô, trễ ~360 ms, log 09/11),
+        // lô mới nhất cũ hơn det_max_age_ms thì bỏ hết như cũ.
+        const int64_t newest=votes_.empty() ? -1 : votes_.back().ms;
+        votes_.erase(std::remove_if(votes_.begin(),votes_.end(),[&](const Vote& vote) {
+            return vote.ms>now_ms || now_ms-newest>params.det_max_age_ms || newest-vote.ms>params.det_max_age_ms;
+        }),votes_.end());
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
         int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_wide=0,barriers_seen=0,rounds=0,persons=0;
         for(const auto &v:votes_) {
@@ -293,10 +299,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 const double top=std::lround(params.corridor_top_frac*input.mask.rows);
                 int candidates=0;
                 for(const auto &row:corridor.rows) {
-                    if(!row.valid || !row.hole || row.y<(params.corridor_bottom_frac+params.corridor_top_frac)*input.mask.rows/2) continue;
-                    near_hole=true; avoid_ok=avoid_ok && row.avoid_ok;
+                    if(!row.valid || !row.hole) continue;
+                    // Đường 2 làn: lỗ nằm trọn nửa trái là vật trên làn trái, không chắn làn phải (vật thứ hai sau khi về làn).
+                    if(row.lanes==2 && row.hole_r<=(row.left+row.right)/2) continue;
                     const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-row.y)/(bottom-top))) : 0;
                     const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
+                    // Xét cả hàng xa để né sớm (log 09/11: lỗ ở 0,55-0,75 chiều cao từ ~25 cm trước khi chạm); dừng KHONG_DUONG_NE vẫn chỉ theo nửa gần.
+                    if(row.y>=(params.corridor_bottom_frac+params.corridor_top_frac)*input.mask.rows/2) {
+                        near_hole=true; avoid_ok=avoid_ok && row.avoid_ok;
+                    }
                     // hole_l/r là các pixel 0, hai đoạn đường hai phía đã được ExtractCorridor chọn.
                     if(row.hole_r-row.hole_l+1>=params.obstacle_hole_ratio*w) ++candidates;
                 }
