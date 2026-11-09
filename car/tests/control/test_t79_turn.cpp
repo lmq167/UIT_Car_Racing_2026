@@ -36,7 +36,10 @@ struct Rig {
         now+=40; in.odo_cm=odo; in.image_ms=in.sensor_ms=now;
         if(new_mask) in.mask_ms=now;
         in.detections={{},now,++frame};
-        if(!sign.empty()) in.detections.items.push_back({sign,cv::Rect2f(600,100,80,80),0.9f,now});
+        if(!sign.empty()) {
+            const float width=sign=="round_barrier" ? 300.f : (sign=="work_barrier" ? 130.f : 80.f);
+            in.detections.items.push_back({sign,cv::Rect2f(640-width/2,100,width,80),0.9f,now});
+        }
         return planner.Step(in,now,p);
     }
     void arm(bool right=false) {
@@ -52,6 +55,59 @@ void Turn(const control::Plan &plan, const std::string &reason, bool right=false
     Check(plan.debug.reason==reason && plan.reason==reason,"Sai lý do khung đầu: "+plan.reason);
 }
 void Run(const std::string &name) {
+    // T80t C(1–4): đầu vào và kỳ vọng lấy từ luật được duyệt, chỉ dùng Step công khai.
+    if(name=="barrier_width" || name=="round_width") {
+        const bool round=name=="round_width";
+        for(const int width:(round?std::vector<int>{200,300}:std::vector<int>{60,130})) {
+            Rig r; bool activated=false;
+            for(int i=0;i<r.p.vote_window+12;++i) {
+                r.now+=40; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+                r.in.detections={{{round?"round_barrier":"work_barrier",
+                    cv::Rect2f(640-width/2.f,432-60,width,60),.9f,r.now}},r.now,++r.frame};
+                const auto plan=r.planner.Step(r.in,r.now,r.p);
+                const bool active=round ? plan.reason.find("VX_")!=std::string::npos :
+                    plan.state==control::PlannerState::RE_TRAI;
+                if(width==(round?200:60)) Check(!active,"Hộp hẹp không được kích hoạt: "+plan.reason);
+                activated=activated || active;
+            }
+            if(width==(round?300:130)) Check(activated,"Hộp đủ rộng phải kích hoạt");
+        }
+        return;
+    }
+    if(name=="delayed_batches") {
+        for(const int age:{1000,500}) {
+            Rig r; r.p.det_max_age_ms=age;
+            for(int i=0;i<3;++i) {
+                r.now+=230; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+                const auto captured=r.now-360;
+                r.in.detections={{{"left",cv::Rect2f(600,100,80,80),.9f,captured}},captured,++r.frame};
+                const auto plan=r.planner.Step(r.in,r.now,r.p);
+                Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đi quãng không rẽ");
+            }
+            const auto plan=r.step(r.in.odo_cm+r.p.turn_start_cm);
+            const bool left=plan.state==control::PlannerState::RE_TRAI;
+            std::cout<<"det_max_age_ms="<<age<<" state="<<control::StateName(plan.state)
+                     <<" reason="<<plan.reason<<'\n';
+            if(age==1000) Check(left,"Ba lô trễ còn tươi phải chốt ý định trái");
+        }
+        return;
+    }
+    if(name=="space_abandons_pass") {
+        Rig r;
+        for(int i=0;i<r.p.vote_window;++i) r.step(0,"round_barrier");
+        Check(r.step(0,"round_barrier").mode==control::TrajMode::ROUNDABOUT,
+              "Thiết lập phải đang trong lượt vòng xuyến trước Space");
+        r.in.stop=true; const auto stopped=r.step(0,"round_barrier"); r.in.stop=false;
+        Check(stopped.cmd.cms==0 && stopped.cmd.deg==0,"Space phải dừng");
+        // G nhận lô rỗng: không bắt đầu lượt mới sau G.
+        r.in.go=true; r.step(0); r.in.go=false;
+        for(int cm=0;cm<=r.p.rb_lost_cm+r.p.rb_turn1_cm+20;++cm) {
+            const auto plan=r.step(cm);
+            Check(plan.state!=control::PlannerState::RE_TRAI,"Lượt dở không được thành rẽ chờ tại cm="+
+                  std::to_string(cm)+": "+plan.reason);
+        }
+        return;
+    }
     for(int variant=0;variant<(name=="R2" || name=="R6" || name=="R7"?4:2);++variant) {
         const bool right=variant%2!=0;
         Rig r; r.arm(right);

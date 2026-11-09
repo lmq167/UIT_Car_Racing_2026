@@ -57,8 +57,10 @@ struct Rig {
     control::Plan send(const std::vector<std::string>& names, float confidence=0.9f) {
         now+=40;
         std::vector<control::Detection> items;
-        for (const auto& name:names)
-            items.push_back({name,cv::Rect2f(1024,100,128,72),confidence,now});
+        for (const auto& name:names) {
+            const float width=name=="round_barrier" ? 300.f : (name=="work_barrier" ? 130.f : 128.f);
+            items.push_back({name,cv::Rect2f(1088-width/2,100,width,72),confidence,now});
+        }
         in.detections={items,now,++frame};
         return step();
     }
@@ -478,7 +480,7 @@ void Case(const std::string& name) {
     } else if (name=="barrier_sensor_hold") {
         // Rào gần mà cảm biến vừa hỏng (chưa tới 250 ms): không tiến thẳng vào rào với tốc độ bám làn.
         Rig r; r.in.sensor_ok=false; control::Plan plan;
-        for (int i=0;i<4;++i) { r.now+=40; r.in.detections={{{"work_barrier",cv::Rect2f(600,400,80,80),0.9f,r.now}},r.now,++r.frame}; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
+        for (int i=0;i<4;++i) { r.now+=40; r.in.detections={{{"work_barrier",cv::Rect2f(575,400,130,80),0.9f,r.now}},r.now,++r.frame}; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
         Check(plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN","Rào gần + cảm biến hỏng thoáng qua: dừng ngay");
     } else if (name=="sign_min_width") {
         // Biển hẹp (xa/chặng khác) không tính phiếu; đủ rộng thì tính.
@@ -538,7 +540,7 @@ void Case(const std::string& name) {
         // rào xa hoặc lệch ngang không kích hoạt; work_barrier_action 0 không kích hoạt.
         auto box=[&](Rig& r,float cx,float y2) {
             r.now+=40;
-            r.in.detections={{{"work_barrier",cv::Rect2f(cx*1280-40,y2*720-60,80,60),0.9f,r.now}},r.now,++r.frame};
+            r.in.detections={{{"work_barrier",cv::Rect2f(cx*1280-65,y2*720-60,130,60),0.9f,r.now}},r.now,++r.frame};
             return r.step();
         };
         { Rig r; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.58f);
@@ -591,7 +593,7 @@ void Case(const std::string& name) {
         auto rb=[&](bool seen) {
             r.now+=40;
             std::vector<control::Detection> items;
-            if (seen) items.push_back({"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now});
+            if (seen) items.push_back({"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now});
             r.in.detections={items,r.now,++r.frame};
             return r.step();
         };
@@ -601,7 +603,7 @@ void Case(const std::string& name) {
         r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0)); r.in.yaw_deg=25;
         for (int i=0;i<12;++i) plan=rb(true);
         Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.deg<0 && plan.cmd.cms>0,"Mất làn trong lần qua phải giữ hướng (lái phải về yaw0)");
-        r.now+=40; r.in.detections={{{"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now},{"work_barrier",cv::Rect2f(600,500,80,60),0.9f,r.now}},r.now,++r.frame};
+        r.now+=40; r.in.detections={{{"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now},{"work_barrier",cv::Rect2f(575,500,130,60),0.9f,r.now}},r.now,++r.frame};
         plan=r.step(); r.now+=40; r.in.detections.frame_id=++r.frame; r.in.detections.captured_ms=r.now;
         for (auto& d:r.in.detections.items) d.captured_ms=r.now;
         plan=r.step(); r.now+=40; r.in.detections.frame_id=++r.frame; r.in.detections.captured_ms=r.now;
@@ -632,7 +634,7 @@ void Case(const std::string& name) {
         Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
         auto rb=[&]() {
             r.now+=40;
-            r.in.detections={{{"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now}},r.now,++r.frame};
+            r.in.detections={{{"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now}},r.now,++r.frame};
             return r.step();
         };
         control::Plan plan;
@@ -663,7 +665,7 @@ void Case(const std::string& name) {
         auto rb=[&](bool seen) {
             r.now+=40;
             std::vector<control::Detection> items;
-            if (seen) items.push_back({"round_barrier",cv::Rect2f(600,300,80,80),0.9f,r.now});
+            if (seen) items.push_back({"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now});
             r.in.detections={items,r.now,++r.frame};
             return r.step();
         };

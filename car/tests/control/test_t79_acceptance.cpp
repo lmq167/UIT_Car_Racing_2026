@@ -337,7 +337,7 @@ struct Rig {
             in.detections.captured_ms=now;
             in.detections.frame_id=++frame;
             if(round_seen)
-                in.detections.items.push_back({"round_barrier",cv::Rect2f(96,40,128,128),0.9f,now});
+                in.detections.items.push_back({"round_barrier",cv::Rect2f(10,40,300,128),0.9f,now});
         }
         last=planner.Step(in,now,p);
         Limits(last.cmd,p);

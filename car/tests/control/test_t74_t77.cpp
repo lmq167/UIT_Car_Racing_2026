@@ -79,8 +79,10 @@ struct Rig {
               float cx=0.5f, float y2=0.8f, int dt=40) {
         now+=dt;
         std::vector<control::Detection> items;
-        for (const auto& name:names)
-            items.push_back({name,cv::Rect2f(cx*1280-40,y2*720-60,80,60),confidence,now});
+        for (const auto& name:names) {
+            const float width=name=="round_barrier" ? 300.f : (name=="work_barrier" ? 130.f : 80.f);
+            items.push_back({name,cv::Rect2f(cx*1280-width/2,y2*720-60,width,60),confidence,now});
+        }
         in.detections={items,now,++frame};
         return step();
     }
@@ -162,7 +164,8 @@ void NoVotes(const std::string& label, const std::string& mode) {
         for (int i=0;i<r.p.vote_min;++i) {
             r.now+=40;
             const auto old=r.now-r.p.det_max_age_ms-1;
-            r.in.detections={{{label,cv::Rect2f(600,500,80,60),0.9f,mode=="stale_batch"?r.now:old}},
+            const float width=label=="round_barrier" ? 300.f : (label=="work_barrier" ? 130.f : 80.f);
+            r.in.detections={{{label,cv::Rect2f(640-width/2,500,width,60),0.9f,mode=="stale_batch"?r.now:old}},
                              mode=="stale_batch"?old:r.now,++r.frame};
             Lane(r.step(),"Phiếu cũ phải bị bỏ");
         }
@@ -187,7 +190,7 @@ void T74(const std::string& name) {
             Rig r; Plan plan;
             for (int i=0;i<r.p.vote_min;++i) {
                 r.now+=40;
-                r.in.detections={{{"work_barrier",cv::Rect2f(s.cx*1280-40,s.y2_px-60,80,60),s.conf,r.now}},r.now,++r.frame};
+                r.in.detections={{{"work_barrier",cv::Rect2f(s.cx*1280-65,s.y2_px-60,130,60),s.conf,r.now}},r.now,++r.frame};
                 plan=r.step();
             }
             Expect((plan.state==PlannerState::RE_TRAI)==s.turn,plan,
@@ -325,7 +328,7 @@ void T74(const std::string& name) {
             Plan plan;
             for (int i=0;i<r.p.vote_window;++i) {
                 r.now+=40;
-                r.in.detections={{{"work_barrier",cv::Rect2f(s.cx*1280-40,s.y2_px-60,80,60),s.conf,r.now}},r.now,++r.frame};
+                r.in.detections={{{"work_barrier",cv::Rect2f(s.cx*1280-65,s.y2_px-60,130,60),s.conf,r.now}},r.now,++r.frame};
                 plan=r.step();
             }
             if (s.stop) stopped(plan);
@@ -408,7 +411,7 @@ void Q7(const std::string& name) {
             r.in.sensor_ok=false;
             for (int i=0;i<r.p.vote_window+5;++i) {
                 r.now+=40;
-                r.in.detections={{{"work_barrier",cv::Rect2f(600,516,80,60),.9f,r.now},
+                r.in.detections={{{"work_barrier",cv::Rect2f(575,516,130,60),.9f,r.now},
                                    {"red",cv::Rect2f(1160,500,80,80),.9f,r.now}},r.now,++r.frame};
                 const auto plan=r.step();
                 if (i>=r.p.vote_min-1)
@@ -631,7 +634,19 @@ void T77(const std::string& name) {
         r.now+=mask?r.p.mask_max_age_ms+1:control::kStaleImageMs+1;
         const auto plan=r.step(!mask,true,mask);
         Expect(plan.cmd.cms==0 && plan.cmd.deg==0,plan,"Giữ hướng không vượt ưu tiên ảnh/mask cũ");
-    } else if (name=="space_go" || name=="reset") {
+    } else if (name=="space_go") {
+        // Luật mới: Space bỏ lượt dở; vòng xuyến còn thấy sau G là lượt mới.
+        Rig r; r.hold(3,13);
+        r.in.stop=true; ++r.now; const auto stopped=r.step();
+        Expect(stopped.cmd.cms==0 && stopped.cmd.deg==0,stopped,"Space khi giữ hướng phải dừng");
+        r.in.stop=false; r.mask(); r.in.yaw_deg=40;
+        r.in.go=true; r.send({"round_barrier"}); r.in.go=false;
+        r.votes({"round_barrier"},r.p.regain_frames+1);
+        r.in.yaw_deg=45; r.in.mask.setTo(0);
+        const auto plan=r.votes({"round_barrier"},12);
+        Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-5*r.p.rb_yaw_kp),
+               plan,"Lượt mới dùng yaw0=40 sau G, không dùng yaw0=3 trước Space");
+    } else if (name=="reset") {
         for (bool preserve:{false,true}) {
             Rig r; r.hold();
             if (name=="space_go") {

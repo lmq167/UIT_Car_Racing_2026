@@ -39,7 +39,8 @@ struct Rig {
         if(new_batch) {
             in.detections={{},now,++frame};
             if(!object.empty()) in.detections.items.push_back({object,
-                object=="red" ? cv::Rect2f(1150,100,100,80) : cv::Rect2f(600,100,80,80),0.9f,now});
+                object=="red" ? cv::Rect2f(1150,100,100,80) :
+                (object=="round_barrier" ? cv::Rect2f(490,100,300,80) : cv::Rect2f(600,100,80,80)),0.9f,now});
         }
         last=planner.Step(in,now,p);
         Check(std::isfinite(last.cmd.cms) && last.cmd.cms>=0 && last.cmd.cms<=p.max_speed_cms,"Vượt trần tốc độ");
@@ -150,7 +151,7 @@ void Run(const std::string &name) {
               "IMU phải lỗi ít nhất 250 ms, encoder vẫn tốt");
         const auto barrier=[&](double cm=0) {
             const int64_t captured=r.now+50;
-            r.in.detections={{{"work_barrier",cv::Rect2f(600,500,80,100),0.9f,captured}},captured,++r.frame};
+            r.in.detections={{{"work_barrier",cv::Rect2f(575,500,130,100),0.9f,captured}},captured,++r.frame};
             return r.step("",cm,50,true,false);
         };
         for(int i=1;i<=r.p.vote_min;++i) barrier();
