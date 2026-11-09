@@ -38,7 +38,8 @@ private:
     std::deque<bool> obstacle_votes_;
     std::deque<bool> junction_votes_;
     int64_t last_junction_mask_ms_=-1;
-    int64_t left_real_ms_=-1, right_real_ms_=-1;  // lần gần nhất cạnh trái/phải ở hàng gần là cạnh thật
+    int64_t left_real_ms_=-1, right_real_ms_=-1;
+    bool rb_turn_=false;  // ý định rẽ đến từ lượt chờ sau vòng xuyến (giữ tới ngã T, không hủy theo quãng)  // lần gần nhất cạnh trái/phải ở hàng gần là cạnh thật
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };
