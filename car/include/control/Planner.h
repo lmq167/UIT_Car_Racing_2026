@@ -33,11 +33,12 @@ public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
 private:
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     std::deque<bool> junction_votes_;
     int64_t last_junction_mask_ms_=-1;
+    int64_t left_real_ms_=-1, right_real_ms_=-1;  // lần gần nhất cạnh trái/phải ở hàng gần là cạnh thật
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
     enum class Swerve { NONE, LEFT, PASS };
