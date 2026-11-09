@@ -1348,20 +1348,23 @@ def t73_lane_check(run, mark, lane_mark=None):
         return
     start, recovered = window
     period = run.values.get('control_period_ms', BOUNDS['control_period_ms'][0])
-    deadline = start + T57_SENSOR_GLITCH_MS + period + run.slack
+    # Ba chu kỳ cho đọc lỗi, vòng điều khiển thấy lỗi và vòng đầu đủ 250 ms.
+    deadline = start + T57_SENSOR_GLITCH_MS + 3 * period + run.slack
     cancelled = [e[0] for e in run.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN']
-    end = min([deadline] + cancelled + ([] if recovered is None else [recovered + period + run.slack]))
+    end = min([deadline] + cancelled + ([] if recovered is None else [recovered + 2 * period + run.slack]))
     holds = [e for e in run.of('reason', mark) if e[2] == 'CAM_BIEN_CHO']
     if cancelled and holds:
         # Mốc là lúc tiêm lỗi (Planner không thể thấy lỗi sớm hơn); lý do CAM_BIEN_CHO đầu tiên có thể ghi trễ khi tải cao.
         need(T57_SENSOR_GLITCH_MS - period <= cancelled[0] - start <=
-             T57_SENSOR_GLITCH_MS + period + run.slack,
-             'Hủy trước hoặc sau hạn lỗi liên tục Q9', 't73_lane')
+             T57_SENSOR_GLITCH_MS + 3 * period + run.slack,
+             'Hủy trước hoặc sau hạn lỗi liên tục Q9: {} ms, hạn {}..{} ms'.format(
+                 cancelled[0] - start, T57_SENSOR_GLITCH_MS - period, deadline - start), 't73_lane')
     for e in zeros:
         reasons = [reason for reason in run.of('reason', mark) if reason[0] <= e[0] + 1]
         need(e[1] == 'motor_speed' and start <= e[0] <= end and holds and
              reasons and reasons[-1][2] == 'CAM_BIEN_CHO',
-             'Motor0 không thuộc CAM_BIEN_CHO hoặc quá cửa sổ Q9', 't73_lane')
+             'Motor0 không thuộc CAM_BIEN_CHO hoặc quá cửa sổ Q9: {} ms, hạn 0..{} ms'.format(
+                 e[0] - start, end - start), 't73_lane')
     # Suốt pha chờ phải giữ góc cuối trước lệnh chờ đầu tiên.
     first_hold = holds[0][0]
     angles = [e for e in events if e[1] == 'servo_angle' and not e[3] and e[0] < first_hold]
@@ -1561,11 +1564,13 @@ def t73_case(case, cfg, root):
                            any(e[2] == 'BAM_LAN' for e in r.of('state', mark)),
                            3 + r.slack / 1000.0, 'Không hủy rẽ về BAM_LAN/HUY_RE_CAM_BIEN')
                     cancelled = next(e for e in r.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN')
-                    limit = T57_SENSOR_GLITCH_MS + r.values.get('control_period_ms', BOUNDS['control_period_ms'][0]) + r.slack
+                    # Ba chu kỳ cho đọc lỗi, vòng điều khiển thấy lỗi và vòng đầu đủ 250 ms.
+                    limit = T57_SENSOR_GLITCH_MS + 3 * r.values.get('control_period_ms', BOUNDS['control_period_ms'][0]) + r.slack
                     # Encoder cũ (IMU vẫn tươi) không qua Q9: Planner hủy bằng luật kẹt bánh 1500 ms như bản gốc.
                     if case != 't73_stale_encoder_turning':
                         need(0 <= cancelled[0] - bad_since <= limit,
-                             'Hủy rẽ cảm biến quá hạn Q9', 't73_cancel')
+                             'Hủy rẽ cảm biến quá hạn Q9: {} ms, hạn {} ms'.format(
+                                 cancelled[0] - bad_since, limit), 't73_cancel')
                     # Cho phép lệnh rẽ cũ trước vòng phát hiện lỗi, cấm rẽ lại từ lúc về làn.
                     lane_mark = next(i for i, e in enumerate(r.events()) if i >= mark and
                                      e[1] == 'state' and e[2] == 'BAM_LAN')
@@ -1613,9 +1618,11 @@ def t73_add_cancel(run, mark, seconds=3):
     window = getattr(run, 't79_sensor_window', None)
     if window is not None:
         cancelled = next(e for e in run.of('reason', mark) if e[2] == 'HUY_RE_CAM_BIEN')
-        limit = T57_SENSOR_GLITCH_MS + run.values.get('control_period_ms', BOUNDS['control_period_ms'][0]) + run.slack
+        # Ba chu kỳ cho đọc lỗi, vòng điều khiển thấy lỗi và vòng đầu đủ 250 ms.
+        limit = T57_SENSOR_GLITCH_MS + 3 * run.values.get('control_period_ms', BOUNDS['control_period_ms'][0]) + run.slack
         need(0 <= cancelled[0] - window[0] <= limit,
-             'Huy re cam bien qua han Q9', 't73_cancel')
+             'Huy re cam bien qua han Q9: {} ms, hạn {} ms'.format(
+                 cancelled[0] - window[0], limit), 't73_cancel')
     lane_mark = next(i for i, e in enumerate(run.events()) if i >= mark and
                      e[1] == 'state' and e[2] == 'BAM_LAN')
     run.wait(lambda: any(e[2] > 0 and not e[3] for e in run.of('motor_speed', lane_mark)),
@@ -1703,8 +1710,12 @@ def t73_add_case(case, cfg, root):
                         else:
                             setattr(r, 't57_' + action, False)
                         stamp = td.now_ms()
+                        period = r.values.get('control_period_ms', BOUNDS['control_period_ms'][0])
                         def stale_lane():
                             t73_add_lane(r, mark)
+                            # IMU: quá tuổi 200 ms, đếm Q9 và ba chu kỳ đọc/thấy lỗi/đủ hạn.
+                            if action == 'imu':
+                                return td.now_ms() > stamp + 200 + T57_SENSOR_GLITCH_MS + 3 * period + r.slack
                             return td.now_ms() > stamp + 400 + r.slack
                         r.wait(stale_lane, 3, 'Cảm biến chưa quá cũ khi armed')
                     if action == 'control':
