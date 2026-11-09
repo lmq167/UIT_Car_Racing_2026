@@ -72,6 +72,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
+        for(auto &vote:votes_) vote.round=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
@@ -197,7 +198,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
         const bool rb_present=rounds>=params.vote_min;
         if(rb_present) {
-            if(!rb_in_pass_) { rb_entered=true; rb_in_pass_=true; rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false; }
+            if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;  // đang dừng (Space) không mở lần qua mới
+                rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false; }
             rb_losing_=false;
         } else if(rb_in_pass_ && (!params.imu_fallback || encoder_good)) {
             if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
