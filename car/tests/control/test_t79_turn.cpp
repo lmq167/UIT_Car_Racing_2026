@@ -56,6 +56,71 @@ void Turn(const control::Plan &plan, const std::string &reason, bool right=false
     Check(plan.debug.reason==reason && plan.reason==reason,"Sai lý do khung đầu: "+plan.reason);
 }
 void Run(const std::string &name) {
+    // Kiểm tốc độ rẽ và tiếp quản theo yêu cầu qua Step công khai.
+    if(name.find("handover_")==0 || name=="imu_speed" || name=="imu_timeout") {
+        const bool right=name=="handover_right";
+        for(double ceiling:(name=="imu_speed"?std::vector<double>{20,6}:std::vector<double>{20})) {
+            Rig r; r.p.max_speed_cms=ceiling; r.p.min_cms=4;
+            r.p.cruise_cms=ceiling; r.p.approach_cms=4;
+            r.arm(right); r.mask(1,right); control::Plan plan;
+            for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm);
+            Turn(plan,"RE_GIAO_LO",right);
+            const auto state=right?control::PlannerState::RE_PHAI:control::PlannerState::RE_TRAI;
+            if(name=="imu_speed") {
+                Check(plan.cmd.cms==(ceiling==20?8:6),"Tốc độ đầu lượt phải là 8 có chặn trần");
+                plan=r.step(r.in.odo_cm);
+                Check(plan.state==state && plan.cmd.cms==(ceiling==20?8:6),"Tốc độ đang rẽ phải là 8 có chặn trần");
+                continue;
+            }
+            r.in.yaw_deg=right?-42:(name=="handover_low_yaw"?30:50);
+            if(name!="handover_no_corridor" && name!="imu_timeout") r.mask(0);
+            else {
+                r.in.mask.setTo(0); r.in.mask.colRange(0,141).setTo(1);
+                // Cạnh trái chạm mép ảnh: chưa có hai cạnh thật, vẫn còn làn để hồi về.
+            }
+            if(name=="handover_offset") {
+                r.in.mask.setTo(0); r.in.mask.colRange(120,199).setTo(1);
+            }
+            const auto corridor=control::ExtractCorridor(r.in.mask,r.p,control::TrajMode::LANE);
+            int real=0; double offset=0;
+            for(const auto &row:corridor.rows) if(row.valid && row.conf>=r.p.conf_min && row.flag_left=="THAT" && row.flag_right=="THAT") {
+                ++real; offset+=((row.left+row.right)/2-r.in.mask.cols/2.0)/r.in.mask.cols;
+            }
+            if(name=="handover_no_corridor" || name=="imu_timeout") Check(real<3,"Thiết lập chưa đủ 3 hàng hai cạnh thật");
+            else {
+                Check(real>=3,"Thiết lập có ít nhất 3 hàng hai cạnh thật");
+                Check(name=="handover_offset"?std::abs(offset/real-0.3)<0.01:std::abs(offset/real)<=0.15,"Thiết lập độ lệch tâm");
+            }
+            if(name=="imu_timeout") {
+                r.now+=r.p.turn_max_ms+1; plan=r.step(r.in.odo_cm);
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE_CAM_BIEN" &&
+                      plan.cmd.cms>0 && plan.cmd.cms<=r.p.max_speed_cms && std::abs(plan.cmd.deg)<=r.p.steer_max_deg,
+                      "Hết hạn phải hủy rẽ, lệnh trong giới hạn như cũ: "+plan.reason);
+                continue;
+            }
+            const bool fault=name=="handover_sensor_fault";
+            if(fault) r.in.sensor_ok=false;
+            const bool takeover=name=="handover_center" || right;
+            plan=r.step(r.in.odo_cm);
+            Check(plan.state==state,"Một mặt nạ chưa đủ phiếu");
+            if(!fault) for(int i=0;i<r.p.vote_min+1;++i) {
+                plan=r.step(r.in.odo_cm,"",false);
+                Check(plan.state==state,"Mặt nạ lặp không cộng phiếu");
+            }
+            for(int i=1;i<r.p.vote_min;++i) {
+                plan=r.step(r.in.odo_cm);
+                if(i<r.p.vote_min-1 || !takeover) Check(plan.state==state,"Chưa đủ điều kiện phải giữ rẽ: "+plan.reason);
+            }
+            if(takeover) Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="BAM_LAN","Đủ điều kiện phải bám làn bình thường: "+plan.reason);
+            if(fault) {
+                Check(plan.cmd.cms==0 && plan.reason=="CAM_BIEN_CHO","Lỗi thoáng qua phải dừng giữ rẽ");
+                r.now+=251; plan=r.step(r.in.odo_cm);
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE_CAM_BIEN","Lỗi kéo dài phải hủy: "+plan.reason);
+            }
+        }
+        return;
+    }
+
     // Các ca C kiểm luật giao lộ bằng đầu vào công khai.
     if(name=="real_stays" || name=="edge_always" || name=="real_opens" || name=="t_end" || name=="visible_anchor" || name=="round_shrinks") {
         if(name=="round_shrinks") {

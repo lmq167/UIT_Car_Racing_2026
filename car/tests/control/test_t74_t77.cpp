@@ -9,6 +9,10 @@
 #include <stdexcept>
 
 namespace {
+// Tốc độ rẽ IMU có chặn bởi trần cấu hình.
+double TurnCms(const control::ControlParams &p) {
+    return std::min(p.max_speed_cms,std::max(p.min_cms,8.0));
+}
 using control::Plan;
 using control::PlannerState;
 void Check(bool ok, const std::string& message) {
@@ -229,7 +233,7 @@ void T74(const std::string& name) {
         for (double sign:{-1.,1.}) {
             Rig r; r.in.yaw_deg=5;
             r.votes({"work_barrier"}); auto plan=r.junction();
-            Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
+            Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,TurnCms(r.p)) &&
                    Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Rào hẹp (cx 0,5) vào lệnh rẽ IMU min_cms/+1,12*turn_steer_deg (rào 1: rẽ trái vào đường 1 làn, bán kính nhỏ)");
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
@@ -331,7 +335,7 @@ void T74(const std::string& name) {
             stopped(r.send({"work_barrier"},.9f,.5f,.8f,static_cast<int>(fresh_ms+999-r.now)));
             Lane(r.send({"work_barrier"},.9f,.5f,.8f,1),"Q7: đủ 1000 ms hồi cảm biến, chờ phiếu giao lộ sau khi chốt lại ý định");
             const auto recovered=r.junction();
-            Expect(recovered.state==PlannerState::RE_TRAI && Near(recovered.cmd.cms,r.p.min_cms),
+            Expect(recovered.state==PlannerState::RE_TRAI && Near(recovered.cmd.cms,TurnCms(r.p)),
                    recovered,"Q7: hồi đủ 1000 ms và đủ phiếu giao lộ mới rẽ trái qua rào gần");
         }
         struct Sample { float conf,cx,y2_px; bool stop; };
@@ -421,7 +425,7 @@ void Q7(const std::string& name) {
             plan=r.send({"work_barrier"},.9f,.5f,.8f,1);
             Lane(plan,"Q7: hồi 1000 ms, chờ đủ phiếu giao lộ sau khi chốt lại ý định");
             for(int i=1;i<r.p.vote_min;++i) plan=r.send({"work_barrier"},.9f,.5f,.8f,1);
-            Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,r.p.min_cms) &&
+            Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,TurnCms(r.p)) &&
                    plan.cmd.deg>0 && plan.cmd.deg<=r.p.turn_steer_deg,plan,
                    "Q7: hồi 1000 ms và đủ phiếu giao lộ rẽ lại rào còn gần; lỗi="+std::to_string(fault));
         }

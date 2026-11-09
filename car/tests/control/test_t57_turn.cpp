@@ -1,4 +1,5 @@
 #include "control/Planner.h"
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -7,6 +8,10 @@
 #include <stdexcept>
 
 namespace {
+// Tốc độ rẽ IMU có chặn bởi trần cấu hình.
+double TurnCms(const control::ControlParams &p) {
+    return std::min(p.max_speed_cms,std::max(p.min_cms,8.0));
+}
 void Check(bool ok, const std::string& message) {
     if (!ok) throw std::runtime_error(message);
 }
@@ -478,7 +483,7 @@ void Case(const std::string& name) {
         Check(plan.reason=="CAM_BIEN_CHO","Hỏng 100 ms vẫn giữ");
         r.in.sensor_ok=true; r.now+=50; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
         plan=r.planner.Step(r.in,r.now,r.p);
-        Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==r.p.min_cms,"Cảm biến về trong 250 ms: rẽ tiếp");
+        Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==TurnCms(r.p),"Cảm biến về trong 250 ms: rẽ tiếp");
         r.in.sensor_ok=false;
         for (int i=0;i<6;++i) { r.now+=50; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now; plan=r.planner.Step(r.in,r.now,r.p); }
         Check(plan.state==control::PlannerState::BAM_LAN,"Hỏng quá 250 ms phải hủy rẽ");
@@ -564,7 +569,7 @@ void Case(const std::string& name) {
         { Rig r; r.in.yaw_deg=5; control::Plan plan;
           for (int i=0;i<r.p.vote_min;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN,"Rao chot y dinh, chua giao lo"); plan=r.junction();
-          Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==r.p.min_cms && plan.cmd.deg>0,"Rào gần đủ phiếu phải rẽ trái");
+          Check(plan.state==control::PlannerState::RE_TRAI && plan.cmd.cms==TurnCms(r.p) && plan.cmd.deg>0,"Rào gần đủ phiếu phải rẽ trái");
           plan=box(r,0.83f,0.80f); Check(plan.state==control::PlannerState::RE_TRAI,"Hộp đổi bên khi đang rẽ không đổi quyết định");
           r.in.yaw_deg=5+r.p.turn_yaw_deg; plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN,"Đủ yaw về bám làn");
@@ -869,7 +874,7 @@ void Case(const std::string& name) {
             double previous=plan.cmd.deg;
             for (int i=0;i<30;++i) {
                 r.now+=100; r.in.odo_cm+=1; plan=r.step();
-                Check(std::abs(plan.cmd.deg-previous)<=1+1e-6 && std::abs(plan.cmd.deg)<=25 && plan.cmd.cms==r.p.min_cms,"Rẽ giữ rate/max/min_cms");
+                Check(std::abs(plan.cmd.deg-previous)<=1+1e-6 && std::abs(plan.cmd.deg)<=25 && plan.cmd.cms==TurnCms(r.p),"Rẽ giữ rate/max/min_cms");
                 previous=plan.cmd.deg;
             }
             Check(std::abs(plan.cmd.deg)==25,"Phải đạt góc cố định, không chỉ kẹp về0");
@@ -877,7 +882,7 @@ void Case(const std::string& name) {
             else left_angle=plan.cmd.deg;
             const double angle=plan.cmd.deg;
             r.in.mask.setTo(0); r.now+=40; plan=r.step();
-            Check(plan.cmd.cms==r.p.min_cms && plan.cmd.deg==angle,"Đang rẽ bỏ qua mất làn");
+            Check(plan.cmd.cms==TurnCms(r.p) && plan.cmd.deg==angle,"Đang rẽ bỏ qua mất làn");
         }
     } else if (name=="disabled") {
         Rig a,b; a.p.turn_enable=b.p.turn_enable=0;

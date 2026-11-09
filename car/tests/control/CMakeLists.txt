@@ -159,7 +159,9 @@ add_executable(test_t79_turn test_t79_turn.cpp)
 target_link_libraries(test_t79_turn PRIVATE ucr_control)
 target_compile_options(test_t79_turn PRIVATE -Wall -Wextra)
 foreach(scenario R1 R2 R3 R4 R5 R6 R7 barrier_width round_width delayed_batches space_abandons_pass
-        real_stays edge_always real_opens t_end visible_anchor round_shrinks)
+        real_stays edge_always real_opens t_end visible_anchor round_shrinks
+        handover_no_corridor handover_low_yaw handover_center handover_offset handover_right
+        imu_speed handover_sensor_fault imu_timeout)
     add_test(NAME control_t79_turn_${scenario} COMMAND test_t79_turn ${scenario})
     set_tests_properties(control_t79_turn_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
