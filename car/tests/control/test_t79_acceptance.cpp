@@ -599,13 +599,18 @@ void RoundCount() {
         bool turned=false;
         const int limit=static_cast<int>(r.p.rb_lost_cm+turn_cm)+4*r.p.vote_window+10;
         for(int n=0;n<limit && !turned;++n) {
+            if(exit_odo>=0 && r.in.odo_cm-exit_odo>=r.p.rb_lost_cm+turn_cm) {
+                r.in.mask=Road(1.7);
+                r.in.mask.rowRange(0,static_cast<int>(0.72*kH)).setTo(0);
+                r.in.mask.rowRange(static_cast<int>(0.72*kH),static_cast<int>(0.79*kH)).setTo(1);
+            }
             const auto plan=Drive(r);
             if(exit_odo<0 && plan.reason=="VX_THOAT") exit_odo=r.in.odo_cm;
             if(plan.state==PlannerState::RE_TRAI || plan.state==PlannerState::RE_PHAI) {
                 Check(plan.state==want,"Sai hướng rẽ sau lượt vòng xuyến (lượt 1 trái, lượt 2 phải)");
                 Check(exit_odo>=0 && r.in.odo_cm-exit_odo+kEps>=r.p.rb_lost_cm+turn_cm,
                       "Rẽ trước khi đi đủ rb_lost_cm + rb_turnN_cm từ lúc mất phiếu");
-                Check(r.in.odo_cm-exit_odo<=r.p.rb_lost_cm+turn_cm+3,"Rẽ muộn hơn quãng cấu hình");
+                Check(r.in.odo_cm-exit_odo<=r.p.rb_lost_cm+turn_cm+r.p.vote_min+3,"Rẽ muộn hơn quãng cấu hình");
                 turned=true;
             } else {
                 Check(plan.state==PlannerState::BAM_LAN && plan.cmd.cms>0,"Ra khỏi vòng xuyến không bám làn");

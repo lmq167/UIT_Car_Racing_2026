@@ -23,9 +23,10 @@ struct Rig {
         in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
         for(int y=0;y<100;++y) {
             int l=60,r=140;
-            if(shape==1) { if(right) r=199; else l=0; }
+            if(shape==1 && y>=79) { if(right) r=199; else l=0; }
+            if(shape==2 && y<72) continue;
             if(shape==2 && y<79) { l=0; r=199; }
-            if(shape==3) { const int d=((95-y)/5)%2 ? 20 : 0; l+=d; r+=d; }
+            if(shape==3 && y<79) { const int d=((95-y)/5)%2 ? 20 : 0; l+=d; r+=d; }
             if(shape==4 && y<79) { if(right) r=199; else l=0; }
             if(shape==5) { l=0; r=199; }
             in.mask.row(y).colRange(l,r+1).setTo(1);
@@ -45,7 +46,7 @@ struct Rig {
     void arm(bool right=false) {
         for(int i=1;i<=p.vote_min;++i) {
             const auto plan=step(i,right?"right":"left");
-            Check(plan.state==control::PlannerState::BAM_LAN,"Chốt biển phải chờ quãng");
+            Check(plan.state==control::PlannerState::BAM_LAN,"Chốt biển phải chờ giao lộ");
         }
         anchor=in.odo_cm;
     }
@@ -55,6 +56,54 @@ void Turn(const control::Plan &plan, const std::string &reason, bool right=false
     Check(plan.debug.reason==reason && plan.reason==reason,"Sai lý do khung đầu: "+plan.reason);
 }
 void Run(const std::string &name) {
+    // Các ca C kiểm luật giao lộ bằng đầu vào công khai.
+    if(name=="real_stays" || name=="edge_always" || name=="real_opens" || name=="t_end" || name=="visible_anchor" || name=="round_shrinks") {
+        if(name=="round_shrinks") {
+            Rig r;
+            for(int i=0;i<r.p.vote_window+2;++i) r.step(0,"round_barrier");
+            for(int i=0;i<r.p.vote_window+8;++i) {
+                r.now+=40; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+                r.in.detections={{{"round_barrier",cv::Rect2f(540,100,200,80),.5f,r.now}},r.now,++r.frame};
+                const auto plan=r.planner.Step(r.in,r.now,r.p);
+                Check(plan.mode==control::TrajMode::ROUNDABOUT && plan.reason!="VX_THOAT","Hộp nhỏ vẫn giữ lần qua đã mở");
+            }
+            return;
+        }
+        for(int end:(name=="t_end"?std::vector<int>{72,60}:std::vector<int>{72})) {
+            Rig r;
+            if(name=="edge_always") {
+                r.planner.Reset(false); r.mask(0); r.in.mask.colRange(0,61).setTo(1);
+                r.in.go=true; r.step(0); r.in.go=false;
+            }
+            r.arm();
+            if(name=="visible_anchor") {
+                for(int cm=1;cm<=2*r.p.turn_arm_cm;++cm) {
+                    const auto plan=r.step(cm,"left");
+                    Check(plan.state==control::PlannerState::BAM_LAN && plan.reason!="HUY_RE","Biển còn thấy, chưa giao lộ không hủy hoặc rẽ");
+                }
+                const double last=r.in.odo_cm;
+                bool cancelled=false;
+                for(int cm=1;cm<=r.p.turn_arm_cm+2;++cm) {
+                    const auto plan=r.step(last+cm);
+                    cancelled=cancelled || plan.reason=="HUY_RE";
+                    Check(plan.state==control::PlannerState::BAM_LAN,"Mất biển không giao lộ không rẽ");
+                }
+                Check(cancelled,"Mất biển quá turn_arm_cm phải hủy");
+                r.mask(2);
+                for(int i=0;i<r.p.vote_window;++i) Check(r.step(r.in.odo_cm).state==control::PlannerState::BAM_LAN,"Đã hủy không rẽ muộn");
+                return;
+            }
+            if(name=="real_opens") r.mask(1);
+            if(name=="t_end") { r.mask(0); r.in.mask.rowRange(0,end).setTo(0); r.in.mask.rowRange(end,end+7).setTo(1); }
+            const bool turns=name=="real_opens" || (name=="t_end" && end==72);
+            for(int i=1;i<=r.p.vote_window;++i) {
+                const auto plan=r.step(r.anchor+((name=="real_stays" || name=="edge_always")?r.p.turn_start_cm+1:0)+i);
+                if(turns && i==r.p.vote_min) Turn(plan,"RE_GIAO_LO");
+                if(!turns || i<r.p.vote_min) Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ bằng chứng giao lộ: "+plan.reason);
+            }
+        }
+        return;
+    }
     // T80t C(1–4): đầu vào và kỳ vọng lấy từ luật được duyệt, chỉ dùng Step công khai.
     if(name=="barrier_width" || name=="round_width") {
         const bool round=name=="round_width";
@@ -70,6 +119,11 @@ void Run(const std::string &name) {
                 if(width==(round?200:60)) Check(!active,"Hộp hẹp không được kích hoạt: "+plan.reason);
                 activated=activated || active;
             }
+            if(!round) {
+                Check(!activated,"Rào chưa giao lộ không rẽ");
+                r.mask(2);
+                for(int i=0;i<r.p.vote_min;++i) activated=activated || r.step(0).state==control::PlannerState::RE_TRAI;
+            }
             if(width==(round?300:130)) Check(activated,"Hộp đủ rộng phải kích hoạt");
         }
         return;
@@ -84,7 +138,8 @@ void Run(const std::string &name) {
                 const auto plan=r.planner.Step(r.in,r.now,r.p);
                 Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đi quãng không rẽ");
             }
-            const auto plan=r.step(r.in.odo_cm+r.p.turn_start_cm);
+            r.mask(2);
+            control::Plan plan; for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm);
             const bool left=plan.state==control::PlannerState::RE_TRAI;
             std::cout<<"det_max_age_ms="<<age<<" state="<<control::StateName(plan.state)
                      <<" reason="<<plan.reason<<'\n';
@@ -118,14 +173,18 @@ void Run(const std::string &name) {
                 const std::string sign=visible ? (name=="R2" && variant>=2 && cm>12 ? (right?"left":"right") : (right?"right":"left")) : "";
                 const auto plan=r.step(r.anchor+cm,sign);
                 if(cm<r.p.turn_start_cm) Check(plan.state==control::PlannerState::BAM_LAN,"Rẽ sớm");
-                else Turn(plan,"RE_THEO_QUANG",right);
+                else Check(plan.state==control::PlannerState::BAM_LAN,"Chưa giao lộ");
             }
+            r.mask(1,right);
+            control::Plan first; for(int i=0;i<r.p.vote_min;++i) first=r.step(r.in.odo_cm);
+            Turn(first,"RE_GIAO_LO",right);
             const auto after=r.step(r.in.odo_cm+1);
             Check(after.reason==(right?"RE_PHAI":"RE_TRAI"),"Khung sau giữ lý do máy rẽ");
         } else if(name=="R6" && variant>=2) {
             // Có phiếu giao lộ từ trước; cả phiếu cũ và mask đảo rộng đều không được làm rẽ sớm trong vòng xuyến.
+            for(int i=0;i<r.p.vote_window;++i) r.step(r.anchor,"round_barrier");
             r.mask(2);
-            for(int cm=1;cm<=r.p.vote_min;++cm) r.step(r.anchor+cm);
+            for(int cm=1;cm<=r.p.vote_min;++cm) r.step(r.anchor+cm,"round_barrier");
             r.mask(5);
             for(int cm=r.p.vote_min+1;cm<r.p.turn_start_cm;++cm) {
                 const auto plan=r.step(r.anchor+cm,cm<10?"round_barrier":"");
@@ -140,7 +199,7 @@ void Run(const std::string &name) {
                 Check(r.step(r.anchor+cm).state==control::PlannerState::BAM_LAN,"Chưa có giao lộ không rẽ sớm");
             r.mask(name=="R6"?2:1,right);
             const int start=name=="R3"?16:1;
-            const int end=name=="R3"?15+r.p.vote_min:15;
+            const int end=start+r.p.vote_min-1;
             for(int cm=start;cm<=end;++cm) {
                 const auto plan=r.step(r.anchor+cm);
                 if(cm<end) Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ phiếu/nửa quãng không rẽ");
@@ -166,8 +225,11 @@ void Run(const std::string &name) {
             for(int cm=1;cm<=r.p.turn_start_cm;++cm) {
                 const auto plan=r.step(r.anchor+cm);
                 if(cm<r.p.turn_start_cm) Check(plan.state==control::PlannerState::BAM_LAN,"Cong không phải giao lộ");
-                else Turn(plan,"RE_THEO_QUANG",right);
+                else Check(plan.state==control::PlannerState::BAM_LAN,"Chưa giao lộ");
             }
+            r.mask(0); r.step(r.in.odo_cm); r.mask(1,right);
+            control::Plan first; for(int i=0;i<r.p.vote_min;++i) first=r.step(r.in.odo_cm);
+            Turn(first,"RE_GIAO_LO",right);
         } else throw std::runtime_error("Ca lạ");
     }
 }

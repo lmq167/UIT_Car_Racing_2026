@@ -90,8 +90,8 @@ void Run(const std::string &name) {
         r.pass();
         for(int i=0;i<100;++i) Check(r.step().state==PlannerState::BAM_LAN,"Tắt dự phòng không cua sau vòng xuyến");
     } else if(name=="glitch") {
-        Rig r(true,true); r.arm();
-        for(int i=0;i<30;++i) r.step();
+        Rig r(true,true); r.arm(); r.mask(1);
+        for(int i=0;i<r.p.vote_min;++i) r.step();
         Check(r.last.state==PlannerState::RE_TRAI,"Phải vào cua IMU trước Q9");
         for(int repeat=0;repeat<3;++repeat) {
             r.in.sensor_ok=false;
@@ -155,7 +155,6 @@ void Run(const std::string &name) {
             return r.step("",cm,50,true,false);
         };
         for(int i=1;i<=r.p.vote_min;++i) barrier();
-        const double anchor=r.in.odo_cm;
         const auto stopped=[&]() {
             Check(r.last.cmd.cms==0 && r.last.reason=="DUNG_RAO_LOI_CAM_BIEN",
                   "Rào đủ phiếu phải dừng mọi khung, không đi thẳng: "+r.last.reason);
@@ -168,11 +167,8 @@ void Run(const std::string &name) {
             for(int i=0;i<2*r.p.turn_start_cm;++i) { barrier(1); stopped(); }
         } else {
             r.mask(1);
-            for(int i=0;i<r.p.vote_min;++i) { barrier(); stopped(); }
-            barrier(0.5*r.p.turn_start_cm-1); stopped();
-            barrier(1);
-            Check(r.in.odo_cm-anchor==0.5*r.p.turn_start_cm,
-                  "Chỉ bắt đầu ở nửa quãng turn_start_cm");
+            for(int i=1;i<r.p.vote_min;++i) { barrier(); stopped(); }
+            barrier();
             // Khung bắt đầu có thể còn lệnh dừng Q7; khung sau phải bám cua trái.
             Check(r.last.state==PlannerState::RE_TRAI && r.last.mode==TrajMode::TURN_LEFT,
                   "Giao lộ trái đủ quãng phải vào cua hành lang");
