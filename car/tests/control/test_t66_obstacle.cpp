@@ -47,7 +47,7 @@ struct Rig {
             if(n<p.vote_min) Check(step(false).mode==TrajMode::LANE,"Đếm trùng phiếu né");
         }
         Check(plan.state==PlannerState::BAM_LAN && plan.mode==TrajMode::AVOID_LEFT &&
-              plan.cmd.cms>0 && plan.cmd.cms<=p.approach_cms,"Pha trái sai tham chiếu/tốc độ");
+              plan.cmd.cms>0 && plan.cmd.cms<=8.0+1e-9 && plan.cmd.cms>p.approach_cms,"Pha trái sai tham chiếu/tốc độ");
         LaneController expected;
         const auto left=expected.Step(in.mask,in.mask_ms,now,p,TrajMode::AVOID_LEFT);
         Check(std::abs(plan.debug.e-left.debug.e)<1e-12,"Planner không truyền LEFT vào bộ bám làn");
@@ -122,7 +122,7 @@ void Params(const char *yaml, const char *temporary) {
 }
 void SwerveTests() {
     { Rig r; r.p.slow_per_deg=0; const double normal_cms=r.step().cmd.cms;
-      Check(normal_cms>r.p.approach_cms,"Thiết lập tốc độ thường phải cao hơn tốc độ né");
+      Check(normal_cms>8.0,"Thiết lập tốc độ thường phải cao hơn tốc độ né");
       auto plan=r.pass(); double distance=0;
       for(int n=0;n<1000;++n) {
           distance+=plan.cmd.cms*0.05;
@@ -135,7 +135,7 @@ void SwerveTests() {
               for(int m=0;m<1000;++m) {
                   Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
                         plan.mode==TrajMode::RETURN_RIGHT && plan.cmd.cms>0 &&
-                        plan.cmd.cms<=r.p.approach_cms && plan.debug.reason=="VE_PHAI",
+                        plan.cmd.cms<=8.0+1e-9 && plan.debug.reason=="VE_PHAI",
                         "Suốt pha về phải giữ RIGHT/VE_PHAI và kẹp tốc độ né");
                   return_distance+=plan.cmd.cms*0.05;
                   plan=r.step();
@@ -219,7 +219,7 @@ void SwerveTests() {
       for(int n=0;n<100;++n) {
           const int dt=n%2 ? 130 : 70;
           distance+=plan.cmd.cms*dt/1000.0;
-          r.p.approach_cms=n%2 ? 2 : 5;
+          r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=n%2 ? 2 : 5;
           r.now+=dt-50; plan=r.step();
           if(distance<r.p.obstacle_pass_cm-1e-9)
               Check(plan.reason=="NE_QUA","Nhịp không đều/tốc độ thay đổi cộng sai quãng");
@@ -230,12 +230,12 @@ void SwerveTests() {
       for(int n=0;n<100;++n) {
           const int dt=n%2 ? 130 : 70;
           distance+=plan.cmd.cms*dt/1000.0;
-          r.p.approach_cms=n>=10 && n<15 ? 0 : (n%2 ? 2 : 5);
+          r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=n>=10 && n<15 ? 0 : (n%2 ? 2 : 5);
           r.now+=dt-50; plan=r.step();
           if(distance<r.p.obstacle_pass_cm-1e-9)
               Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
                     plan.mode==TrajMode::RETURN_RIGHT && plan.cmd.cms>=0 &&
-                    plan.cmd.cms<=r.p.approach_cms,
+                    plan.cmd.cms<=r.p.max_speed_cms,
                     "Pha về phải nhịp/tốc độ thay đổi phải tích phân lệnh đã gửi");
           else {
               Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
@@ -245,7 +245,7 @@ void SwerveTests() {
           Check(n<99,"Nhịp không đều kẹt pha về phải");
       }
     }
-    { Rig r; r.p.obstacle_pass_cm=10; r.pass(); r.p.approach_cms=0;
+    { Rig r; r.p.obstacle_pass_cm=10; r.pass(); r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=0;
       for(int n=0;n<250;++n) Check(r.step().reason=="NE_QUA","Tốc độ 0 vẫn cộng quãng"); }
 
 }

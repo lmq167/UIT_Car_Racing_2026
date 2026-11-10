@@ -29,6 +29,7 @@ constexpr int64_t kRealSideMs=2000;
 // Lượt rẽ IMU (log 09/11 chiều tối): 4 cm/s x 8 s chỉ quay 18-32° rồi hết hạn → bám làn nhận khi mới quay một phần.
 // Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi đã quay >= 45° VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
 constexpr double kTurnCms=8.0, kHandoverYawDeg=45.0, kExitOffsetFrac=0.15;
+constexpr double kSwerveCms=8.0;  // Quân 10/11: tốc độ pha né (NE_TRAI/NE_QUA/VE_PHAI), trước đó dùng approach_cms 5; vẫn bị chặn bởi max_speed_cms và tốc độ bám làn.
 constexpr int kExitRealRows=3;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
@@ -719,7 +720,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0;
             obstacle_votes_.clear(); last_mask_ms_=-1;
         } else if(swerve_!=Swerve::NONE || returning) {
-            plan.cmd.cms=std::min(plan.cmd.cms,params.approach_cms);
+            plan.cmd.cms=std::min({plan.cmd.cms,kSwerveCms,params.max_speed_cms});
             plan.reason=returning ? "VE_PHAI" : swerve_==Swerve::LEFT ? "NE_TRAI" : "NE_QUA";
             plan.debug.reason=plan.reason; plan.debug.speed_cms=plan.cmd.cms;
         }

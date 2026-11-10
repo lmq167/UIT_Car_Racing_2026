@@ -358,7 +358,7 @@ struct Rig {
             const auto plan=Step();
             Check(plan.state==PlannerState::BAM_LAN && plan.reason=="NE_TRAI",
                   "Không giữ NE_TRAI khi còn vật cản");
-            Check(plan.cmd.cms>0 && plan.cmd.cms<=p.approach_cms+kEps,"Sai tốc độ né trái");
+            Check(plan.cmd.cms>0 && plan.cmd.cms<=8.0+kEps,"Sai tốc độ né trái");
         }
         Check(last.cmd.deg>0,"Né trái không tạo góc dương sau khi ổn định");
         return last;
@@ -421,14 +421,14 @@ void AvoidSequence() {
             break;
         }
         Check(plan.reason=="NE_QUA","Bỏ qua pha VE_PHAI");
-        Check(plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms+kEps,"Sai tốc độ NE_QUA");
+        Check(plan.cmd.cms>0 && plan.cmd.cms<=8.0+kEps,"Sai tốc độ NE_QUA");
         Check(distance<=r.p.obstacle_pass_cm+2*r.p.max_speed_cms*0.05+kEps,
               "NE_QUA không kết thúc sau đủ quãng");
     }
     Check(returning,"Hết hạn chờ VE_PHAI");
     distance=0;
     for(int n=0;n<10000;++n) {
-        Check(plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms+kEps,"Sai tốc độ VE_PHAI");
+        Check(plan.cmd.cms>0 && plan.cmd.cms<=8.0+kEps,"Sai tốc độ VE_PHAI");
         distance+=plan.cmd.cms*kTick/1000.0;
         const double previous_e=plan.debug.e;
         plan=r.Step();
