@@ -8,7 +8,7 @@ Dùng để kiểm giả thuyết lỗi 3 (đêm 10→11/11): cạnh phải ch�
 Cách dùng:
   python round3_final/tools/corridor_replay.py <thư_mục_phiên> [--t0 280 --t1 294] [--fix]
 In mỗi khung: thời điểm (s), trạng thái planner, e log, và mỗi hàng: cờ trái/phải, lanes, target_frac.
---fix: dùng luật sửa đề xuất (để so sánh).
+Luật hai làn khi biên phải bị cắt theo mã hiện hành (chỉ ROUNDABOUT, hàng dưới 2 làn); --fix giữ để tương thích.
 Chỉ đọc dữ liệu, không ghi gì vào data/.
 """
 import argparse
@@ -115,7 +115,7 @@ def extract(mask, p=P, mode="LANE", fix=False):
             left = right - ref
         elif lok and not rok:
             right = left + ref
-            if fix and raw[1] - raw[0] >= p["two_lane_ratio"] * w:
+            if mode == "ROUNDABOUT" and fr == EDGE and raw[1] - raw[0] >= p["two_lane_ratio"] * w and (below is None or below.get("lanes") == 2):
                 right = left + max(ref, 2 * w)
         elif not lok and not rok:
             c = (below["left"] + below["right"]) / 2 if below else (raw[0] + raw[1]) / 2.0
@@ -170,7 +170,7 @@ def main():
             continue
         if m.ndim == 3:
             m = m[:, :, 0]
-        rows = extract(m, fix=a.fix)
+        rows = extract(m, mode="ROUNDABOUT" if r["reason"].startswith("VX_") else "LANE", fix=a.fix)
         W = m.shape[1]
         stats["frames"] += 1
         r0 = rows[0]
