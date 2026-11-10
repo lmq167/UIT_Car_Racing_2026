@@ -213,17 +213,21 @@ void ImageEdge() {
 void TwoLaneRightCut() {
     ControlParams p;
     const double cx=230;  // đường 2,2 làn: biên trái thật ~30..170 px, biên phải ra khỏi ảnh ở các hàng gần
-    const auto c=ExtractCorridor(Road(p,cx,2.2),p,TrajMode::LANE);
+    const auto c=ExtractCorridor(Road(p,cx,2.2),p,TrajMode::ROUNDABOUT);
     int cut=0;
     for(const auto &r:c.rows) {
         if(!r.valid || r.flag_left!="THAT" || r.flag_right!="MEP_ANH") continue;
         ++cut;
         const double w=Lane1(p,r.y);
         Check(r.lanes==2,"Biên phải bị cắt, bề rộng thô hai làn: phải nhận 2 làn");
-        Check(r.target>=r.left+1.25*w,"Mục tiêu phải ở làn phải (>= trái + 1,25 làn), không ở làn trái");
+        Check(r.target>=r.left+1.1*w,"Mục tiêu phải ở làn phải (>= trái + 1,1 làn; ROUNDABOUT kẹp biên phải về đoạn thô), không ở làn trái");
         Check(r.target>=r.raw_l && r.target<=kW+2*w,"Mục tiêu hợp lý");
     }
     Check(cut>=3,"Thiếu hàng trái thật/phải mép ảnh để kiểm");
+    // Ngoài vòng xuyến (LANE) không áp: hàng gần giống hệt đường một làn có lối mở phải khi xe lệch phải.
+    for(const auto &r:ExtractCorridor(Road(p,cx,2.2),p,TrajMode::LANE).rows)
+        if(r.valid && r.flag_left=="THAT" && r.flag_right=="MEP_ANH")
+            Check(r.lanes==1,"LANE: biên phải bị cắt không được dựng hai làn");
     // Một làn bị cắt biên phải (bề rộng thô < 1,5 làn): giữ như cũ, tâm một làn tính từ biên trái.
     const auto one=ExtractCorridor(Road(p,kW-20,1.0),p,TrajMode::LANE);
     int one_cut=0;
@@ -260,7 +264,7 @@ void RealRoundaboutExit(const std::string &dir) {
     for(const char *name:{"vx_thoat_7374_15489.png","vx_thoat_7374_15537.png"}) {
         const cv::Mat mask=cv::imread(dir+"/"+name,cv::IMREAD_GRAYSCALE);
         Check(!mask.empty(),std::string("Không đọc được ")+name);
-        for(auto mode:{TrajMode::LANE,TrajMode::ROUNDABOUT}) {
+        for(auto mode:{TrajMode::ROUNDABOUT}) {  // VX_THOAT chạy chế độ ROUNDABOUT (rb_in_pass_ còn đúng)
             const auto c=ExtractCorridor(mask,p,mode);
             const auto &near=c.rows.front();
             Check(near.valid && near.flag_left=="THAT" && near.flag_right=="MEP_ANH",

@@ -50,7 +50,7 @@ int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 // Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
 // tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
-// (0,85·85 ≈ 72 cm ≈ vùng mù 25 + dài vật 50: đuôi xe đã qua vật đang né).
+// (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm so với lúc vật rời ảnh nên hở đuôi xe CHƯA ĐO, cần đo sa bàn).
 constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.85;
 // Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
 constexpr double kPassStopY2=0.85;
