@@ -173,3 +173,20 @@ foreach(scenario roundabout disabled glitch encoder edge flicker repeat no_junct
     add_test(NAME control_t79_imu_${scenario} COMMAND test_t79_imu ${scenario})
     set_tests_properties(control_t79_imu_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
+
+# T94: ca hộp đen theo hợp đồng lộ trình, phiên kiểm thử độc lập.
+add_executable(test_t94_route test_t94_route.cpp)
+target_link_libraries(test_t94_route PRIVATE ucr_control)
+target_compile_options(test_t94_route PRIVATE -Wall -Wextra)
+foreach(scenario pre_anchor sequence lane_l noise space_corner space_island imu
+        r1 r2 r3_prev r3_next r4 r5 r5_south r6 sync_corner
+        sync_east_plain sync_east_island final_ts wrong_sign wrong_then_back stale_yolo_no_arm stale_intent
+        island_freeze_axis_swing island_freeze_dwell space_mid_turn_c2
+        imu_fault_long_c2 first_g_no_sync intent_cleared_in_island
+        h1_sign h1_barrier h1_then_r5 m2_stopped m2_space_carry
+        m2_space_wheels m2_space_released_wheels
+        m3_no_double_left m1_far_island m1_reset_c0_small_island
+        ambig_no_c2c3 skip_same_heading skip_same_heading_sign yaw_40_50)
+    add_test(NAME control_t94_${scenario} COMMAND test_t94_route ${scenario})
+    set_tests_properties(control_t94_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+endforeach()
