@@ -36,7 +36,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
 class LaneController {
 public:
     ControlResult Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
-                       const ControlParams &params, TrajMode mode=TrajMode::LANE);
+                       const ControlParams &params, TrajMode mode=TrajMode::LANE, bool wide_center=true);
     void Reset();
 private:
     int64_t last_now_ms_=-1, last_mask_ms_=-1, last_valid_ms_=-1, regain_mask_ms_=-1;

@@ -137,7 +137,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
 }
 void LaneController::Reset() { *this=LaneController{}; }
 ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
-                                   const ControlParams &params, TrajMode mode) {
+                                   const ControlParams &params, TrajMode mode, bool wide_center) {
     params.Validate();
     if(now_ms<0 || (last_now_ms_>=0 && now_ms<last_now_ms_))
         throw std::runtime_error("Thời gian điều khiển now_ms phải tăng đơn điệu");
@@ -166,7 +166,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         // Giữ cờ/độ tin cậy gốc trong debug; không biến mép ảnh thành cạnh thật.
         auto centered=corridor.rows;
         const size_t near_count=1;
-        bool wide_near=mode==TrajMode::LANE && !centered.empty();
+        // Đầu ngã T và cua L cho mặt nạ giống nhau: Planner tắt nhánh này khi đang có ý định rẽ (ngã T chờ M6).
+        bool wide_near=wide_center && mode==TrajMode::LANE && !centered.empty();
         for(size_t i=0;i<near_count && wide_near;++i) {
             const auto &row=centered[i];
             wide_near=row.valid && !row.hole && row.flag_left==kEdge && row.flag_right==kEdge &&

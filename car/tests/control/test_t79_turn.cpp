@@ -12,6 +12,7 @@ struct Rig {
     int64_t now=1000;
     uint64_t frame=0;
     double anchor=0;
+    float box_cx=640;  // tâm ngang hộp biển/rào theo pixel ảnh 1280
     Rig() {
         p.start_wait_green=0; p.turn_enable=1; p.kd=0;
         p.lane1_width_frac={0.4,0.4};
@@ -39,7 +40,7 @@ struct Rig {
         in.detections={{},now,++frame};
         if(!sign.empty()) {
             const float width=sign=="round_barrier" ? 300.f : (sign=="work_barrier" ? 130.f : 80.f);
-            in.detections.items.push_back({sign,cv::Rect2f(640-width/2,sign=="work_barrier"?400:100,width,80),0.9f,now});
+            in.detections.items.push_back({sign,cv::Rect2f(box_cx-width/2,sign=="work_barrier"?400:100,width,80),0.9f,now});
         }
         return planner.Step(in,now,p);
     }
@@ -98,6 +99,41 @@ void Run(const std::string &name) {
         Check(plan.state==control::PlannerState::RE_TRAI,"Rào xuất hiện lại trên mặt nạ lặp phải xóa phiếu tiếp quản");
         for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1);
         Check(plan.state==control::PlannerState::BAM_LAN,"Rào mất, đủ yaw/hành lang thì tiếp quản");
+        return;
+    }
+    // Rào trôi ra mép ảnh khi xe đã quay không chặn tiếp quản; chưa đủ 45° vẫn rẽ tiếp.
+    if(name=="barrier_edge_handover") {
+        Rig r; control::Plan plan;
+        for(int i=0;i<r.p.vote_min;++i) r.step(0,"work_barrier");
+        r.mask(1);
+        for(int i=0;i<r.p.vote_min;++i) plan=r.step(0,"work_barrier");
+        Turn(plan,"RE_GIAO_LO");
+        r.mask(0); r.box_cx=896; r.in.yaw_deg=50;  // tâm 0,70 (rào work 2 còn chắn) vẫn chặn
+        for(int i=0;i<r.p.vote_min+1;++i) {
+            plan=r.step(r.in.odo_cm+1,"work_barrier");
+            Check(plan.state==control::PlannerState::RE_TRAI,"Rào tâm 0,70 vẫn chặn tiếp quản");
+        }
+        r.box_cx=1215; r.in.yaw_deg=30;
+        for(int i=0;i<r.p.vote_min+1;++i) {
+            plan=r.step(r.in.odo_cm+1,"work_barrier");
+            Check(plan.state==control::PlannerState::RE_TRAI,"Chưa quay 45° không được tiếp quản");
+        }
+        r.in.yaw_deg=50;
+        for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1,"work_barrier");
+        Check(plan.state==control::PlannerState::BAM_LAN,"Rào ở mép ảnh, đủ yaw/hành lang thì tiếp quản: "+plan.reason);
+        return;
+    }
+    // Đầu ngã T có ý định rẽ: không lái theo tâm vùng đường (T89), chờ M6; không ý định (cua L) vẫn lái.
+    if(name=="t_head_intent") {
+        for(bool intent:{false,true}) {
+            Rig r;
+            if(intent) r.arm();
+            r.in.mask.setTo(1); r.in.mask.rowRange(0,75).colRange(120,200).setTo(0);
+            const auto plan=r.step(r.in.odo_cm);
+            Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ phiếu giao lộ, vẫn bám làn: "+plan.reason);
+            Check((plan.debug.valid_rows==r.p.corridor_rows)==!intent,
+                  std::string(intent?"Có ý định: không được dùng tâm vùng đường gần":"Cua L không ý định phải dùng tâm vùng đường gần"));
+        }
         return;
     }
     // Kiểm tốc độ rẽ và tiếp quản theo yêu cầu qua Step công khai.

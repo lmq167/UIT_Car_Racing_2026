@@ -30,6 +30,7 @@ constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
 // Rào work 1 (vào đường 1 làn) lệch giữa (tâm hộp 0,43-0,54), work 2 (vào đường 2 làn) lệch phải (0,70-0,71): đo ở hai phiên 07/11.
 constexpr double kWideBarrierCx=0.62, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
+constexpr double kBarrierBlockMinCx=0.25, kBarrierBlockMaxCx=0.75;  // dải tâm hộp rào còn chắn trước (chặn tiếp quản)
 // Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
 constexpr double kRightTurnYawFactor=0.92;
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
@@ -179,9 +180,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(roundabout) { round=true; round_big=round_big || b.width>=kRoundMinW; }  // đảo xa (hộp nhỏ) chưa mở lần qua
             else if(person) people=people || (double(b.y)+b.height)/720.0>=kPersonStopBottom;
             else if(barrier) {
-                barrier_visible=true; // Mọi hộp rào hợp lệ còn thấy đều chặn tiếp quản hành lang cũ.
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
+                // Chỉ rào còn ở dải tâm mới chặn tiếp quản; rào trôi ra mép ảnh khi xe đã quay thì không.
+                barrier_visible=barrier_visible || (center>=kBarrierBlockMinCx && center<=kBarrierBlockMaxCx);
                 // Work 2 (hộp lệch phải) vào đường 2 làn: dải tâm tới 0,82; work 1 (hộp giữa) kích hoạt sớm hơn 0,05 theo đáy hộp.
                 const bool wide=center>=kWideBarrierCx;
                 barrier_seen=barrier_seen || (bottom>=params.work_barrier_y2_frac-0.10 && b.width>=(wide ? kWideBarrierSlowW : kNarrowBarrierSlowW));
@@ -550,7 +552,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
     }
     plan.mode=swerve_!=Swerve::NONE ? TrajMode::AVOID_LEFT : returning ? TrajMode::RETURN_RIGHT : rb_in_pass_ ? TrajMode::ROUNDABOUT : TrajMode::LANE;
-    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode);
+    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode,turn_direction_==0);
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,

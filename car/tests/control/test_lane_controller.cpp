@@ -80,6 +80,9 @@ void WideCornerUnit() {
               "Tâm vùng đường và hướng xa phải lái đúng chiều");
         Check(turn.debug.valid_rows==p.corridor_rows,
               "Cua L phải dùng cả tâm đường gần, không chỉ cạnh xa");
+        control::LaneController off;
+        const auto held=off.Step(bend,0,0,p,control::TrajMode::LANE,false);
+        Check(held.debug.valid_rows<p.corridor_rows,"Tắt nhánh tâm vùng đường (có ý định rẽ) giữ cách tính cũ");
         const cv::Mat gone(100,200,CV_8UC1,cv::Scalar(0));
         const auto stop=c.Step(gone,p.lost_stop_ms,p.lost_stop_ms,p);
         Check(stop.cmd.cms==0 && stop.cmd.deg==0 && stop.debug.state=="MAT_LAN",
