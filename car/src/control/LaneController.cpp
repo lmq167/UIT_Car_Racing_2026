@@ -162,8 +162,32 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     if(!mask.empty()) {
         auto corridor=ExtractCorridor(mask,params,mode);
         const double W=mask.cols, axis=W/2.0+params.center_offset_frac*W;
+        // TẠM CHƯA ĐO: chỉ dùng tâm vùng đường khi hàng gần nhất phủ ít nhất 90%.
+        // Giữ cờ/độ tin cậy gốc trong debug; không biến mép ảnh thành cạnh thật.
+        auto centered=corridor.rows;
+        const size_t near_count=1;
+        bool wide_near=mode==TrajMode::LANE && !centered.empty();
+        for(size_t i=0;i<near_count && wide_near;++i) {
+            const auto &row=centered[i];
+            wide_near=row.valid && !row.hole && row.flag_left==kEdge && row.flag_right==kEdge &&
+                cv::countNonZero(mask.row(row.y))>=0.9*W;
+        }
+        const bool far_direction=std::any_of(centered.begin()+std::min(near_count,centered.size()),centered.end(),
+            [&](const RowDebug &row) {
+                return row.valid && !row.hole && row.conf>=params.conf_min &&
+                    (row.flag_left==kThat || row.flag_right==kThat);
+            });
+        if(wide_near && far_direction) for(auto &row:centered) {
+            if(!row.valid || row.hole) continue;
+            // Tâm đoạn thô cho hướng ở xa, không dựng bề rộng từ một cạnh duy nhất.
+            row.left=row.raw_l; row.right=row.raw_r;
+            row.target=(row.raw_l+row.raw_r)/2;
+            if(row.flag_left==kEdge && row.flag_right==kEdge &&
+               cv::countNonZero(mask.row(row.y))>=0.9*W) row.conf=1;
+        }
+        const auto &fit_rows=wide_near && far_direction ? centered : corridor.rows;
         std::vector<const RowDebug*> usable;
-        for(const auto &row:corridor.rows) if(row.valid && row.conf>=params.conf_min) usable.push_back(&row);
+        for(const auto &row:fit_rows) if(row.valid && row.conf>=params.conf_min) usable.push_back(&row);
         result.debug.valid_rows=int(usable.size());
         const bool real_edge=std::any_of(usable.begin(),usable.end(),[](const RowDebug *row) {
             return row->flag_left==kThat || row->flag_right==kThat;

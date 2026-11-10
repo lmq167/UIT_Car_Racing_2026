@@ -66,7 +66,35 @@ void CheckReplay(const std::string &out, bool legacy=false) {
     }
     Check(!std::getline(log,line),"Replay thừa dòng");
 }
+void WideCornerUnit() {
+    auto p=Params(); control::LaneController c;
+    // Cua L: nửa gần kín đường, nửa xa chỉ còn một cạnh thật.
+    for(int sign:{-1,1}) {
+        auto bend=Strip(100,200,0,199);
+        if(sign<0) bend.rowRange(0,75).colRange(120,200).setTo(0);
+        else bend.rowRange(0,75).colRange(0,80).setTo(0);
+        c.Reset(); const auto turn=c.Step(bend,0,0,p);
+        Check(turn.debug.state=="BAM_LAN" && turn.cmd.cms>0,
+              "Cua L hai cạnh ngoài khung phải còn mục tiêu");
+        Check(turn.debug.e*sign>0 && turn.cmd.deg*sign<0,
+              "Tâm vùng đường và hướng xa phải lái đúng chiều");
+        Check(turn.debug.valid_rows==p.corridor_rows,
+              "Cua L phải dùng cả tâm đường gần, không chỉ cạnh xa");
+        const cv::Mat gone(100,200,CV_8UC1,cv::Scalar(0));
+        const auto stop=c.Step(gone,p.lost_stop_ms,p.lost_stop_ms,p);
+        Check(stop.cmd.cms==0 && stop.cmd.deg==0 && stop.debug.state=="MAT_LAN",
+              "Đường thật hết vẫn dừng đúng hạn");
+    }
+    for(int sign:{-1,1}) {
+        c.Reset(); const auto edge=c.Step(Strip(100,200,sign<0?0:80,sign<0?120:199),0,0,p);
+        Near(edge.debug.rows.front().target,sign<0?80:120,"Một cạnh ngoài giữ cách dựng cũ");
+        Near(edge.debug.e,sign<0?-0.2:0.2,"Một cạnh ngoài giữ sai số cũ");
+    }
+    c.Reset(); const auto all_road=c.Step(Strip(100,200,0,199),0,0,p);
+    Check(all_road.cmd.cms==0,"Không có hướng xa vẫn giữ mất làn cũ");
+}
 void Unit() {
+    WideCornerUnit();
     auto p=Params(); control::LaneController c;
     const auto center=Strip(60,200,60,140), right=Strip(60,200,80,160), left=Strip(60,200,40,120);
     auto r=c.Step(center,0,0,p); Near(r.cmd.deg,0,"Thẳng giữa làn"); Near(r.cmd.cms,8,"Tốc độ thẳng");
