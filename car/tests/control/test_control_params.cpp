@@ -26,8 +26,8 @@ int main(int argc, char **argv) {
         std::ostringstream report;
         const auto sample=control::ControlParams::Load(argv[1],report);
         const control::ControlParams defaults;
-        Check(defaults.cruise_cms==15 && defaults.steer_max_deg==40 && defaults.max_speed_cms==15 &&
-              defaults.obstacle_action==2,"Mặc định thi phải là 15/40/15/2");
+        Check(defaults.cruise_cms==15 && defaults.steer_max_deg==40 && defaults.max_speed_cms==20 &&
+              defaults.obstacle_action==2,"Mặc định thi phải là 15/40/20/2");
         Check(std::abs(defaults.slow_per_deg-1.0/6)<1e-9,"Mặc định giảm tốc phải cho khoảng 10 cm/s ở góc 30 độ, cruise 15");
         Check(defaults.imu_fallback==0,"Dự phòng IMU phải mặc định tắt");
         Check(defaults.record_every_n==5,"Mặc định ghi ảnh vẫn là mỗi 5 khung");
@@ -52,8 +52,8 @@ int main(int argc, char **argv) {
         };
         const auto missing=load("kp: 42.\n");
         Check(missing.kp==42 && missing.cruise_cms==15 && missing.lane1_width_frac==defaults.lane1_width_frac,"Thiếu khóa phải dùng mặc định");
-        Check(missing.max_speed_cms==15 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
-              "Thiếu khóa tốc độ phải giữ mặc định 15/15/5/4/4");
+        Check(missing.max_speed_cms==20 && missing.approach_cms==5 && missing.min_cms==4 && missing.lost_cms==4,
+              "Thiếu khóa tốc độ phải giữ mặc định 15/20/5/4/4");
         Check(report.str().find("cruise_cms = 15 cm/s (mặc định)")!=std::string::npos,"Thiếu nhãn/đơn vị mặc định trong báo cáo");
         Check(report.str().find("kp = 42 độ (mặc định)")==std::string::npos,"Khóa đã nạp không được báo mặc định");
         for(bool header:{false,true}) {
@@ -78,7 +78,7 @@ int main(int argc, char **argv) {
                 const auto empty=load(body,header);
                 std::ostringstream table; empty.PrintTable(table);
                 Check(table.str()==b.str(),"Tài liệu/map rỗng phải dùng toàn bộ mặc định");
-                Check(report.str().find("kp = 30 độ (mặc định)")!=std::string::npos,"Map rỗng phải báo mặc định và đơn vị");
+                Check(report.str().find("kp = 35 độ (mặc định)")!=std::string::npos,"Map rỗng phải báo mặc định và đơn vị");
             }
             for(const auto &body:{"kp: [\n", "kp: [4\n", "lane1_width_frac: [0.5}\n", "{kp: 4\n", "[]\n", "kp: 4\n---\nkp: 5\n", "{}#sai\n", "---#sai\n", "  %YAML:1.0\n",
                                   "kp: 4\n...\nkp: 5\n", "kp: 4\n...\n---\nkp: 5\n", "{}\n---\n{}\n", "...\n...\n",

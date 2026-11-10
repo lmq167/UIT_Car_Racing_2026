@@ -1,17 +1,17 @@
 %YAML:1.0
 ---
 control_period_ms: 50 # Chu kỳ điều khiển, ms
-mask_max_age_ms: 300 # Tuổi mặt nạ tối đa, ms
+mask_max_age_ms: 400 # Tuổi mặt nạ tối đa, ms
 cmd_max_age_ms: 200 # Tuổi lệnh tối đa, ms
-det_max_age_ms: 500 # Tuổi phát hiện tối đa, ms (P2)
-max_speed_cms: 15 # Trần tốc độ, cm/s
+det_max_age_ms: 1000 # Tuổi phát hiện tối đa, ms (P2)
+max_speed_cms: 20 # Trần tốc độ, cm/s
 cruise_cms: 15 # Tốc độ thẳng, cm/s
 min_cms: 4 # Tốc độ tối thiểu khi bám làn, cm/s
 lost_cms: 4 # Tốc độ giai đoạn giữ khi mất làn, cm/s
 slow_per_deg: 0.1666666667 # Mức giảm tốc theo góc, cm/s/độ
 steer_max_deg: 40 # Trần góc lái, độ; dương là trái
 steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
-kp: 30 # Hệ số tỉ lệ, độ
+kp: 35 # Hệ số tỉ lệ, độ
 kd: 2 # Hệ số vi phân, độ.s
 corridor_rows: 8 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: số hàng hành lang (2–20)
 corridor_bottom_frac: 0.95 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng gần nhất theo chiều cao mặt nạ
@@ -30,7 +30,7 @@ regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
 record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi ảnh
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
 work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
-work_barrier_y2_frac: 0.65 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
+work_barrier_y2_frac: 0.55 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
 obstacle_near_w_frac: 0.10 # TẠM, CHƯA ĐO: bề rộng hộp/ảnh để bắt đầu né, miền (0,02; 0,6]
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_ratio: 0.25 # TẠM, CHƯA ĐO: khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
@@ -52,7 +52,7 @@ turn_enable: 1 # Rẽ theo biển bằng IMU và encoder; mặc định bật
 turn_yaw_deg: 80 # TẠM, CHƯA ĐO: góc quay đích, độ (30–120)
 turn_steer_deg: 25 # TẠM, CHƯA ĐO: góc lái cố định, độ (5 đến steer_max_deg)
 turn_arm_cm: 80 # TẠM, CHƯA ĐO: quãng chờ ngã rẽ tối đa, cm (10–300)
-turn_start_cm: 30 # TẠM, CHƯA ĐO: quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ, cm (0–150)
+turn_start_cm: 45 # TẠM, CHƯA ĐO: quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ, cm (0–150)
 rb_lost_cm: 30 # TẠM, CHƯA ĐO: mất phiếu round_barrier liên tục bao nhiêu cm thì xong một lần qua vòng xuyến (10–100)
 rb_turn1_cm: 60 # TẠM, CHƯA ĐO: sau lần qua vòng xuyến thứ 1 đi thêm bao nhiêu cm thì rẽ TRÁI (0–400)
 rb_turn2_cm: 60 # TẠM, CHƯA ĐO: sau lần qua vòng xuyến thứ 2 đi thêm bao nhiêu cm thì rẽ PHẢI (0–400)
