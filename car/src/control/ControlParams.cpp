@@ -26,6 +26,7 @@ const Parameter table[] = {
     {"work_barrier_action",1,&ControlParams::work_barrier_action,0,1,"1","Rào công trình (0 = tắt, 1 = rẽ trái theo IMU)"},
     {"work_barrier_y2_frac",0.65,&ControlParams::work_barrier_y2_frac,0.30,0.95,"H","Đáy hộp rào tối thiểu để bắt đầu rẽ"},
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
+    {"obstacle_near_w_frac",0.10,&ControlParams::obstacle_near_w_frac,0.02,0.6,"W","TẠM, CHƯA ĐO: bề rộng hộp tối thiểu để bắt đầu né"},
     {"obstacle_hole_ratio",0.25,&ControlParams::obstacle_hole_ratio,0,1,"1","Khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn"},
     {"obstacle_pass_cm",40.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi thêm sau khi vật cản biến mất, gồm vùng mù khoảng 25 cm"},
     {"imu_fallback",0,&ControlParams::imu_fallback,0,1,"1","TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt"},
@@ -123,6 +124,7 @@ void ControlParams::Validate() const {
     Require(lookahead_frac>=corridor_top_frac && lookahead_frac<=corridor_bottom_frac,"lookahead_frac");
     Require(max_jump_frac>0,"max_jump_frac");
     Require(avoid_min_width_ratio>0,"avoid_min_width_ratio");
+    Require(obstacle_near_w_frac>0.02,"obstacle_near_w_frac");
     Require(obstacle_hole_ratio>0,"obstacle_hole_ratio");
     Require(min_valid_rows<=corridor_rows,"min_valid_rows / corridor_rows");
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");

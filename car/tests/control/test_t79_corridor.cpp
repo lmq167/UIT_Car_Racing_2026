@@ -38,10 +38,12 @@ struct ObstacleRig {
     PlannerInput in;
     ControlParams p;
     int64_t now=1000;
+    uint64_t frame=0;
+    bool obstacle_seen=false;
     ObstacleRig() {
         p.start_wait_green=0; p.lane1_width_frac={0.8,0.8}; p.avoid_min_width_ratio=0.4;
         p.kd=0; p.obstacle_pass_cm=10;
-        Mask(false); in.go=true; Step(); in.go=false;
+        in.yolo_enabled=true; Mask(false); in.go=true; Step(); in.go=false;
     }
     void Mask(bool hole) {
         in.mask=cv::Mat(100,200,CV_8UC1,cv::Scalar(0));
@@ -50,16 +52,18 @@ struct ObstacleRig {
     }
     Plan Step(bool sensor=true) {
         now+=50; in.image_ms=in.mask_ms=now; in.sensor_ms=now; in.sensor_ok=sensor;
+        in.detections={{},now,++frame};
+        if(obstacle_seen) in.detections.items.push_back({"obstacle",cv::Rect2f(600,100,128,100),0.9f,now});
         return planner.Step(in,now,p);
     }
     Plan Left() {
-        Mask(true); Plan plan;
+        Mask(true); obstacle_seen=true; Plan plan;
         for(int i=0;i<p.vote_min;++i) plan=Step();
         Check(plan.reason=="NE_TRAI","Đủ phiếu phải né");
         return plan;
     }
     Plan Pass() {
-        Left(); Mask(false); Plan plan;
+        Left(); Mask(false); obstacle_seen=false; Plan plan;
         for(int i=0;i<p.vote_window;++i) plan=Step();
         Check(plan.reason=="NE_QUA","Đủ mask sạch phải qua");
         return plan;
@@ -74,13 +78,13 @@ void PlannerObstacle() {
         for(int i=1;i<=count;++i) r.in.mask(cv::Rect(90,rows[i].y,40,1)).setTo(0);
         Plan plan;
         for(int i=0;i<r.p.vote_window;++i) plan=r.Step();
-        Check((plan.reason=="NE_TRAI")== (count==2),"Ứng viên cần ít nhất hai hàng gần");
+        Check(plan.mode==TrajMode::LANE,"Lỗ một/hai hàng không có hộp đều không kích né");
     }
     { ObstacleRig r; r.Left(); r.p.avoid_min_width_ratio=0.75;
       const auto plan=r.Step();
       Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" &&
             plan.cmd.cms==0 && plan.cmd.deg==0,"Mất đường né giữa NE_TRAI phải dừng 0,0");
-      r.Mask(false);
+      r.Mask(false); r.obstacle_seen=false;
       for(int n=1;n<=r.p.vote_window;++n) {
           const auto cleared=r.Step();
           Check((cleared.state==PlannerState::BAM_LAN)==(n==r.p.vote_window),
@@ -93,6 +97,7 @@ void PlannerObstacle() {
     for(bool active:{false,true}) {
         ObstacleRig r;
         if(active) r.Left();
+        r.obstacle_seen=true;
         r.Mask(false);
         const auto rows=ExtractCorridor(r.in.mask,r.p,TrajMode::LANE).rows;
         r.in.mask(cv::Rect(50,rows[1].y,40,1)).setTo(0);

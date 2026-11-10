@@ -105,7 +105,7 @@ struct Rig {
     void avoid() {
         p.obstacle_action=2; obstacle(true);
         control::Plan plan;
-        for (int i=0;i<p.vote_min;++i) { now+=40; plan=step(); }
+        for (int i=0;i<p.vote_min;++i) plan=send({"obstacle"});
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
               plan.mode==control::TrajMode::AVOID_LEFT,"Thiết lập phải đang né trái");
     }
@@ -276,60 +276,25 @@ void Case(const std::string& name) {
             Check(control::StateName(r.junction().state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Đỏ10s và biển ngược không đổi hướng chốt");
         }
     } else if (name=="t68_avoidance" || name=="t68_arm_distance") {
-        Rig r; r.arm(); r.send({}); r.avoid();
-        const bool cancel=name=="t68_arm_distance";
-        if(!cancel) r.p.turn_arm_cm=200; // encoder nay tiến cả trong quãng né/về, không vô tình chạm hạn armed
-        auto plan=r.advance(cancel?r.p.turn_arm_cm:r.p.turn_start_cm);
-        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_TRAI" &&
-              plan.mode==control::TrajMode::AVOID_LEFT,"Đủ quãng khi NE_TRAI không được rẽ/hủy ở đúng80");
-        if (cancel) {
-            plan=r.advance(0.01);
-            Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="HUY_RE","Quá80cm khi né phải HUY_RE");
-            r.in.odo_cm=r.p.turn_start_cm;
+        Rig r; r.arm(); r.mask(60,140);
+        for(int n=0;n<r.p.vote_window;++n) {
+            const auto plan=r.send({"obstacle"});
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==control::TrajMode::LANE,
+                  "Đã có ý định rẽ không được bắt đầu né");
         }
-        r.obstacle(false);
-        for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
-        Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA" &&
-              plan.mode==control::TrajMode::AVOID_LEFT,"Đủ quãng khi NE_QUA không được rẽ");
-        bool returning=false, returned=false;
-        double return_distance=0;
-        for (int i=0;i<400;++i) {
-            if (returning) return_distance+=plan.cmd.cms*0.1;
-            r.in.odo_cm+=plan.cmd.cms*0.1;
-            r.now+=100;
-            r.in.detections={{},r.now,++r.frame};
-            plan=r.step();
-            if (returning && return_distance+1e-9>=r.p.obstacle_pass_cm) {
-                Check(plan.state==control::PlannerState::BAM_LAN ||
-                      (!cancel && plan.state==control::PlannerState::RE_TRAI),
-                      "Hết VE_PHAI mới được bắt đầu rẽ nếu còn armed");
-                if (plan.state==control::PlannerState::BAM_LAN)
-                    Check(plan.reason=="BAM_LAN" && plan.mode==control::TrajMode::LANE,
-                          "Hết VE_PHAI khi chưa rẽ phải trở về bám làn phải; nhận "+plan.reason+
-                          " ref="+std::to_string(static_cast<int>(plan.mode))+
-                          " quãng="+std::to_string(return_distance));
-                returned=true; break;
-            }
-            if (plan.reason=="VE_PHAI") {
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==control::TrajMode::RETURN_RIGHT &&
-                      plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms,
-                      "Suốt VE_PHAI phải trả làn, kẹp tốc độ và không rẽ");
-                returning=true; continue;
-            }
-            Check(!returning,"VE_PHAI không được kết thúc trước đủ quãng lệnh gửi");
-            Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="NE_QUA","Chưa hết pha né không được bắt đầu rẽ");
-        }
-        Check(returned,"Phải kết thúc cả pha né và về phải trong giới hạn mô phỏng");
-        r.now+=40; plan=cancel?r.step():r.junction();
-        Check(plan.state==(cancel?control::PlannerState::BAM_LAN:control::PlannerState::RE_TRAI),
-              cancel?"Đã hủy thì về bám làn không rẽ lại":"Về bám làn thường mới được rẽ");
+        if(name=="t68_arm_distance") {
+            r.in.odo_cm=r.p.turn_arm_cm+0.01; ++r.now;
+            Check(r.step().reason=="HUY_RE","Quá quãng vẫn phải hủy ý định rẽ");
+            r.obstacle(false); r.in.detections={};
+            Check(r.junction().state==control::PlannerState::BAM_LAN,"Đã hủy không rẽ lại");
+        } else Check(r.junction().state==control::PlannerState::RE_TRAI,"Hộp vật không đổi ý định rẽ");
     } else if (name=="q8_sign_blocked_until_end" || name=="q8_speed_min" ||
                name=="q8_space_in_ve_phai" || name=="q8_pass_cm_scale" || name=="q8_lane_lost") {
         auto returning=[](Rig& r) {
             r.p.slow_per_deg=0;
             r.avoid(); r.obstacle(false);
             control::Plan plan;
-            for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
+            for (int i=0;i<r.p.vote_window;++i) plan=r.send({});
             Check(plan.reason=="NE_QUA","Thiết lập Q8 phải qua NE_QUA");
             for (int i=0;i<1000 && plan.reason=="NE_QUA";++i) { r.in.odo_cm+=plan.cmd.cms*0.1; r.now+=100; plan=r.step(); }
             Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
@@ -534,21 +499,21 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) r.send({"round_barrier"});
         r.obstacle(true);
         for (int i=0;i<r.p.vote_window+3;++i) {
-            const auto plan=r.send({"round_barrier"});
+            const auto plan=r.send({"round_barrier","obstacle"});
             Check(plan.reason!="NE_TRAI" && plan.mode==control::TrajMode::ROUNDABOUT,"Đang qua vòng xuyến không được né");
         }
         Rig outside; outside.avoid();
     } else if (name=="obstacle_stop_no_turn") {
         // Đang DUNG_VAT_CAN (obstacle_action 1), đủ quãng cũng không được bắt đầu rẽ.
-        Rig r; r.p.obstacle_action=1; r.arm();
+        Rig r; r.p.obstacle_action=1;
         r.obstacle(true);
         control::Plan plan;
-        for (int i=0;i<r.p.vote_window;++i) { r.now+=40; plan=r.step(); }
+        for (int i=0;i<r.p.vote_window;++i) plan=r.send({"obstacle"});
         Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0,"Thiết lập phải DUNG_VAT_CAN");
         r.in.odo_cm+=r.p.turn_start_cm;
         for (int i=0;i<4;++i) {
             r.obstacle(true);
-            r.now+=40; plan=r.step();
+            plan=r.send({"obstacle","left"});
             Check(plan.state==control::PlannerState::DUNG_VAT_CAN && plan.cmd.cms==0 && plan.cmd.deg==0,
                   "Đang dừng vật cản không được rẽ");
         }
@@ -849,7 +814,8 @@ void Case(const std::string& name) {
     } else if (name=="arm_distance") {
         for (double sign:{-1.0,1.0}) {
             Rig r; r.in.odo_cm=100; r.arm();
-            r.send({}); r.avoid();
+            r.send({}); r.mask(60,140);
+            for(int i=0;i<r.p.vote_window;++i) Check(r.send({"obstacle"}).mode==control::TrajMode::LANE,"Armed chặn né");
             r.in.odo_cm=100+sign*r.p.turn_arm_cm; ++r.now;
             Check(r.step().reason!="HUY_RE","Đúng biên chưa hủy");
             r.in.odo_cm+=sign*0.01; ++r.now;

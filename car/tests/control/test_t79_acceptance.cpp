@@ -314,11 +314,11 @@ struct Rig {
     Plan last;
     int64_t now=1000;
     uint64_t frame=0;
-    bool round_seen=false;
+    bool round_seen=false, obstacle_seen=false;
     Rig() {
         p.start_wait_green=0;
         p.obstacle_action=2;
-        in.yolo_enabled=false;
+        in.yolo_enabled=true;
         in.sensor_ok=false;
         in.mask=Road(1.7);
         in.go=true;
@@ -336,6 +336,7 @@ struct Rig {
             in.detections.items.clear();
             in.detections.captured_ms=now;
             in.detections.frame_id=++frame;
+            if(obstacle_seen) in.detections.items.push_back({"obstacle",cv::Rect2f(600,100,128,100),0.9f,now});
             if(round_seen)
                 in.detections.items.push_back({"round_barrier",cv::Rect2f(10,40,300,128),0.9f,now});
         }
@@ -345,10 +346,10 @@ struct Rig {
         return last;
     }
     Plan Left() {
-        in.mask=Obstacle();
+        in.mask=Obstacle(); obstacle_seen=true;
         for(int n=1;n<=p.vote_min;++n) {
             const auto plan=Step();
-            Check((plan.reason=="NE_TRAI")== (n==p.vote_min),"NE_TRAI sai số phiếu mask mới");
+            Check((plan.reason=="NE_TRAI")== (n==p.vote_min),"NE_TRAI sai số phiếu YOLO mới");
         }
         Check(p.steer_rate_dps>0,"Cấu hình không cho góc tiến tới đích né");
         const int settle=static_cast<int>(std::ceil(2*p.steer_max_deg/(p.steer_rate_dps*0.05)))+4;
@@ -364,11 +365,11 @@ struct Rig {
     }
     Plan Pass() {
         Left();
-        in.mask=Road(1.7);
+        in.mask=Road(1.7); obstacle_seen=false;
         for(int n=1;n<=p.vote_window;++n) {
             const auto plan=Step();
             Check(plan.reason==(n==p.vote_window ? "NE_QUA" : "NE_TRAI"),
-                  "NE_QUA không theo đúng chuỗi mask sạch");
+                  "NE_QUA không theo đúng chuỗi lô YOLO vắng");
         }
         return last;
     }
@@ -466,7 +467,7 @@ void NotObstacle(bool outside) {
 // KHONG_DUONG_NE, 0,0 (hàng không lỗ không cứu quyết định).
 void NoAvoidSpace() {
     Rig r;
-    r.in.mask=Obstacle(1.0,0.6);
+    r.in.mask=Obstacle(1.0,0.6); r.obstacle_seen=true;
     for(int n=1;n<=r.p.vote_min;++n) {
         const auto plan=r.Step();
         if(n<r.p.vote_min)
@@ -487,7 +488,7 @@ void NoAvoidSpace() {
 void StopObstacle() {
     Rig r;
     r.p.obstacle_action=1;
-    r.in.mask=Obstacle();
+    r.in.mask=Obstacle(); r.obstacle_seen=true;
     for(int n=1;n<=r.p.vote_min;++n) {
         const auto plan=r.Step();
         Check((plan.state==PlannerState::DUNG_VAT_CAN)==(n==r.p.vote_min),"Action 1 dừng sai số phiếu");

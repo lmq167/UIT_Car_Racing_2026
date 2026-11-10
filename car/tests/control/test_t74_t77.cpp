@@ -97,7 +97,7 @@ struct Rig {
         now+=dt;
         std::vector<control::Detection> items;
         for (const auto& name:names) {
-            const float width=name=="round_barrier" ? 300.f : (name=="work_barrier" ? 130.f : 80.f);
+            const float width=name=="round_barrier" ? 300.f : (name=="work_barrier" ? 130.f : (name=="obstacle" ? 128.f : 80.f));
             items.push_back({name,cv::Rect2f(cx*1280-width/2,((name=="people" || name=="person") && y2==0.8f ? 0.98f : y2)*720-60,width,60),confidence,now});
         }
         in.detections={items,now,++frame};
@@ -693,12 +693,12 @@ void T77(const std::string& name) {
                     r.in.mask.at<unsigned char>(y,x)=0;
                     baseline.in.mask.at<unsigned char>(y,x)=0;
                 }
-                const auto obstacle=baseline.votes({},baseline.p.vote_window+2);
+                const auto obstacle=baseline.votes({"obstacle"},baseline.p.vote_window+2);
                 Expect(obstacle.reason=="NE_TRAI" || obstacle.mode==control::TrajMode::AVOID_LEFT || obstacle.reason=="KHONG_DUONG_NE",obstacle,"Đối chứng cùng mask ngoài vòng xuyến phải nhận vật cản (né hoặc dừng vì không có đường né)");
             }
             for (int i=0;i<r.p.vote_window+2;++i) {
                 r.in.odo_cm+=1;
-                const auto plan=r.send(name=="block_obstacle"?std::vector<std::string>{"round_barrier"}:std::vector<std::string>{"round_barrier",sign});
+                const auto plan=r.send(name=="block_obstacle"?std::vector<std::string>{"round_barrier","obstacle"}:std::vector<std::string>{"round_barrier",sign});
                 Expect(plan.state==PlannerState::GIU_HUONG && plan.reason!="NE_TRAI" && plan.reason!="VE_PHAI",plan,"Đang giữ hướng không bắt đầu rẽ/rào/né");
             }
         }

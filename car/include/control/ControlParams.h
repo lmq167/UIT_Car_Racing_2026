@@ -19,7 +19,7 @@ struct ControlParams {
     int record_every_n, yolo_every_n;
     int obstacle_action, work_barrier_action;
     double work_barrier_y2_frac;
-    double obstacle_hole_ratio, obstacle_pass_cm;
+    double obstacle_hole_ratio, obstacle_pass_cm, obstacle_near_w_frac;
     int start_wait_green, vote_window, vote_min, green_frames;
     double red_conf_min, green_conf_min, off_conf_min;
     double red_box_min_area_frac, green_box_min_area_frac, off_box_min_area_frac;

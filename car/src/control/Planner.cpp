@@ -6,6 +6,8 @@
 namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
+constexpr double kObstacleConfMin=0.5;
+constexpr double kObstacleRightLaneCx=0.45; // TẠM, CHƯA ĐO: tâm hộp vật làn phải.
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
 constexpr double kPersonStopBottom=0.98; // Chỉ kích dừng khi hộp chạm mép dưới ảnh.
 constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
@@ -70,7 +72,7 @@ void Planner::Reset(bool preserve_lights) {
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
-    votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
+    votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=last_obstacle_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
 }
 Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params) {
     params.Validate();
@@ -143,6 +145,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
     }
     const auto &batch=input.detections;
+    const bool new_obstacle_batch=batch.frame_id>last_obstacle_frame_;
+    last_obstacle_frame_=std::max(last_obstacle_frame_,batch.frame_id);
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
     person_stop_=person_latched_;
@@ -319,9 +323,33 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        (std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
-        if(mask_fresh && input.mask_ms!=last_mask_ms_) {
+        bool present=false;
+        if(input.yolo_enabled && fresh && new_obstacle_batch) {
+            bool obstacle=false;
+            for(const auto &d:batch.items) {
+                const auto &b=d.box;
+                if(d.class_name!="obstacle" || d.captured_ms!=batch.captured_ms ||
+                   !std::isfinite(d.confidence) || d.confidence<kObstacleConfMin || d.confidence>1 ||
+                   !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
+                   b.x<0 || b.y<0 || b.width<=0 || b.height<=0 || double(b.x)+b.width>1280 || double(b.y)+b.height>720) continue;
+                present=true; // Hộp hợp lệ ở mọi cỡ/vị trí đều giữ pha trái.
+                obstacle=obstacle || (b.width/1280.0>=params.obstacle_near_w_frac &&
+                    (double(b.x)+b.width/2)/1280.0>=kObstacleRightLaneCx);
+            }
+            if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 &&
+               !rb_holding_ && !rb_in_pass_ && !turn_direction_) {
+                obstacle_votes_.push_back(obstacle);
+                while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
+                if(std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
+                    obstacle_votes_.clear(); obstacle_clear_run_=0;
+                    if(params.obstacle_action==1) { state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; }
+                    else { swerve_=Swerve::LEFT; pass_cm_=0; }
+                }
+            } else obstacle_votes_.clear();
+        }
+        if(mask_fresh && (input.mask_ms!=last_mask_ms_ || swerve_==Swerve::LEFT)) {
             last_mask_ms_=input.mask_ms;
-            bool obstacle=false, near_hole=false, avoid_ok=true;
+            bool near_hole=false, avoid_ok=true, mask_obstacle=false;
             if(!rb_in_pass_) {
                 const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
                 const double bottom=std::lround(params.corridor_bottom_frac*input.mask.rows);
@@ -353,30 +381,28 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     intrusion=intrusion || (a.lanes==2 && a.flag_right=="THAT" && b.flag_left=="THAT" && b.flag_right!="MEP_ANH" &&
                         a.raw_r-b.raw_r>=0.5*w && b.raw_r-b.raw_l<=1.25*w && c.flag_right!="MEP_ANH" && a.raw_r-c.raw_r>=0.5*w);
                 }
-                obstacle=candidates>=2 || intrusion;
-            } else obstacle_votes_.clear();
-            obstacle_votes_.push_back(obstacle);
-            while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
-            // Đang qua vòng xuyến: lòng vòng là "hố" trong mặt nạ nhưng phải đi thẳng, không né (ảnh 07/11 phiên 9445, 211-219 s).
-            if(state_==PlannerState::BAM_LAN && !rb_holding_ && !rb_in_pass_ &&
-               std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
-                if(params.obstacle_action==1) {
-                    state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; obstacle_clear_run_=0;
-                } else if(swerve_!=Swerve::LEFT) {
-                    swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0;
+                mask_obstacle=candidates>=2 || intrusion;
+            }
+            if(state_==PlannerState::DUNG_VAT_CAN && reason_=="KHONG_DUONG_NE") {
+                obstacle_clear_run_=mask_obstacle || (near_hole && !avoid_ok) ? 0 : obstacle_clear_run_+1;
+                if(obstacle_clear_run_>=params.vote_window) {
+                    state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset();
+                    obstacle_votes_.clear(); obstacle_clear_run_=0;
                 }
             }
             if(params.obstacle_action==2 && swerve_==Swerve::LEFT && near_hole && !avoid_ok) {
                 state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
                 swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0;
             }
+        }
+        if(input.yolo_enabled && fresh && new_obstacle_batch) {
             if(params.obstacle_action==2 && swerve_==Swerve::LEFT) {
-                obstacle_clear_run_=obstacle ? 0 : obstacle_clear_run_+1;
+                obstacle_clear_run_=present ? 0 : obstacle_clear_run_+1;
                 if(obstacle_clear_run_>=params.vote_window) {
                     swerve_=Swerve::PASS; pass_cm_=0; obstacle_votes_.clear();
                 }
-            } else if(state_==PlannerState::DUNG_VAT_CAN) {
-                obstacle_clear_run_=obstacle || (reason_=="KHONG_DUONG_NE" && near_hole && !avoid_ok) ? 0 : obstacle_clear_run_+1;
+            } else if(state_==PlannerState::DUNG_VAT_CAN && reason_!="KHONG_DUONG_NE") {
+                obstacle_clear_run_=present ? 0 : obstacle_clear_run_+1;
                 if(obstacle_clear_run_>=params.vote_window) {
                     state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset();
                     obstacle_votes_.clear(); obstacle_clear_run_=0;

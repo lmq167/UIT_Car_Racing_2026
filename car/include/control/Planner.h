@@ -52,7 +52,7 @@ private:
     double swerve_progress_odo_=0; // mốc kiểm encoder tiến đủ 1 cm trong pha né/về
     int64_t swerve_progress_ms_=-1;
     bool swerve_odo_valid_=false; // mốc encoder của bước trước phải hợp lệ để lấy hiệu quãng
-    uint64_t last_frame_=0;
+    uint64_t last_frame_=0, last_obstacle_frame_=0; // Lô YOLO đã xét cho vật cản.
     int green_run_=0;
     int64_t red_ms_=-1, wait_since_ms_=-1;
     double red_x_=0;
