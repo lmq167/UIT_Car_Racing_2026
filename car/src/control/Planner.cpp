@@ -7,9 +7,12 @@ namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
 constexpr double kObstacleConfMin=0.5;
-constexpr double kObstacleRightLaneCx=0.45; // TẠM, CHƯA ĐO: tâm hộp vật làn phải.
+// TẠM: tâm hộp vật làn phải. Log 10/11 (1794302164): vật làn phải khi xe lệch hướng có tâm 0,43-0,45 (ngưỡng 0,45 làm không né),
+// vật làn trái có tâm <= 0,18; chọn 0,30 nằm giữa hai nhóm.
+constexpr double kObstacleRightLaneCx=0.30;
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
-constexpr double kPersonStopBottom=0.98; // Chỉ kích dừng khi hộp chạm mép dưới ảnh.
+// Đáy hộp người kích dừng. Log 10/11: 0,98 mới đủ phiếu khi hình nộm cách ~14 cm; 0,85 (~36 cm) dừng sớm hơn ~0,5 s.
+constexpr double kPersonStopBottom=0.85;
 constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
 constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
 // Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).

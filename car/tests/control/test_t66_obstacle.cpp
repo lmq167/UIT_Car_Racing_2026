@@ -251,14 +251,15 @@ void SwerveTests() {
 }
 
 void Unit() {
-    for(int scenario=0;scenario<8;++scenario) {
+    for(int scenario=0;scenario<10;++scenario) {
         Rig r; r.auto_box=false; r.p.obstacle_action=2;
         r.in.mask=scenario==5 ? Mask() : Mask(0,0);
         Plan plan;
         for(int n=0;n<r.p.vote_window;++n) {
             const auto ms=r.now+50;
             const float w=scenario==0 ? 127.f : 128.f;
-            const float x=scenario==2 ? 100.f : (scenario==0 ? 600.f : 512.f); // cx đúng 0,45 ở hộp rộng 128.
+            // Ca 8: cx 0,35 (vật làn phải khi xe lệch hướng, log 10/11) phải né; ca 9: cx 0,245 (vật làn trái) không né.
+            const float x=scenario==2 ? 100.f : (scenario==0 ? 600.f : (scenario==8 ? 384.f : (scenario==9 ? 250.f : 512.f)));
             r.in.detections={{},ms,++r.frame};
             if(scenario!=5) r.in.detections.items.push_back({"obstacle",cv::Rect2f(x,100,w,100),scenario==4 ? 0.4f : 0.5f,ms});
             if(scenario==3) { r.in.detections.captured_ms-=r.p.det_max_age_ms+1; r.in.detections.items.front().captured_ms=r.in.detections.captured_ms; }
@@ -266,7 +267,7 @@ void Unit() {
             if(scenario==6) r.in.detections.items.front().captured_ms--;
             plan=r.step();
         }
-        Check((plan.reason=="NE_TRAI")== (scenario==1),"Ngưỡng hộp/tâm/tin cậy/lô cũ/lỗ không hộp");
+        Check((plan.reason=="NE_TRAI")== (scenario==1 || scenario==8),"Ngưỡng hộp/tâm/tin cậy/lô cũ/lỗ không hộp");
     }
     { Rig r; r.auto_box=false; r.p.obstacle_action=2;
       auto box=[&](bool present) {

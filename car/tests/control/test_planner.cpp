@@ -85,12 +85,21 @@ void Unit() {
         Check(r.send({}).cmd.cms>5,"G mới không mang giữ cũ");
     }
     {
+        // Đáy hộp người 0,90 (>= 0,85) đủ phiếu thì dừng (log 10/11: 0,98 dừng muộn ~0,5 s).
+        Rig r; r.moving(); auto plan=r.send({});
+        for(int i=0;i<r.p.vote_window+1;++i) {
+            auto d=r.light("people",700); d.box.y=0.90f*720-d.box.height;
+            plan=r.send({d});
+        }
+        Check(plan.cmd.cms==0 && plan.reason=="NGUOI_DI_BO","Đáy 0,90 đủ phiếu phải dừng");
+    }
+    {
         // Người sát đáy đủ phiếu thì chốt; chỉ nhả khi lô tươi xác nhận vắng đủ 2 s.
         Rig r; r.moving();
         for(int i=0;i<3;++i) Check(r.send({r.light("person",700,0.4f)}).cmd.cms>0,"Tin cậy thấp không dừng");
         for(int i=0;i<r.p.vote_window+1;++i) {
-            auto d=r.light("people",700); d.box.y=0.97f*720-d.box.height;
-            Check(r.send({d}).cmd.cms==r.p.cruise_cms,"Đáy 0,97 không dừng hoặc giảm tốc");
+            auto d=r.light("people",700); d.box.y=0.80f*720-d.box.height;
+            Check(r.send({d}).cmd.cms==r.p.cruise_cms,"Đáy 0,80 không dừng hoặc giảm tốc");
         }
         r.send({r.light("people",700)}); r.send({r.light("person",700)});
         auto plan=r.send({r.light("people",700)});
