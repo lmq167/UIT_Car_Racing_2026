@@ -64,6 +64,8 @@ private:
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
     bool rb_holding_=false; // Đang GIU_HUONG (bước trước): không bắt đầu rẽ/rào/né.
+    bool person_latched_=false; // Giữ dừng tới khi lô tươi xác nhận vắng người đủ 2 s.
+    int64_t person_seen_ms_=-1;
     bool person_stop_=false; // Đủ phiếu người đi bộ: lệnh tốc độ 0, giữ nguyên state.
     bool barrier_turn_=false; // Lượt rẽ hiện tại do rào khởi động.
     bool barrier_wide_turn_=false; // Rào lệch phải (work 2: vào đường 2 làn); sai: work 1 vào đường 1 làn.

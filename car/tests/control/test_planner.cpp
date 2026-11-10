@@ -24,7 +24,7 @@ struct Rig {
     }
     control::Plan go() { in.go=true; auto result=step(); in.go=false; return result; }
     control::Detection light(const std::string& name,float right=1152,float confidence=0.5f) {
-        return {name,cv::Rect2f(right-128,100,128,72),confidence,now+40};
+        return {name,cv::Rect2f(right-128,(name=="person" || name=="people")?634:100,128,72),confidence,now+40};
     }
     control::Plan send(std::vector<control::Detection> items) {
         now+=40;
@@ -85,14 +85,28 @@ void Unit() {
         Check(r.send({}).cmd.cms>5,"G mới không mang giữ cũ");
     }
     {
-        // Người đi bộ đủ phiếu: tốc độ 0, lý do NGUOI_DI_BO, state giữ BAM_LAN; tin cậy < 0,5 bỏ; hết phiếu chạy tiếp.
+        // Người sát đáy đủ phiếu thì chốt; chỉ nhả khi lô tươi xác nhận vắng đủ 2 s.
         Rig r; r.moving();
         for(int i=0;i<3;++i) Check(r.send({r.light("person",700,0.4f)}).cmd.cms>0,"Tin cậy thấp không dừng");
+        for(int i=0;i<r.p.vote_window+1;++i) {
+            auto d=r.light("people",700); d.box.y=0.97f*720-d.box.height;
+            Check(r.send({d}).cmd.cms==r.p.cruise_cms,"Đáy 0,97 không dừng hoặc giảm tốc");
+        }
         r.send({r.light("people",700)}); r.send({r.light("person",700)});
         auto plan=r.send({r.light("people",700)});
         Check(plan.cmd.cms==0 && plan.reason=="NGUOI_DI_BO" && plan.state==control::PlannerState::BAM_LAN,"Đủ phiếu người phải dừng, giữ state");
-        for(int i=0;i<20;++i) plan=r.send({});
-        Check(plan.cmd.cms>0 && plan.reason!="NGUOI_DI_BO","Hết phiếu người phải chạy tiếp");
+        auto far=r.light("people",700,0.4f); far.box.y=100;
+        Check(r.send({far}).cmd.cms==0,"Hộp xa và yếu còn thấy vẫn giữ dừng");
+        for(int i=0;i<50;++i) plan=r.send({});
+        Check(plan.cmd.cms>0 && plan.reason!="NGUOI_DI_BO","Vắng người đủ 2 s phải chạy tiếp");
+    }
+    {
+        for(bool preserve:{false,true}) {
+            Rig r; r.moving();
+            for(int i=0;i<r.p.vote_min;++i) r.send({r.light("people",700)});
+            r.planner.Reset(preserve); r.in.detections={}; r.now+=2000;
+            Check(r.go().cmd.cms>0,"Reset phải xóa chốt người kể cả khi giữ pha đèn");
+        }
     }
     {
         Rig r; r.p.start_wait_green=0;

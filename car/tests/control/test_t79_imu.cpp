@@ -40,7 +40,7 @@ struct Rig {
             in.detections={{},now,++frame};
             if(!object.empty()) in.detections.items.push_back({object,
                 object=="red" ? cv::Rect2f(1150,100,100,80) :
-                (object=="round_barrier" ? cv::Rect2f(490,100,300,80) : cv::Rect2f(600,100,80,80)),0.9f,now});
+                (object=="person" ? cv::Rect2f(600,626,80,80) : object=="round_barrier" ? cv::Rect2f(490,100,300,80) : cv::Rect2f(600,100,80,80)),0.9f,now});
         }
         last=planner.Step(in,now,p);
         Check(std::isfinite(last.cmd.cms) && last.cmd.cms>=0 && last.cmd.cms<=p.max_speed_cms,"Vượt trần tốc độ");

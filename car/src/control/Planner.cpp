@@ -7,6 +7,8 @@ namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
+constexpr double kPersonStopBottom=0.98; // Chỉ kích dừng khi hộp chạm mép dưới ảnh.
+constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
 constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
 // Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).
 // Rào hẹp 115 px, rào lệch phải 90 px trùng thời điểm ngưỡng đáy hộp 0,60/0,65 đã chỉnh 07/11; đảo xa 100-233 px, vào thật >= 297 px.
@@ -63,7 +65,7 @@ void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
-    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; return_cm_=-1;
+    swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -143,7 +145,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const auto &batch=input.detections;
     const bool fresh=batch.frame_id && batch.captured_ms>=0 && batch.captured_ms<=now_ms &&
                      now_ms-batch.captured_ms<=params.det_max_age_ms;
-    person_stop_=false;
+    person_stop_=person_latched_;
+    bool person_present=false;
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
         if(fresh) for(const auto &d:batch.items) {
@@ -152,6 +155,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
             const bool person=d.class_name=="people" || d.class_name=="person";
+            // Mọi hộp người đều giữ chốt, kể cả tin cậy thấp hoặc hộp nhỏ.
+            person_present=person_present || person;
             double conf=0,area=0;
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
@@ -168,7 +173,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
             else if(roundabout) { round=true; round_big=round_big || b.width>=kRoundMinW; }  // đảo xa (hộp nhỏ) chưa mở lần qua
-            else if(person) people=true;
+            else if(person) people=people || (double(b.y)+b.height)/720.0>=kPersonStopBottom;
             else if(barrier) {
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
@@ -204,7 +209,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_wide+=v.barrier_wide; barriers_seen+=v.barrier_seen;
             rounds+=v.round; rounds_big+=v.round_big; persons+=v.person;
         }
-        person_stop_=persons>=params.vote_min;
+        if(fresh && person_present) person_seen_ms_=std::max(person_seen_ms_,batch.captured_ms);
+        if(persons>=params.vote_min) person_latched_=true;
+        if(person_latched_ && fresh && !person_present && person_seen_ms_>=0 &&
+           batch.captured_ms-person_seen_ms_>=kPersonReleaseMs) {
+            person_latched_=false;
+            for(auto &vote:votes_) vote.person=false;
+        }
+        person_stop_=person_latched_;
         // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
         // Mở lần qua cần hộp đảo lớn (đảo gần); đang qua thì hộp cỡ nào cũng tính, kể cả khi đảo trôi ra mép khung (log 09/11 152 s).
         const bool rb_present=rb_in_pass_ ? rounds>=params.vote_min : rounds_big>=params.vote_min;

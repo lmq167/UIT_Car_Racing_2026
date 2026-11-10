@@ -98,7 +98,7 @@ struct Rig {
         std::vector<control::Detection> items;
         for (const auto& name:names) {
             const float width=name=="round_barrier" ? 300.f : (name=="work_barrier" ? 130.f : 80.f);
-            items.push_back({name,cv::Rect2f(cx*1280-width/2,y2*720-60,width,60),confidence,now});
+            items.push_back({name,cv::Rect2f(cx*1280-width/2,((name=="people" || name=="person") && y2==0.8f ? 0.98f : y2)*720-60,width,60),confidence,now});
         }
         in.detections={items,now,++frame};
         return step();
@@ -184,7 +184,7 @@ void NoVotes(const std::string& label, const std::string& mode) {
             r.now+=40;
             const auto old=r.now-r.p.det_max_age_ms-1;
             const float width=label=="round_barrier" ? 300.f : (label=="work_barrier" ? 130.f : 80.f);
-            r.in.detections={{{label,cv::Rect2f(640-width/2,500,width,60),0.9f,mode=="stale_batch"?r.now:old}},
+            r.in.detections={{{label,cv::Rect2f(640-width/2,label=="person"?646:500,width,60),0.9f,mode=="stale_batch"?r.now:old}},
                              mode=="stale_batch"?old:r.now,++r.frame};
             Lane(r.step(),"Phiếu cũ phải bị bỏ");
         }
@@ -733,19 +733,20 @@ void T75(const std::string& name) {
             for (int i=0;i<r.p.vote_window+2;++i) Lane(r.send({label},.499f),"Tin cậy dưới 0,5 phải bỏ");
         }
     } else if (name=="release") {
-        for (bool age:{false,true}) {
-            Rig r; auto plan=r.votes({"person"});
-            Expect(plan.cmd.cms==0,plan,"Thiết lập dừng người"); const double odo=r.in.odo_cm;
-            if (age) { r.now+=r.p.det_max_age_ms+1; plan=r.step(); }
-            else {
-                for (int i=1;i<=r.p.vote_window-r.p.vote_min+1;++i) {
-                    plan=r.send();
-                    if (i<r.p.vote_window-r.p.vote_min+1) Expect(plan.cmd.cms==0,plan,"Còn đủ phiếu vẫn dừng");
-                }
-            }
-            Lane(plan,"Hết phiếu tươi phải chạy tiếp không G");
-            Check(r.in.odo_cm==odo,"Đầu vào encoder giữ nguyên khi dừng");
-        }
+        Rig r; auto plan=r.votes({"person"});
+        Expect(plan.cmd.cms==0,plan,"Thiết lập dừng người");
+        plan=r.send({"people"},.4f,.5f,.5f);
+        Expect(plan.cmd.cms==0,plan,"Hộp xa và yếu vẫn giữ chốt");
+        const auto seen=r.now; const double odo=r.in.odo_cm;
+        r.now=seen+1900-40; plan=r.send();
+        Expect(plan.cmd.cms==0,plan,"Vắng 1,9 s vẫn dừng");
+        r.now=seen+2000; plan=r.step();
+        Expect(plan.cmd.cms==0,plan,"Lô rỗng cũ chưa đủ 2 s không nhả");
+        r.now=seen+2000; r.in.detections.captured_ms=seen-r.p.det_max_age_ms; plan=r.step();
+        Expect(plan.cmd.cms==0,plan,"Mất YOLO không nhả");
+        plan=r.send({},.9f,.5f,.8f,0);
+        Lane(plan,"Lô tươi vắng đúng 2 s tự đi tiếp không G");
+        Check(r.in.odo_cm==odo,"Đầu vào encoder giữ nguyên khi dừng");
     } else if (name=="absent") {
         Rig a,b;
         for (int i=0;i<30;++i) {
@@ -763,7 +764,11 @@ void T75(const std::string& name) {
             plan=r.send({"person"},.9f,.5f,.8f,100);
             Expect(plan.state==PlannerState::RE_TRAI && plan.reason=="NGUOI_DI_BO" && plan.cmd.cms==0,plan,"Người dừng không làm hủy rẽ do thời gian/kẹt");
         }
-        plan=r.send();
+        for(int elapsed=100;elapsed<2000;elapsed+=100) {
+            plan=r.send({},.9f,.5f,.8f,100);
+            Expect(plan.state==PlannerState::RE_TRAI && plan.cmd.cms==0,plan,"Chờ đủ 2 s vẫn giữ lượt rẽ");
+        }
+        plan=r.send({},.9f,.5f,.8f,100);
         Expect(plan.state==PlannerState::RE_TRAI && plan.cmd.cms>0,plan,"Nhả người phải tiếp tục RE_TRAI");
         for (int i=0;i<3;++i) {
             r.in.odo_cm+=.5; plan=r.send();
