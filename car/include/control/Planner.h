@@ -59,6 +59,7 @@ private:
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
     double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
+    double swerve_peak_w_=0;  // bề rộng hộp vật cản lớn nhất (theo ảnh) từ lúc bắt đầu pha trái; vật nhỏ hơn nửa mức này là vật xa, không giữ pha trái
     int64_t swerve_ms_=-1;
     double swerve_odo_=0;
     double swerve_progress_odo_=0; // mốc kiểm encoder tiến đủ 1 cm trong pha né/về

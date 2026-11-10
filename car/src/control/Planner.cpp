@@ -7,6 +7,7 @@ namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
 constexpr double kObstacleConfMin=0.5;
+constexpr double kSwervePresentFrac=0.5; // TẠM: hộp hẹp hơn nửa bề rộng lớn nhất từ lúc bắt đầu né không giữ pha trái.
 // TẠM: tâm hộp vật làn phải. Log 10/11 (1794302164): vật làn phải khi xe lệch hướng có tâm 0,43-0,45 (ngưỡng 0,45 làm không né),
 // vật làn trái có tâm <= 0,18; chọn 0,30 nằm giữa hai nhóm.
 constexpr double kObstacleRightLaneCx=0.30;
@@ -431,18 +432,26 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        (std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
-        bool present=false;
+        bool present=false, present_left=false;
         if(input.yolo_enabled && fresh && new_obstacle_batch) {
             bool obstacle=false;
+            double widest=0;
             for(const auto &d:batch.items) {
                 const auto &b=d.box;
                 if(d.class_name!="obstacle" || d.captured_ms!=batch.captured_ms ||
                    !std::isfinite(d.confidence) || d.confidence<kObstacleConfMin || d.confidence>1 ||
                    !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
                    b.x<0 || b.y<0 || b.width<=0 || b.height<=0 || double(b.x)+b.width>1280 || double(b.y)+b.height>720) continue;
-                present=true; // Hộp hợp lệ ở mọi cỡ/vị trí đều giữ pha trái.
+                present=true;
+                widest=std::max(widest,double(b.width)/1280.0);
                 obstacle=obstacle || (b.width/1280.0>=params.obstacle_near_w_frac &&
                     (double(b.x)+b.width/2)/1280.0>=kObstacleRightLaneCx);
+            }
+            // Pha trái chỉ giữ bởi vật còn lớn so với vật đang né: log 10/11 18:01 vật thứ hai ở xa (nhỏ) làm pha trái
+            // kéo dài 44 s / 223 cm, không bao giờ qua NE_QUA/VE_PHAI.
+            if(swerve_==Swerve::LEFT) {
+                swerve_peak_w_=std::max(swerve_peak_w_,widest);
+                present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;
             }
             if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 &&
                !rb_holding_ && !rb_in_pass_ && !turn_direction_) {
@@ -451,7 +460,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
                     obstacle_votes_.clear(); obstacle_clear_run_=0;
                     if(params.obstacle_action==1) { state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; }
-                    else { swerve_=Swerve::LEFT; pass_cm_=0; }
+                    else { swerve_=Swerve::LEFT; pass_cm_=0; swerve_peak_w_=widest; present_left=true; }
                 }
             } else obstacle_votes_.clear();
         }
@@ -505,7 +514,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         if(input.yolo_enabled && fresh && new_obstacle_batch) {
             if(params.obstacle_action==2 && swerve_==Swerve::LEFT) {
-                obstacle_clear_run_=present ? 0 : obstacle_clear_run_+1;
+                obstacle_clear_run_=present_left ? 0 : obstacle_clear_run_+1;
                 if(obstacle_clear_run_>=params.vote_window) {
                     swerve_=Swerve::PASS; pass_cm_=0; obstacle_votes_.clear();
                 }

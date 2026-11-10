@@ -280,14 +280,26 @@ void Unit() {
       box(true); // Ngắt chuỗi vắng.
       for(int n=0;n<r.p.vote_window+1;++n) {
           const auto ms=r.now+50;
-          r.in.detections={{{"obstacle",cv::Rect2f(100,100,10,10),0.5f,ms}},ms,++r.frame};
-          Check(r.step().reason=="NE_TRAI","Hộp hợp lệ nhỏ/trái vẫn giữ pha né đang chạy");
+          // Hộp còn >= nửa bề rộng đỉnh (128) của vật đang né, dù lệch trái, vẫn giữ pha né đang chạy.
+          r.in.detections={{{"obstacle",cv::Rect2f(100,100,70,70),0.5f,ms}},ms,++r.frame};
+          Check(r.step().reason=="NE_TRAI","Hộp hợp lệ lớn bằng nửa vật đang né vẫn giữ pha né");
       }
       for(int n=0;n<r.p.vote_window+2;++n) Check(r.step().reason=="NE_TRAI","Lô lặp không được đếm vắng");
       r.now+=r.p.det_max_age_ms;
       Check(r.step().reason=="NE_TRAI","Lô cũ giữ pha trái");
       for(int n=1;n<=r.p.vote_window;++n)
           Check(box(false).reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"PASS theo lô vắng tươi");
+    }
+    { // Log 10/11 18:01: vật thứ hai ở xa (hộp nhỏ) còn trong ảnh không được giữ pha trái mãi; vật đang né đã qua thì NE_QUA.
+      Rig r; r.auto_box=false; r.p.obstacle_action=2;
+      for(int n=0;n<r.p.vote_min;++n) {
+          const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(600,100,128,100),0.9f,ms}},ms,++r.frame};
+          r.step();
+      }
+      for(int n=1;n<=r.p.vote_window;++n) {
+          const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(600,100,40,40),0.9f,ms}},ms,++r.frame};
+          Check(r.step().reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Vật xa nhỏ giữ pha trái mãi");
+      }
     }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); r.auto_box=false;
       bool returned=false;
