@@ -33,6 +33,14 @@ constexpr double kWideBarrierCx=0.62, kWideBarrierMaxCx=0.82, kNarrowBarrierEarl
 constexpr double kBarrierBlockMinCx=0.25, kBarrierBlockMaxCx=0.75;  // dải tâm hộp rào còn chắn trước (chặn tiếp quản)
 // Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
 constexpr double kRightTurnYawFactor=0.92;
+// Lộ trình chặng vòng xuyến (Quân 10/11, T94): hướng từng chặng theo bội 90°, Bắc = 0, trái dương (yaw tăng khi rẽ trái).
+// c0 trước VX1, c1 Đông, c2 Bắc (T trái), c3 Tây (T trái), c4 Nam (VX2), c5 Tây, c6 Bắc, c7 Đông = hết ý định.
+constexpr int kRouteSteps=8;
+constexpr int kRouteHeading[kRouteSteps]={0,-1,0,1,2,1,0,-1};
+constexpr double kRouteAxisDeg=30;     // TẠM, CHƯA ĐO: cách trục <= 30° mới coi là đang theo trục đó
+constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục liên tục từng này mới tính hướng ổn định
+constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
+int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
@@ -56,6 +64,34 @@ const char *StateName(PlannerState state) {
         case PlannerState::GIU_HUONG: return "GIU_HUONG";
     }
     return "DUNG";
+}
+// Hướng q (bội 90° so với Bắc) vừa ổn định: đồng bộ sau G, giải mơ hồ, hoặc tiến một chặng.
+void Planner::RouteStable(int q) {
+    const int s=route_step_, d=q-route_q_;
+    auto match=[&](int i) { return i>=0 && i<kRouteSteps && Mod4(kRouteHeading[i])==Mod4(q); };
+    if(route_sync_) {  // G sau Space (R1: chờ tới khi hướng ổn định mới xét)
+        route_sync_=route_ambig_=route_pass_seen_=false; route_q_=q;
+        if(match(s)) route_note_="SYNC_R2";
+        else if(match(s-1)!=match(s+1)) { route_step_=match(s-1) ? s-1 : s+1; route_note_="SYNC_R3"; }
+        else if(Mod4(q)==2) { route_step_=4; route_note_="SYNC_R4"; }
+        else { route_ambig_=true; route_note_="SYNC_AMBIG"; }
+        return;  // R5 (đảo phía trước) còn xét tới chặng kế tiếp
+    }
+    if(route_ambig_) {  // góc kế tiếp xác định chặng; Bắc→Đông có ở c0 và c6, phân biệt bằng lần qua đảo
+        int found=-1, count=0;
+        for(int i=0;i+1<kRouteSteps;++i)
+            if(Mod4(kRouteHeading[i])==Mod4(route_q_) && kRouteHeading[i+1]-kRouteHeading[i]==d) { if(found<0) found=i; ++count; }
+        route_q_=q;
+        const int next=count ? (count>1 ? (route_pass_seen_ ? 0 : 6) : found)+1 : -1;
+        // Chặng có ý định rẽ (c2, c3) cần bằng chứng mạnh hơn một góc sau mơ hồ: vẫn mơ hồ, chỉ bám làn.
+        if(next<0 || next==2 || next==3) { route_note_="SYNC_AMBIG"; return; }
+        route_step_=next; route_ambig_=false; route_note_="SYNC_GOC";
+    } else if(s+1<kRouteSteps && d==kRouteHeading[s+1]-kRouteHeading[s]) {
+        ++route_step_; route_q_=q; route_note_="BUOC";
+    } else {  // sai dấu/nhảy 2 nấc/đã hết: không tiến; thiếu bằng chứng vị trí nên chuyển mơ hồ (chỉ bám làn)
+        route_note_="HUONG_SAI"; route_ambig_=true; route_q_=q; return;
+    }
+    route_check_rb_=route_pass_seen_=false;
 }
 void Planner::ClearTurn() {
     junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0; last_exit_mask_ms_=-1;
@@ -102,6 +138,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         state_=!input.yolo_enabled ? PlannerState::BAM_LAN : red_latched_ ? PlannerState::DUNG_DEN_DO :
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
+        // G sau Space/reset (không phải G đầu chương trình): đồng bộ lại chặng khi hướng ổn định (R1-R6).
+        if(route_g_seen_) { route_sync_=route_check_rb_=true; route_cand_ms_=-1; }
+        route_g_seen_=true;
     }
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
     bool cancelled=false, sensor_cancelled=false, barrier_visible=false;
@@ -229,16 +268,52 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const bool rb_present=rb_in_pass_ ? rounds>=params.vote_min : rounds_big>=params.vote_min;
         if(rb_present) {
             if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;  // đang dừng (Space) không mở lần qua mới
-                rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false; }
+                rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false;
+                if(!sensor_bad && !route_anchored_) {  // Bắc = hướng xe lúc vào đảo lần đầu (xuất phát chặng trước VX1)
+                    route_anchored_=true; route_yaw_ref_=input.yaw_deg; route_step_=route_q_=0;
+                    route_sync_=route_ambig_=false; route_note_="NEO_VX1";
+                } else if(!sensor_bad && (route_check_rb_ || route_ambig_)) {
+                    // Đảo phía trước sau G: hướng Bắc chỉ có thể là đầu cả chặng (R5), hướng Nam là c4.
+                    const int q=int(std::lround((input.yaw_deg-route_yaw_ref_)/90.0));
+                    if(Mod4(q)==0 || Mod4(q)==2) {
+                        route_sync_=route_ambig_=route_check_rb_=false;
+                        if(rb_turn_ && !turning_) ClearTurn();
+                        if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=input.yaw_deg; rb_passes_=0; route_note_="SYNC_R5"; }
+                        else { route_step_=4; route_q_=q; route_note_="SYNC_R4"; }
+                    }
+                }
+                route_pass_seen_=true; }
             rb_losing_=false;
         } else if(rb_in_pass_ && (!params.imu_fallback || encoder_good)) {
             if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
             else if(std::abs(input.odo_cm-rb_lost_odo_)>=params.rb_lost_cm) {
                 rb_in_pass_=rb_losing_=false; ++rb_passes_; rb_after_odo_=input.odo_cm;
-                rb_pending_=rb_passes_==1 ? 1 : rb_passes_==2 ? -1 : 0;  // lần 1 rẽ trái, lần 2 rẽ phải, sau đó không áp
+                // Lộ trình cũ (rb_pending_: lần 1 trái, lần 2 phải) đã tắt: ý định lấy từ chặng (T94). Gỡ hẳn ở giai đoạn 2.
             }
         }
         if(params.imu_fallback && !encoder_good) rb_losing_=false;
+        // Bỏ ý định lộ trình chưa rẽ, KHÔNG xóa phiếu biển/rào (khác ClearTurn) để luật biển/rào bên dưới chạy như cũ.
+        auto drop_route_intent=[&]() {
+            if(!rb_turn_ || turning_) return;
+            turn_direction_=0; rb_turn_=false; junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0;
+        };
+        if(route_anchored_) {
+            if(lefts>=params.vote_min || rights>=params.vote_min || barriers_seen>=params.vote_min) {
+                // H1: chặng vòng xuyến không có biển/rào; thấy đủ phiếu là đã ở chặng khác: hết lộ trình tới khi R5.
+                drop_route_intent();
+                if(route_step_!=kRouteSteps-1 || route_ambig_ || route_sync_) {
+                    route_step_=kRouteSteps-1; route_sync_=route_ambig_=false; route_note_="HET_BIEN_RAO";
+                }
+            } else if(rounds>=params.vote_min) {
+                drop_route_intent();  // M1: đảo phía trước (cỡ bất kỳ) thì không giữ ý định rẽ trái
+                if(!sensor_bad && !rb_in_pass_ && (route_check_rb_ || route_ambig_)) {
+                    const int q=int(std::lround((input.yaw_deg-route_yaw_ref_)/90.0));
+                    if(Mod4(q)==0 && route_step_!=0) {  // R5 sớm: neo lại khi lần qua mở
+                        route_step_=0; route_q_=q; route_sync_=route_ambig_=false; rb_passes_=0; route_note_="SYNC_R5";
+                    }
+                }
+            }
+        }
         barrier_slow=barriers_seen>=params.vote_min;
         if(fallback && params.turn_enable && params.work_barrier_action && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_in_pass_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 && barriers>=params.vote_min) {
@@ -261,6 +336,32 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
         barrier_fault_stop=params.work_barrier_action && params.turn_enable && (turn_fault_ || sensor_bad) && !(fallback && corridor_turn_) && !barrier_done_ && !rb_present &&
             state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min;
+        // Lộ trình theo hướng (T94): hướng lượng tử 90° ổn định thì đếm chặng; đóng băng trong lần qua đảo.
+        // M2: chỉ đếm khi xe đang chạy (không Space/dừng/chờ G) và bánh thực sự lăn trong lúc ổn định.
+        const bool route_moving=!input.stop && encoder_good &&
+            (state_==PlannerState::BAM_LAN || state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI);
+        if(route_anchored_ && !sensor_bad && !rb_in_pass_ && route_moving) {
+            const double rel=input.yaw_deg-route_yaw_ref_;
+            const int q=int(std::lround(rel/90.0));
+            if(std::abs(rel-90.0*q)>kRouteAxisDeg) route_cand_ms_=-1;
+            else if(route_cand_ms_<0 || q!=route_cand_q_) { route_cand_q_=q; route_cand_ms_=now_ms; route_cand_odo_=input.odo_cm; }
+            else if(now_ms-route_cand_ms_>=kRouteStableMs && std::abs(input.odo_cm-route_cand_odo_)>=kRouteMoveCm &&
+                    (route_sync_ || q!=route_q_)) {
+                const int old=route_step_;
+                RouteStable(q);
+                // Ý định lộ trình chưa rẽ chỉ thuộc chặng đã chốt nó: đổi chặng hoặc hướng lệch bảng thì bỏ.
+                if(route_step_!=old || route_q_!=q || route_ambig_) drop_route_intent();
+            }
+        } else route_cand_ms_=-1;
+        const bool route_heading_ok=route_cand_ms_>=0 && route_cand_q_==route_q_ && now_ms-route_cand_ms_>=kRouteStableMs &&
+            std::abs(input.odo_cm-route_cand_odo_)>=kRouteMoveCm;
+        // Ý định rẽ trái chỉ ở c2, c3 (hai ngã T trái), khi hướng khớp chặng; thời điểm rẽ vẫn do mặt nạ (M6).
+        if(route_anchored_ && fresh && !route_sync_ && !route_ambig_ && (route_step_==2 || route_step_==3) && route_heading_ok &&
+           params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && rounds<params.vote_min && !rb_holding_ &&
+           state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE) {
+            turn_direction_=1; arm_odo_=input.odo_cm; rb_turn_=true;
+            left_real_ms_=-1;  // M3: chỗ mở trái của ngã vừa rẽ không tính; phải thấy lại cạnh trái thật rồi mới tính chỗ mở
+        }
         // Ngã T không biển sau vòng xuyến: đi thêm rb_turn1/2_cm rồi rẽ; còn phiếu round_barrier thì không rẽ.
         if(rb_pending_ && params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && !rb_present && !rb_holding_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE &&

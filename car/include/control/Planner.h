@@ -32,7 +32,19 @@ class Planner {
 public:
     Plan Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params);
     void Reset(bool preserve_lights=false);
+    // Lộ trình chặng vòng xuyến (chỉ đọc, cho test/phát lại): chặng 0-7 và lý do đổi gần nhất.
+    int RouteStep() const { return route_step_; }
+    const std::string &RouteNote() const { return route_note_; }
 private:
+    // Lộ trình theo hướng lượng tử 90° (Bắc = yaw lúc mở lần qua đảo đầu tiên). Không bị Reset/Space xóa.
+    int route_step_=0, route_q_=0, route_cand_q_=0;  // route_q_: hướng (bội 90°) của chặng hiện tại
+    int64_t route_cand_ms_=-1;  // mốc bắt đầu hướng ứng viên ổn định; <0: chưa ổn định
+    double route_cand_odo_=0;   // odo lúc bắt đầu hướng ứng viên (chỉ đếm khi xe thực sự lăn bánh)
+    double route_yaw_ref_=0;
+    bool route_anchored_=false, route_g_seen_=false, route_sync_=false, route_ambig_=false;
+    bool route_check_rb_=false, route_pass_seen_=false;
+    std::string route_note_;
+    void RouteStable(int q);
     struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
