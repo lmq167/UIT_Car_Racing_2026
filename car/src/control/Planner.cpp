@@ -11,8 +11,9 @@ constexpr double kObstacleConfMin=0.5;
 // vật làn trái có tâm <= 0,18; chọn 0,30 nằm giữa hai nhóm.
 constexpr double kObstacleRightLaneCx=0.30;
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
-// Đáy hộp người kích dừng. Log 10/11: 0,98 mới đủ phiếu khi hình nộm cách ~14 cm; 0,85 (~36 cm) dừng sớm hơn ~0,5 s.
-constexpr double kPersonStopBottom=0.85;
+// Đáy hộp người kích dừng. Log 10/11: 0,98 dừng khi hình nộm cách ~14 cm; 0,85 dừng ~22 cm (sớm 0,5 s), thử xe dừng được;
+// Quân chọn 0,83 cho an toàn hơn (10/11).
+constexpr double kPersonStopBottom=0.83;
 constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
 constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
 // Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).
