@@ -66,10 +66,14 @@ YoloInfo::YoloInfo(const std::string &path) {
     if(!export_d2 || !root["scores_are_probabilities"].empty()) Flag(root,"scores_are_probabilities",true);
     Require(root["num_classes"].isInt(),"num_classes");
     num_classes=int(root["num_classes"]);
-    Require(num_classes==9 || num_classes==10,"num_classes phải là 9 hoặc 10");
+    Require(num_classes==9 || num_classes==10 || num_classes==12,"num_classes phải là 9, 10 hoặc 12");
     std::set<std::string> expected{
         "red","green","off","left","right","no_left","no_right","round_barrier","work_barrier"};
-    if(num_classes==10) expected.insert("parking");
+    if(num_classes>=10) expected.insert("parking");
+    if(num_classes==12) {
+        expected.insert("people");
+        expected.insert("obstacle");
+    }
     const auto classes=root["class_names"];
     Require(classes.isSeq() && classes.size()==size_t(num_classes),"class_names");
     std::set<std::string> found;

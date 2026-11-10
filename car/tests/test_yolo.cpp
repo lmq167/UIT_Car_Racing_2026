@@ -111,6 +111,36 @@ int main() {
         json10=Changed(json10,"[1,13,4]","[1,14,4]");
         const auto info10=load(json10);
         Check(info10.num_classes==10 && info10.OutputElements()==56,"Kích thước 10 lớp sai");
+        auto json12=Changed(json10,"\"parking\"]","\"parking\",\"people\",\"obstacle\"]");
+        json12=Changed(json12,"\"num_classes\":10","\"num_classes\":12");
+        json12=Changed(json12,"[1,14,4]","[1,16,4]");
+        const auto info12=load(json12);
+        Check(info12.num_classes==12 && info12.OutputElements()==16*4,"Kích thước 12 lớp sai");
+        const perception::YoloDetector yolo12(info12);
+        std::vector<float> out12(info12.OutputElements(),0);
+        Box(out12,0,50,105,50,30,10,0.9f);
+        Box(out12,1,50,105,50,30,11,0.8f);
+        const auto decoded12=yolo12.Decode(out12.data());
+        Check(decoded12.size()==2 && decoded12[0].class_name=="people" &&
+              decoded12[1].class_name=="obstacle","Giải mã people/obstacle sai");
+        const perception::YoloDetector reordered12(load(Changed(json12,
+            "\"people\",\"obstacle\"","\"obstacle\",\"people\"")));
+        const auto reorderedBoxes=reordered12.Decode(out12.data());
+        Check(reorderedBoxes.size()==2 && reorderedBoxes[0].class_name=="obstacle" &&
+              reorderedBoxes[1].class_name=="people","12 lớp phải ánh xạ theo thứ tự file");
+        FakeEngine fake12; fake12.result=out12;
+        const auto inferred12=yolo12.Infer(cv::Mat(720,1280,CV_8UC3,cv::Scalar(0,0,0)),fake12);
+        Check(fake12.called && inferred12.size()==2 && inferred12[0].class_name=="people" &&
+              inferred12[1].class_name=="obstacle","Engine giả 12 lớp sai");
+        Reject([&] { load(Changed(json12,",\"obstacle\"","")); });
+        Reject([&] { load(Changed(json12,"\"obstacle\"","\"unknown\"")); });
+        Reject([&] { load(Changed(json12,"\"obstacle\"","\"people\"")); });
+        for(int bad:{11,13})
+            Reject([&] { load(Changed(json12,"\"num_classes\":12","\"num_classes\":"+std::to_string(bad))); });
+        Reject([&] { load(Changed(json12,"[1,16,4]","[1,15,4]")); });
+        Reject([&] { load(Changed(json12,"[1,16,4]","[1,17,4]")); });
+        WorkerShape(info12,16,true);
+        WorkerShape(info12,14,false);
         WorkerShape(info,13,true);
         WorkerShape(info10,14,true);
         WorkerShape(info,14,false);
@@ -146,6 +176,31 @@ int main() {
         Check(d2info.OutputElements()==30576 && d2info.pad_top==11 &&
               d2info.resized==cv::Size(416,234),"Metadata dạng D2 sai");
         Reject([&] { load(Changed(d2,"\"pad_top\":11","\"pad_top\":12")); });
+        // Metadata giả D2/D7/D8: tham chiếu hình học độc lập cho ảnh gốc 1280×720.
+        for(const std::string variant:{"D2","D7","D8"}) {
+            auto metadata=Changed(d2,"\"parking\"]","\"parking\",\"people\",\"obstacle\"]");
+            metadata=Changed(metadata,"\"num_classes\":10","\"num_classes\":12");
+            metadata=Changed(metadata,"[1,14,2184]","[1,16,2184]");
+            const bool wide=variant=="D8";
+            if(wide) {
+                metadata=Changed(metadata,"[256,416]","[288,512]");
+                metadata=Changed(metadata,"[1,3,256,416]","[1,3,288,512]");
+                metadata=Changed(metadata,"[1,16,2184]","[1,16,3024]");
+                metadata=Changed(metadata,"\"scale\":0.325","\"scale\":0.4");
+                metadata=Changed(metadata,"[416,234]","[512,288]");
+                metadata=Changed(metadata,"\"pad_top\":11","\"pad_top\":0");
+            }
+            const auto variantInfo=load(metadata);
+            Check(variantInfo.num_classes==12 && variantInfo.OutputElements()==size_t(16*(wide ? 3024 : 2184)),
+                  "Kích thước output sai: "+variant);
+            Near(variantInfo.letterbox_scale,wide ? 0.4 : 0.325);
+            Check(variantInfo.input==cv::Size(wide ? 512 : 416,wide ? 288 : 256) &&
+                  variantInfo.resized==cv::Size(wide ? 512 : 416,wide ? 288 : 234) &&
+                  variantInfo.pad_left==0 && variantInfo.pad_right==0 &&
+                  variantInfo.pad_top==(wide ? 0 : 11) && variantInfo.pad_bottom==(wide ? 0 : 11),
+                  "Letterbox sai: "+variant);
+            Reject([&] { load(Changed(metadata,wide ? "\"pad_top\":0" : "\"pad_top\":11","\"pad_top\":1")); });
+        }
         for(const auto &metadata:{json,json10}) {
             for(const auto &bad:{std::string("0"),std::string("-1"),std::string("9.5"),
                                  std::string("\"10\""),std::string("11"),std::string("2147483647")})
