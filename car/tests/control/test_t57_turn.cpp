@@ -618,6 +618,30 @@ void Case(const std::string& name) {
         for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
         for (int i=0;i<200;++i) { r.in.odo_cm+=1; plan=rb(false);
             Check(plan.state==control::PlannerState::BAM_LAN,"Sau lần 2 không rẽ nữa"); }
+    } else if (name=="roundabout_after_space") {
+        // Lỗi 3 (log 18:01 10/11, 289 s): Space rồi G giữa đảo mở lần qua mới với yaw0 = hướng giữa đảo;
+        // mất làn ở lối ra thì GIU_HUONG lái về hướng đó (sang trái, lệch lối ra phải). Lần qua mở ngay sau
+        // G-sau-Space không được giữ hướng theo yaw0 đó; lần qua bình thường (không Space) vẫn giữ hướng.
+        auto run=[](bool after_space) {
+            Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
+            if (after_space) {
+                r.in.stop=true; r.now+=40; r.step(); r.in.stop=false;
+                r.in.go=true; r.now+=40; r.step(); r.in.go=false;
+            }
+            auto rb=[&]() {
+                r.now+=40; r.in.odo_cm+=0.5;
+                r.in.detections={{{"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now}},r.now,++r.frame};
+                return r.step();
+            };
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_min;++i) plan=rb();
+            r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0)); r.in.yaw_deg=-10;
+            bool held=false;
+            for (int i=0;i<10;++i) { plan=rb(); held=held || plan.state==control::PlannerState::GIU_HUONG; }
+            return held;
+        };
+        Check(run(false),"Lần qua bình thường mất làn vẫn phải giữ hướng (không đổi hành vi cũ)");
+        Check(!run(true),"Lần qua mở ngay sau G-sau-Space không được giữ hướng theo yaw giữa đảo");
     } else if (name=="roundabout_stall") {
         // Giữ hướng mà bánh không tiến (kẹt đảo/rào) thì hết GIU_HUONG sau 1500 ms, về dừng mất làn như cũ.
         Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;

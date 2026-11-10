@@ -34,7 +34,7 @@ work_barrier_y2_frac: 0.55 # Đáy hộp rào tối thiểu (theo chiều cao �
 obstacle_near_w_frac: 0.10 # TẠM, CHƯA ĐO: bề rộng hộp/ảnh để bắt đầu né, miền (0,02; 0,6]
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
 obstacle_hole_ratio: 0.25 # TẠM, CHƯA ĐO: khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
-obstacle_pass_cm: 40 # Quãng đi thêm sau khi vật cản biến mất khỏi ảnh, gồm vùng mù ~25 cm; chỉnh bằng yaml
+obstacle_pass_cm: 85 # TẠM, CHƯA ĐO: vùng mù 25 + dài vật 50 + dư 10 sau khi vắng hộp YOLO; yaml xe thắng
 start_wait_green: 1 # Chờ xanh khi xuất phát, 1
 vote_window: 5 # Cửa sổ bỏ phiếu, lô
 vote_min: 3 # Số phiếu tối thiểu, lô

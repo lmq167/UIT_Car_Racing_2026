@@ -87,7 +87,8 @@ set_tests_properties(test_t74_barrier_turn PROPERTIES LABELS "control" TIMEOUT 6
 add_test(NAME test_t68b_roundabout COMMAND test_t57_turn roundabout)
 set_tests_properties(test_t68b_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t77_hold_stall COMMAND test_t57_turn roundabout_stall)
-set_tests_properties(test_t77_hold_stall PROPERTIES LABELS "control" TIMEOUT 60)
+add_test(NAME test_t57_roundabout_after_space COMMAND test_t57_turn roundabout_after_space)
+set_tests_properties(test_t77_hold_stall test_t57_roundabout_after_space PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t73_fault_recovers COMMAND test_t57_turn fault_recovers)
 set_tests_properties(test_t73_fault_recovers PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t73_fault_drops_rb COMMAND test_t57_turn roundabout_fault_drops_pending)
@@ -147,12 +148,18 @@ endforeach()
 
 # T79: hành lang (unit DEV) và test chấp nhận do phiên riêng viết.
 add_executable(test_t79_corridor test_t79_corridor.cpp)
-target_link_libraries(test_t79_corridor PRIVATE ucr_control opencv_imgproc)
+target_link_libraries(test_t79_corridor PRIVATE ucr_control opencv_imgproc opencv_imgcodecs)
 target_compile_options(test_t79_corridor PRIVATE -Wall -Wextra)
 foreach(scenario one_lane two_lanes image_edge jump hole split roundabout empty bottom_hole roundabout_jump bottom_unchanged)
     add_test(NAME control_t79_corridor_${scenario} COMMAND test_t79_corridor ${scenario})
     set_tests_properties(control_t79_corridor_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
+# Lỗi 3 (10/11): hai làn bị cắt biên phải; mặt nạ thật lối ra vòng xuyến.
+add_test(NAME control_t79_corridor_two_lane_right_cut COMMAND test_t79_corridor two_lane_right_cut)
+add_test(NAME control_t79_corridor_real_roundabout_exit
+         COMMAND test_t79_corridor real_roundabout_exit ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+set_tests_properties(control_t79_corridor_two_lane_right_cut control_t79_corridor_real_roundabout_exit
+                     PROPERTIES LABELS "control" TIMEOUT 60)
 include(${CMAKE_CURRENT_SOURCE_DIR}/t79_acceptance.cmake)
 
 add_executable(test_t79_turn test_t79_turn.cpp)

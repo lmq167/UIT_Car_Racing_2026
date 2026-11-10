@@ -104,11 +104,18 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         row.flag_left=raw.l<=0 ? kEdge : below && below->flag_left==kThat && std::abs(raw.l-lower_raw.l)>jump ? kJump : kThat;
         row.flag_right=raw.r>=W-1 ? kEdge : below && below->flag_right==kThat && std::abs(raw.r-lower_raw.r)>jump ? kJump : kThat;
         const bool left_ok=row.flag_left==kThat, right_ok=row.flag_right==kThat;
+        const bool right_edge_cut=row.flag_right==kEdge;
         const double reference=below && below->flag_left==kThat && below->flag_right==kThat ? below->right-below->left : w;
         row.raw_l=raw.l; row.raw_r=raw.r;
         row.left=raw.l; row.right=raw.r;
         if(!left_ok && right_ok) row.left=row.right-reference;
-        else if(left_ok && !right_ok) row.right=row.left+reference;
+        else if(left_ok && !right_ok) {
+            row.right=row.left+reference;
+            // Lỗi 3 (sa bàn 10/11): biên phải chạm mép ảnh nên bề rộng thật >= bề rộng thô. Thô đã đủ
+            // hai làn thì dựng đường hai làn (2·w) từ biên trái thật: mục tiêu ở làn PHẢI, không ở làn trái.
+            // Biên phải thật (biên trái mép ảnh) không cần: tâm làn phải = phải − w/2 cho cả 1 và 2 làn.
+            if(right_edge_cut && raw.r-raw.l>=params.two_lane_ratio*w) row.right=row.left+std::max(reference,2*w);
+        }
         else if(!left_ok && !right_ok) {
             const double center=below ? (below->left+below->right)/2 : (raw.l+raw.r)/2.0;
             row.left=center-reference/2; row.right=center+reference/2;

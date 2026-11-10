@@ -28,7 +28,7 @@ const Parameter table[] = {
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
     {"obstacle_near_w_frac",0.10,&ControlParams::obstacle_near_w_frac,0.02,0.6,"W","TẠM, CHƯA ĐO: bề rộng hộp tối thiểu để bắt đầu né"},
     {"obstacle_hole_ratio",0.25,&ControlParams::obstacle_hole_ratio,0,1,"1","Khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn"},
-    {"obstacle_pass_cm",40.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi thêm sau khi vật cản biến mất, gồm vùng mù khoảng 25 cm"},
+    {"obstacle_pass_cm",85.0,&ControlParams::obstacle_pass_cm,10,200,"cm","TẠM, CHƯA ĐO: vùng mù 25 + dài vật 50 + dư 10 sau khi vắng hộp YOLO"},
     {"imu_fallback",0,&ControlParams::imu_fallback,0,1,"1","TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt"},
     {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},

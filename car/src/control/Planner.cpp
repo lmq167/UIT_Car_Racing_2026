@@ -48,6 +48,11 @@ constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục l
 constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
 int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
+// Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
+// tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,6·obstacle_pass_cm.
+constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.6;
+// Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
+constexpr double kPassStopY2=0.85;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -274,7 +279,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const bool rb_present=rb_in_pass_ ? rounds>=params.vote_min : rounds_big>=params.vote_min;
         if(rb_present) {
             if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;  // đang dừng (Space) không mở lần qua mới
-                rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=false;
+                // Lần qua mở ngay sau G-sau-Space (route_check_rb_): xe có thể đang giữa đảo nên yaw lúc này
+                // không phải hướng lúc vào; không giữ hướng theo nó (log 18:01 10/11 289 s lái trái ở lối ra phải).
+                rb_yaw0_=input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=route_check_rb_;
                 if(!sensor_bad && !route_anchored_) {  // Bắc = hướng xe lúc vào đảo lần đầu (xuất phát chặng trước VX1)
                     route_anchored_=true; route_yaw_ref_=input.yaw_deg; route_step_=route_q_=0;
                     route_sync_=route_ambig_=false; route_note_="NEO_VX1";
@@ -435,7 +442,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         bool present=false, present_left=false;
         if(input.yolo_enabled && fresh && new_obstacle_batch) {
-            bool obstacle=false;
+            bool obstacle=false, ahead_close=false, ahead_stop=false;
             double widest=0;
             for(const auto &d:batch.items) {
                 const auto &b=d.box;
@@ -445,11 +452,22 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                    b.x<0 || b.y<0 || b.width<=0 || b.height<=0 || double(b.x)+b.width>1280 || double(b.y)+b.height>720) continue;
                 present=true;
                 widest=std::max(widest,double(b.width)/1280.0);
+                const double cx=(double(b.x)+b.width/2)/1280.0;
+                const bool ahead=cx>=kPassAheadMinCx && cx<=kPassAheadMaxCx;
+                ahead_close=ahead_close || (ahead && (double(b.y)+b.height)/720.0>=kPassAheadY2);
+                ahead_stop=ahead_stop || (ahead && (double(b.y)+b.height)/720.0>=kPassStopY2);
                 obstacle=obstacle || (b.width/1280.0>=params.obstacle_near_w_frac &&
                     (double(b.x)+b.width/2)/1280.0>=kObstacleRightLaneCx);
             }
             // Pha trái chỉ giữ bởi vật còn lớn so với vật đang né: log 10/11 18:01 vật thứ hai ở xa (nhỏ) làm pha trái
             // kéo dài 44 s / 223 cm, không bao giờ qua NE_QUA/VE_PHAI.
+            // Vật trước mặt đã gần trong PASS: về làn phải ngay khi đã đi đủ phần tối thiểu của quãng pass.
+            if(swerve_==Swerve::PASS && ahead_close && pass_cm_>=kPassMinFrac*params.obstacle_pass_cm)
+                pass_cm_=params.obstacle_pass_cm;
+            else if(swerve_==Swerve::PASS && ahead_stop) {
+                state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
+                swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0;
+            }
             if(swerve_==Swerve::LEFT) {
                 swerve_peak_w_=std::max(swerve_peak_w_,widest);
                 present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;

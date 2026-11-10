@@ -1,6 +1,7 @@
 // Unit DEV cho ExtractCorridor (T79 0c): mask tổng hợp 192x320, tham số mặc định control.yaml.
 #include "control/LaneController.h"
 #include "control/Planner.h"
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <cmath>
 #include <iostream>
@@ -207,6 +208,49 @@ void ImageEdge() {
               "Không có biên thật phải dừng 0,0 sau lost_stop_ms ở conf_min thấp nhất cho phép");
     }
 }
+// Lỗi 3 (sa bàn 10/11): đường hai làn, cạnh trái thật, cạnh phải ra khỏi ảnh (cua phải/lối ra vòng xuyến).
+// Bề rộng thô đã >= two_lane_ratio·w thì đường thật ít nhất rộng như vậy: phải nhận hai làn, mục tiêu ở làn PHẢI.
+void TwoLaneRightCut() {
+    ControlParams p;
+    const double cx=230;  // đường 2,2 làn: biên trái thật ~30..170 px, biên phải ra khỏi ảnh ở các hàng gần
+    const auto c=ExtractCorridor(Road(p,cx,2.2),p,TrajMode::LANE);
+    int cut=0;
+    for(const auto &r:c.rows) {
+        if(!r.valid || r.flag_left!="THAT" || r.flag_right!="MEP_ANH") continue;
+        ++cut;
+        const double w=Lane1(p,r.y);
+        Check(r.lanes==2,"Biên phải bị cắt, bề rộng thô hai làn: phải nhận 2 làn");
+        Check(r.target>=r.left+1.25*w,"Mục tiêu phải ở làn phải (>= trái + 1,25 làn), không ở làn trái");
+        Check(r.target>=r.raw_l && r.target<=kW+2*w,"Mục tiêu hợp lý");
+    }
+    Check(cut>=3,"Thiếu hàng trái thật/phải mép ảnh để kiểm");
+    // Một làn bị cắt biên phải (bề rộng thô < 1,5 làn): giữ như cũ, tâm một làn tính từ biên trái.
+    const auto one=ExtractCorridor(Road(p,kW-20,1.0),p,TrajMode::LANE);
+    int one_cut=0;
+    for(const auto &r:one.rows) if(r.valid && r.flag_left=="THAT" && r.flag_right=="MEP_ANH") {
+        ++one_cut;
+        Check(r.lanes==1,"Một làn bị cắt biên phải vẫn là 1 làn");
+        Near(r.target,r.left+Lane1(p,r.y)/2,1e-6,"Một làn bị cắt: tâm làn từ biên trái");
+    }
+    Check(one_cut>=1,"Thiếu hàng một làn bị cắt để kiểm");
+}
+// Mặt nạ thật lượt 18:01 10/11 (VX_THOAT 287,3 s và 288,2 s, lối ra vòng xuyến bên phải):
+// mã cũ dựng một làn từ biên trái -> mục tiêu 0,41–0,43 W (lệch trái), xe lái trái 13–14°.
+void RealRoundaboutExit(const std::string &dir) {
+    ControlParams p;
+    for(const char *name:{"vx_thoat_7374_15489.png","vx_thoat_7374_15537.png"}) {
+        const cv::Mat mask=cv::imread(dir+"/"+name,cv::IMREAD_GRAYSCALE);
+        Check(!mask.empty(),std::string("Không đọc được ")+name);
+        for(auto mode:{TrajMode::LANE,TrajMode::ROUNDABOUT}) {
+            const auto c=ExtractCorridor(mask,p,mode);
+            const auto &near=c.rows.front();
+            Check(near.valid && near.flag_left=="THAT" && near.flag_right=="MEP_ANH",
+                  std::string("Mặt nạ thật phải có biên trái thật, phải mép ảnh: ")+name);
+            Check(near.lanes==2,std::string("Mặt nạ thật lối ra hai làn phải nhận 2 làn: ")+name);
+            Check(near.target>0.5*mask.cols,std::string("Mục tiêu hàng gần phải ở nửa phải ảnh: ")+name);
+        }
+    }
+}
 void Jump() {
     ControlParams p;
     auto mask=Road(p,160,1.0);
@@ -348,7 +392,7 @@ void Empty() {
 }
 int main(int argc, char **argv) {
     try {
-        Check(argc==2,"Cần một tên ca");
+        Check(argc==2 || argc==3,"Cần một tên ca (và thư mục dữ liệu)");
         const std::string name=argv[1];
         if(name=="one_lane") OneLane();
         else if(name=="two_lanes") TwoLanes();
@@ -361,6 +405,8 @@ int main(int argc, char **argv) {
         else if(name=="roundabout_jump") RoundaboutJump();
         else if(name=="bottom_unchanged") BottomUnchanged();
         else if(name=="empty") Empty();
+        else if(name=="two_lane_right_cut") TwoLaneRightCut();
+        else if(name=="real_roundabout_exit") RealRoundaboutExit(argc==3 ? argv[2] : "fixtures");
         else throw std::runtime_error("Ca lạ: "+name);
         std::cout << "PASS " << name << '\n';
         return 0;

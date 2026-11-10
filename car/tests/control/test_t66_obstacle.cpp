@@ -78,7 +78,7 @@ void Params(const char *yaml, const char *temporary) {
     struct Cleanup { const char *p; ~Cleanup() { std::remove(p); } } cleanup{temporary};
     std::ostringstream report;
     const auto defaults=ControlParams::Load(yaml,report);
-    Check(defaults.obstacle_action==2 && defaults.obstacle_hole_ratio==0.25 && defaults.obstacle_pass_cm==40,"Mặc định YAML");
+    Check(defaults.obstacle_action==2 && defaults.obstacle_hole_ratio==0.25 && defaults.obstacle_pass_cm==85,"Mặc định YAML");
     Check(report.str().find("obstacle_action =")==std::string::npos &&
           report.str().find("obstacle_hole_ratio =")==std::string::npos &&
           report.str().find("obstacle_pass_cm =")==std::string::npos,"YAML thiếu khóa mới");
@@ -300,6 +300,30 @@ void Unit() {
           const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(600,100,40,40),0.9f,ms}},ms,++r.frame};
           Check(r.step().reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Vật xa nhỏ giữ pha trái mãi");
       }
+    }
+    { // Lỗi 1 (log lan3 10/11, b9bedce): trong NE_QUA vật thứ hai nằm ngay trước trên làn trái (tâm 0,46–0,48, đáy hộp
+      // 0,57→0,63) và xe chỉ về phải sau đủ quãng pass -> va vật thứ hai. Vật trước mặt đủ gần thì kết thúc PASS sớm,
+      // nhưng không sớm hơn 0,6·obstacle_pass_cm (giữ khoảng hở đuôi xe với vật đang né).
+      auto steps_in_pass=[](int kind) {  // 0: không hộp; 1: hộp giữa gần; 2: hộp giữa xa; 3: hộp làn phải gần
+          Rig r; r.p.obstacle_pass_cm=85; r.pass(); r.auto_box=false; int n=0;
+          for(;n<2000;++n) {
+              const auto ms=r.now+50; r.in.detections={{},ms,++r.frame};
+              const float x=kind==3 ? 1000.f : 576.f, y2=kind==2 ? 360.f : 500.f;
+              if(kind) r.in.detections.items.push_back({"obstacle",cv::Rect2f(x,y2-150,128,150),0.9f,ms});
+              if(r.step().reason!="NE_QUA") break;
+          }
+          return n;
+      };
+      const int none=steps_in_pass(0), close=steps_in_pass(1), far=steps_in_pass(2), right=steps_in_pass(3);
+      Check(close<none-5,"Vật trước mặt gần trong NE_QUA phải kết thúc PASS sớm");
+      Check(close>=int(0.6*none)-2,"Kết thúc PASS sớm không được dưới 0,6·obstacle_pass_cm");
+      Check(far==none && right==none,"Vật xa hoặc ở làn phải không đổi quãng PASS");
+      // Vật trước mặt rất gần ngay đầu PASS (chưa đủ 0,6·pass): dừng KHONG_DUONG_NE, không lao vào vật.
+      Rig r; r.p.obstacle_pass_cm=85; r.pass(); r.auto_box=false;
+      const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(576,450,128,200),0.9f,ms}},ms,++r.frame};
+      const auto plan=r.step();
+      Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" && plan.cmd.cms==0,
+            "Vật rất gần trước mặt khi chưa đủ quãng PASS phải dừng");
     }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); r.auto_box=false;
       bool returned=false;
