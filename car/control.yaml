@@ -50,7 +50,7 @@ red_stop_x_frac: 0.90 # Mép phải hộp đỏ để dừng, W
 imu_fallback: 0 # TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt
 turn_enable: 1 # Rẽ theo biển bằng IMU và encoder; mặc định bật
 turn_yaw_deg: 80 # TẠM, CHƯA ĐO: góc quay đích, độ (30–120)
-turn_steer_deg: 25 # TẠM, CHƯA ĐO: góc lái cố định, độ (5 đến steer_max_deg)
+turn_steer_deg: 36 # TẠM, CHƯA ĐO: góc lái cố định, độ (5 đến steer_max_deg)
 turn_arm_cm: 80 # TẠM, CHƯA ĐO: quãng chờ ngã rẽ tối đa, cm (10–300)
 turn_start_cm: 45 # TẠM, CHƯA ĐO: quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ, cm (0–150)
 rb_lost_cm: 30 # TẠM, CHƯA ĐO: mất phiếu round_barrier liên tục bao nhiêu cm thì xong một lần qua vòng xuyến (10–100)

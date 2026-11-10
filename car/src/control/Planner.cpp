@@ -103,7 +103,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
     }
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
-    bool cancelled=false, sensor_cancelled=false;
+    bool cancelled=false, sensor_cancelled=false, barrier_visible=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
         if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
@@ -179,6 +179,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(roundabout) { round=true; round_big=round_big || b.width>=kRoundMinW; }  // đảo xa (hộp nhỏ) chưa mở lần qua
             else if(person) people=people || (double(b.y)+b.height)/720.0>=kPersonStopBottom;
             else if(barrier) {
+                barrier_visible=true; // Mọi hộp rào hợp lệ còn thấy đều chặn tiếp quản hành lang cũ.
                 // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
                 // Work 2 (hộp lệch phải) vào đường 2 làn: dải tâm tới 0,82; work 1 (hộp giữa) kích hoạt sớm hơn 0,05 theo đáy hộp.
@@ -470,6 +471,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         while(junction_votes_.size()>size_t(params.vote_window)) junction_votes_.pop_front();
     }
+    // Rào phải có lô YOLO tươi xác nhận vắng rào; hai nguồn còn lại giữ luật đường ra.
+    const bool source_clear=barrier_turn_ ? fresh && !barrier_visible :
+        rb_turn_ ? !rb_in_pass_ : turn_direction_!=0;
+    if(!source_clear) exit_run_=0; // Lô rào mới cũng vô hiệu phiếu dù mặt nạ chưa đổi.
     // Hành lang đường ra khi đang rẽ IMU: đủ hàng 2 cạnh thật và tâm hành lang gần trục xe, liên tiếp vote_min mặt nạ.
     if(turning_ && !corridor_turn_ && mask_fresh && input.mask_ms!=last_exit_mask_ms_) {
         last_exit_mask_ms_=input.mask_ms;
@@ -478,7 +483,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         for(const auto &row:corridor.rows) if(row.valid && row.conf>=params.conf_min && row.flag_left=="THAT" && row.flag_right=="THAT") {
             ++real_rows; offset+=((row.left+row.right)/2-input.mask.cols/2.0)/input.mask.cols;
         }
-        const bool exit_ok=real_rows>=kExitRealRows && std::abs(offset/std::max(1,real_rows))<=kExitOffsetFrac;
+        const bool exit_ok=source_clear && real_rows>=kExitRealRows && std::abs(offset/std::max(1,real_rows))<=kExitOffsetFrac;
         exit_run_=exit_ok ? exit_run_+1 : 0;
     }
     const bool junction_seen=!rb_in_pass_ && std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
@@ -494,10 +499,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(barrier_turn_) barrier_done_=false;  // rẽ rào bị hủy vì mặt nạ cũ: rào còn gần thì xét lại (rẽ hoặc dừng Q7)
             ClearTurn(); state_=PlannerState::BAM_LAN;
         } else if(turning_ && !corridor_turn_ && !sensor_bad && std::isfinite(input.yaw_deg) &&
-                  std::abs(input.yaw_deg-yaw0_)>=kHandoverYawDeg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0) &&
+                  std::abs(WrapDeg(input.yaw_deg-yaw0_))>=kHandoverYawDeg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0) &&
                   exit_run_>=params.vote_min) {  // giao bám làn: đã quay đủ để thấy đường ra và mặt nạ xác nhận
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
-        } else if(turning_ && !corridor_turn_ && !sensor_bad && std::abs(input.yaw_deg-yaw0_)>=params.turn_yaw_deg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0)) {  // mẫu hỏng (kể cả ±inf) không được coi là đã quay đủ
+        } else if(turning_ && !corridor_turn_ && !sensor_bad && std::abs(WrapDeg(input.yaw_deg-yaw0_))>=params.turn_yaw_deg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0)) {  // mẫu hỏng (kể cả ±inf) không được coi là đã quay đủ
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(!turning_) {
             if(!rb_turn_ && (!sensor_bad || fallback) && std::abs(input.odo_cm-arm_odo_)>params.turn_arm_cm) { ClearTurn(); cancelled=true; }

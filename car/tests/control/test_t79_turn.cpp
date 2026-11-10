@@ -39,7 +39,7 @@ struct Rig {
         in.detections={{},now,++frame};
         if(!sign.empty()) {
             const float width=sign=="round_barrier" ? 300.f : (sign=="work_barrier" ? 130.f : 80.f);
-            in.detections.items.push_back({sign,cv::Rect2f(640-width/2,100,width,80),0.9f,now});
+            in.detections.items.push_back({sign,cv::Rect2f(640-width/2,sign=="work_barrier"?400:100,width,80),0.9f,now});
         }
         return planner.Step(in,now,p);
     }
@@ -56,6 +56,50 @@ void Turn(const control::Plan &plan, const std::string &reason, bool right=false
     Check(plan.debug.reason==reason && plan.reason==reason,"Sai lý do khung đầu: "+plan.reason);
 }
 void Run(const std::string &name) {
+    // Qua biên ±180° chỉ quay 2°; kiểm tiếp quản và đích yaw hai chiều.
+    if(name=="wrap_yaw") {
+        for(bool right:{false,true}) for(bool corridor:{false,true}) {
+            Rig r; r.in.yaw_deg=right?-179:179; r.arm(right); r.mask(1,right);
+            control::Plan plan;
+            for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm);
+            Turn(plan,"RE_GIAO_LO",right);
+            if(corridor) r.mask(0);
+            else { r.in.mask.setTo(0); r.in.mask.colRange(0,141).setTo(1); }
+            r.in.yaw_deg=right?179:-179;
+            for(int i=0;i<r.p.vote_min+1;++i) {
+                plan=r.step(r.in.odo_cm+1);
+                Check(plan.state==(right?control::PlannerState::RE_PHAI:control::PlannerState::RE_TRAI),"Nhảy biên không được kết thúc sớm");
+            }
+            r.in.yaw_deg=right?139:-139;
+            for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1);
+            Check((plan.state==control::PlannerState::BAM_LAN)==(right && corridor),"Ngưỡng tiếp quản 41,4/45 độ: "+std::to_string(right)+"/"+std::to_string(corridor)+" "+plan.reason);
+            if(right && corridor) continue;
+            r.in.yaw_deg=right?101:-101;
+            plan=r.step(r.in.odo_cm+1);
+            Check(plan.state==control::PlannerState::BAM_LAN,"Quay đủ qua biên phải kết thúc");
+        }
+        return;
+    }
+    if(name=="barrier_handover") {
+        Rig r; control::Plan plan;
+        for(int i=0;i<r.p.vote_min;++i) r.step(0,"work_barrier");
+        r.mask(1);
+        for(int i=0;i<r.p.vote_min;++i) plan=r.step(0,"work_barrier");
+        Turn(plan,"RE_GIAO_LO");
+        r.mask(0); r.in.yaw_deg=50;
+        for(int i=0;i<r.p.vote_min+1;++i) {
+            plan=r.step(r.in.odo_cm+1,"work_barrier");
+            Check(plan.state==control::PlannerState::RE_TRAI,"Rào còn trong khung không giao hành lang cũ");
+        }
+        r.in.yaw_deg=30;
+        for(int i=0;i<r.p.vote_min;++i) r.step(r.in.odo_cm+1);
+        r.in.yaw_deg=50;
+        plan=r.step(r.in.odo_cm+1,"work_barrier",false);
+        Check(plan.state==control::PlannerState::RE_TRAI,"Rào xuất hiện lại trên mặt nạ lặp phải xóa phiếu tiếp quản");
+        for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1);
+        Check(plan.state==control::PlannerState::BAM_LAN,"Rào mất, đủ yaw/hành lang thì tiếp quản");
+        return;
+    }
     // Kiểm tốc độ rẽ và tiếp quản theo yêu cầu qua Step công khai.
     if(name.find("handover_")==0 || name=="imu_speed" || name=="imu_timeout") {
         const bool right=name=="handover_right";

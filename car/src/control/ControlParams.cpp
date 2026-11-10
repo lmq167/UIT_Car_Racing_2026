@@ -32,7 +32,7 @@ const Parameter table[] = {
     {"imu_fallback",0,&ControlParams::imu_fallback,0,1,"1","TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt"},
     {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
-    {"turn_steer_deg",25.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
+    {"turn_steer_deg",36.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
     {"turn_arm_cm",80.0,&ControlParams::turn_arm_cm,10,300,"cm","Quãng chờ ngã rẽ tối đa"},
     {"turn_start_cm",45.0,&ControlParams::turn_start_cm,0,150,"cm","Quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ"},
     {"rb_lost_cm",30.0,&ControlParams::rb_lost_cm,10,100,"cm","Quãng mất phiếu round_barrier liên tục để kết thúc một lần qua vòng xuyến"},
