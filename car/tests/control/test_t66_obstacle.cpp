@@ -303,7 +303,7 @@ void Unit() {
     }
     { // Lỗi 1 (log lan3 10/11, b9bedce): trong NE_QUA vật thứ hai nằm ngay trước trên làn trái (tâm 0,46–0,48, đáy hộp
       // 0,57→0,63) và xe chỉ về phải sau đủ quãng pass -> va vật thứ hai. Vật trước mặt đủ gần thì kết thúc PASS sớm,
-      // nhưng không sớm hơn 0,6·obstacle_pass_cm (giữ khoảng hở đuôi xe với vật đang né).
+      // nhưng không sớm hơn 0,85·obstacle_pass_cm (giữ khoảng hở đuôi xe với vật đang né).
       auto steps_in_pass=[](int kind) {  // 0: không hộp; 1: hộp giữa gần; 2: hộp giữa xa; 3: hộp làn phải gần
           Rig r; r.p.obstacle_pass_cm=85; r.pass(); r.auto_box=false; int n=0;
           for(;n<2000;++n) {
@@ -315,8 +315,8 @@ void Unit() {
           return n;
       };
       const int none=steps_in_pass(0), close=steps_in_pass(1), far=steps_in_pass(2), right=steps_in_pass(3);
-      Check(close<none-5,"Vật trước mặt gần trong NE_QUA phải kết thúc PASS sớm");
-      Check(close>=int(0.6*none)-2,"Kết thúc PASS sớm không được dưới 0,6·obstacle_pass_cm");
+      Check(close<none-3,"Vật trước mặt gần trong NE_QUA phải kết thúc PASS sớm");
+      Check(close>=int(0.85*none)-2,"Kết thúc PASS sớm không được dưới 0,85·obstacle_pass_cm");
       Check(far==none && right==none,"Vật xa hoặc ở làn phải không đổi quãng PASS");
       // Vật trước mặt rất gần ngay đầu PASS (chưa đủ 0,6·pass): dừng KHONG_DUONG_NE, không lao vào vật.
       Rig r; r.p.obstacle_pass_cm=85; r.pass(); r.auto_box=false;

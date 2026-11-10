@@ -114,7 +114,10 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
             // Lỗi 3 (sa bàn 10/11): biên phải chạm mép ảnh nên bề rộng thật >= bề rộng thô. Thô đã đủ
             // hai làn thì dựng đường hai làn (2·w) từ biên trái thật: mục tiêu ở làn PHẢI, không ở làn trái.
             // Biên phải thật (biên trái mép ảnh) không cần: tâm làn phải = phải − w/2 cho cả 1 và 2 làn.
-            if(right_edge_cut && raw.r-raw.l>=params.two_lane_ratio*w) row.right=row.left+std::max(reference,2*w);
+            // Chỉ khi hàng gần nhất đã rộng hai làn hoặc hàng ngay dưới đã là 2 làn: đường một làn có lối mở
+            // bên phải (ngã T, miệng nhánh) có hàng gần một làn nên không bị kéo sang phải (safety-reviewer 11/11).
+            if(right_edge_cut && raw.r-raw.l>=params.two_lane_ratio*w && (!below || below->lanes==2))
+                row.right=row.left+std::max(reference,2*w);
         }
         else if(!left_ok && !right_ok) {
             const double center=below ? (below->left+below->right)/2 : (raw.l+raw.r)/2.0;

@@ -49,8 +49,9 @@ constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn đ�
 int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 // Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
-// tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,6·obstacle_pass_cm.
-constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.6;
+// tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
+// (0,85·85 ≈ 72 cm ≈ vùng mù 25 + dài vật 50: đuôi xe đã qua vật đang né).
+constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.85;
 // Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
 constexpr double kPassStopY2=0.85;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
@@ -453,7 +454,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 present=true;
                 widest=std::max(widest,double(b.width)/1280.0);
                 const double cx=(double(b.x)+b.width/2)/1280.0;
-                const bool ahead=cx>=kPassAheadMinCx && cx<=kPassAheadMaxCx;
+                const bool ahead=cx>=kPassAheadMinCx && cx<=kPassAheadMaxCx && b.width/1280.0>=params.obstacle_near_w_frac;
                 ahead_close=ahead_close || (ahead && (double(b.y)+b.height)/720.0>=kPassAheadY2);
                 ahead_stop=ahead_stop || (ahead && (double(b.y)+b.height)/720.0>=kPassStopY2);
                 obstacle=obstacle || (b.width/1280.0>=params.obstacle_near_w_frac &&

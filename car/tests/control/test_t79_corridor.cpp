@@ -233,6 +233,25 @@ void TwoLaneRightCut() {
         Near(r.target,r.left+Lane1(p,r.y)/2,1e-6,"Một làn bị cắt: tâm làn từ biên trái");
     }
     Check(one_cut>=1,"Thiếu hàng một làn bị cắt để kiểm");
+    // Ca âm (safety-reviewer 11/11): đường MỘT làn giữa ảnh, các hàng xa mở sang phải tới mép ảnh (ngã T/miệng nhánh).
+    // Hàng gần là một làn thật nên hàng xa không được dựng thành hai làn; mục tiêu giữ ở tâm làn tính từ biên trái.
+    cv::Mat open=Road(p,160,1.0);
+    const int y_open=std::lround(0.80*kH);
+    for(int y=0;y<y_open;++y) {
+        const int a=std::max(0,int(std::lround(160-Lane1(p,y)/2)));
+        for(int x=a;x<kW;++x) open.at<unsigned char>(y,x)=1;
+    }
+    const auto branch=ExtractCorridor(open,p,TrajMode::LANE);
+    int opened=0;
+    for(const auto &r:branch.rows) {
+        if(!r.valid) continue;
+        if(r.y>=y_open) { Check(r.lanes==1,"Hàng gần đường một làn phải là 1 làn"); continue; }
+        if(r.flag_left!="THAT" || r.flag_right!="MEP_ANH") continue;
+        ++opened;
+        Check(r.lanes==1,"Đường một làn mở phải: hàng xa không được thành 2 làn");
+        Check(r.target<=r.left+0.75*Lane1(p,r.y),"Đường một làn mở phải: mục tiêu không bị kéo sang phải");
+    }
+    Check(opened>=2,"Thiếu hàng mở phải để kiểm ca âm");
 }
 // Mặt nạ thật lượt 18:01 10/11 (VX_THOAT 287,3 s và 288,2 s, lối ra vòng xuyến bên phải):
 // mã cũ dựng một làn từ biên trái -> mục tiêu 0,41–0,43 W (lệch trái), xe lái trái 13–14°.
