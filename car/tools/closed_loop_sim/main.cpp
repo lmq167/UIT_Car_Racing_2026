@@ -94,7 +94,7 @@ cv::Mat Render(const Track& t,const Camera& cam,double rx,double ry,double yaw,i
 }
 struct Result {
     std::string name; double rms_off=0, max_off=0, rms_steer=0, sat_frac=0, flips_per_10s=0, out_frac=0, mean_speed=0;
-    double duration=0; bool finished=false, left_road=false;
+    double lane_out_frac=0; double duration=0; bool finished=false, left_road=false;
 };
 struct Config { double hfov=62, act_delay_ms=350, mask_delay_ms=160, init_off=0, init_yaw=0, leff=31, cam_forward=12; std::string csv; double dump_t=-1; std::string dump_path; };
 
@@ -127,7 +127,7 @@ Result Run(const std::string& name,const Track& track,const control::ControlPara
     std::ofstream csv; if (!cfg.csv.empty()) { csv.open(cfg.csv); csv<<"t,x,y,yaw_deg,off_cm,steer_cmd,steer_applied,speed,e,mode\n"; }
     Result r; r.name=name;
     int64_t now=1000; double t=0, nextControl=0; int signFlips=0; double lastSign=0;
-    int outFrames=0, satFrames=0, frames=0;
+    int outFrames=0, satFrames=0, frames=0, laneOutFrames=0;
     const double maxT=120;
     while (t<maxT) {
         history.push_back({x,y,yaw}); if (history.size()>size_t(maskDelay+2)) history.pop_front();
@@ -160,6 +160,7 @@ Result Run(const std::string& name,const Track& track,const control::ControlPara
                     if (std::abs(o)>track.half_width) out=true;
                 }
                 if (out) ++outFrames;
+                if (std::abs(off)>track.half_width*0.5+(track.lane_offset!=0 ? 0 : 0)) ++laneOutFrames;
                 ++frames;
                 if (std::abs(steerApplied)>=params.steer_max_deg-0.5) ++satFrames;
                 const double sign=steerApplied>2 ? 1 : steerApplied<-2 ? -1 : 0;
@@ -184,7 +185,7 @@ Result Run(const std::string& name,const Track& track,const control::ControlPara
     auto rms=[](const std::vector<double>& v) { double s=0; for (double a : v) s+=a*a; return v.empty() ? 0.0 : std::sqrt(s/v.size()); };
     r.rms_off=rms(offs); for (double a : offs) r.max_off=std::max(r.max_off,std::abs(a));
     r.rms_steer=rms(steers);
-    r.sat_frac=frames ? double(satFrames)/frames : 0; r.out_frac=frames ? double(outFrames)/frames : 0;
+    r.sat_frac=frames ? double(satFrames)/frames : 0; r.out_frac=frames ? double(outFrames)/frames : 0; r.lane_out_frac=frames ? double(laneOutFrames)/frames : 0;
     r.flips_per_10s=frames ? signFlips/(frames*period/10.0) : 0;
     double sp=0; for (double s : speeds) sp+=s; r.mean_speed=speeds.empty() ? 0 : sp/speeds.size();
     return r;
@@ -220,13 +221,13 @@ int main(int argc,char** argv) {
     }
     add("chuoi_S_R70_2lan",{{100,0},{90,70},{-90,70},{90,70},{-90,70},{100,0}},hw2,lo2);
     add("chuoi_S_R70_1lan",{{100,0},{90,70},{-90,70},{90,70},{-90,70},{100,0}},hw1,lo1);
-    std::printf("%-26s %6s %7s %7s %7s %6s %7s %7s %7s %s\n","kich_ban","s","rmsOff","maxOff","rmsLai","chamTran","lat/10s","ngoai%","v_tb","ket_thuc");
+    std::printf("%-26s %6s %7s %7s %7s %6s %7s %7s %7s %7s %s\n","kich_ban","s","rmsOff","maxOff","rmsLai","chamTran","lat/10s","ngoai%","ngLan%","v_tb","ket_thuc");
     for (const auto& s : scenarios) {
         if (o.count("--only") && s.name.find(o["--only"])==std::string::npos) continue;
         Config c=cfg; c.init_off=s.off; c.init_yaw=s.yaw;
         const auto r=Run(s.name,s.track,params,c);
-        std::printf("%-26s %6.1f %7.2f %7.2f %7.2f %6.1f%% %7.1f %6.1f%% %7.1f %s\n",r.name.c_str(),r.duration,r.rms_off,r.max_off,r.rms_steer,
-                    100*r.sat_frac,r.flips_per_10s,100*r.out_frac,r.mean_speed,r.finished ? "xong" : r.left_road ? "ROI_DUONG" : "het_gio");
+        std::printf("%-26s %6.1f %7.2f %7.2f %7.2f %6.1f%% %7.1f %6.1f%% %6.1f%% %7.1f %s\n",r.name.c_str(),r.duration,r.rms_off,r.max_off,r.rms_steer,
+                    100*r.sat_frac,r.flips_per_10s,100*r.out_frac,100*r.lane_out_frac,r.mean_speed,r.finished ? "xong" : r.left_road ? "ROI_DUONG" : "het_gio");
     }
     return 0;
 }
