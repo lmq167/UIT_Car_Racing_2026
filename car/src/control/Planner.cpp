@@ -637,7 +637,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(turn_direction_ && !turning_ && state_==PlannerState::BAM_LAN && !sensor_bad &&
        std::isfinite(input.odo_cm) && std::isfinite(input.yaw_deg)) {
         if(!pre_turn_.empty() && input.odo_cm<pre_turn_.back().first) pre_turn_.clear();
-        pre_turn_.emplace_back(input.odo_cm,input.yaw_deg);
+        if(pre_turn_.empty() || input.odo_cm-pre_turn_.back().first>=0.5) pre_turn_.emplace_back(input.odo_cm,input.yaw_deg);  // đứng yên không thêm mẫu
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
@@ -667,7 +667,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
                 const double pre=pre_turn_.empty() || !std::isfinite(input.yaw_deg) ? 0 :
                     std::max(0.0,turn_direction_*WrapDeg(input.yaw_deg-pre_turn_.front().second));
-                turn_steer_scale_=std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg));
+                // Chỉ rẽ phải theo biển/giao lộ có bằng chứng (6 lượt); rẽ trái, rào, vòng xuyến giữ góc cũ (review 11/11 MEDIUM-1).
+                turn_steer_scale_=turn_direction_<0 && !barrier_turn_ && !rb_turn_ ?
+                    std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }

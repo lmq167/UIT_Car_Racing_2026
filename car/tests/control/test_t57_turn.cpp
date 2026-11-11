@@ -520,6 +520,9 @@ void Case(const std::string& name) {
         // Quay ngược chiều rẽ: không tăng góc.
         auto d=run(true,{{0,0},{30,-5},{60,-10}});
         Check(std::abs(d.first-full(d.second,true))<1e-6,"Quay ngược chiều không đổi góc rẽ");
+        // Rẽ trái đã quay sẵn về trái: chỉ rẽ phải được giảm góc.
+        auto f=run(true,{{0,0},{30,10},{60,20}});
+        Check(std::abs(f.first-full(f.second,true))<1e-6,"Rẽ trái không được giảm góc");
         // Phần quay xảy ra trước cửa sổ 60 cm không tính: quay -30° ở 0-10 cm rồi thẳng 100 cm.
         auto e=run(false,{{0,0},{10,-30},{40,-30},{80,-30},{110,-30}});
         Check(std::abs(e.first-full(e.second,false))<1e-6,"Quay trước 60 cm cuối không được tính");
