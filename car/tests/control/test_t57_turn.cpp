@@ -604,7 +604,7 @@ void Case(const std::string& name) {
         auto tick=[&](Rig& r, int ms=40) { r.now+=ms; r.in.detections={{},r.now,++r.frame}; set_tof(r); return r.step(); };
         // Chạy tới lúc dừng quét (DO_XE_QUET), xe tiến 1 cm mỗi nhịp.
         auto to_scan=[&](Rig& r, int side) {
-            r.p.park_enable=1; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0; tf=tr=600;
+            r.p.park_enable=1; r.p.park_tof_map=1234; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0; tf=tr=600;
             for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
             control::Plan plan;
             for (int i=0;i<200 && plan.reason!="DO_XE_QUET";++i) { r.in.odo_cm+=1; plan=tick(r); }
@@ -612,7 +612,7 @@ void Case(const std::string& name) {
         };
         // Đưa tới đầu pha lùi 1; trả về Rig đang ở DO_XE_LUI_1.
         auto to_reverse=[&](Rig& r, int side) {
-            r.p.park_enable=1; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0; tf=tr=600;
+            r.p.park_enable=1; r.p.park_tof_map=1234; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0; tf=tr=600;
             for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
             control::Plan plan;
             for (int i=0;i<200 && plan.reason!="DO_XE_QUET";++i) { r.in.odo_cm+=1; plan=tick(r); Check(plan.cmd.cms>=0,"Chưa quét xong thì không được lùi"); }
@@ -635,13 +635,19 @@ void Case(const std::string& name) {
             Rig r; auto plan=to_reverse(r,-1);
             for (int i=0;i<10;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
             Check(plan.cmd.cms<0 && plan.cmd.cms>=-r.p.park_rev_cms && plan.cmd.deg<0 &&
-                  plan.cmd.deg>=-std::min(r.p.park_steer_deg,r.p.steer_max_deg),"Lùi cung 1 ô phải: tốc độ âm, lái phải");
+                  plan.cmd.deg>=-std::min(r.p.park_steer_deg,45.0)-1e-9,"Lùi cung 1 ô phải: tốc độ âm, lái phải, <= 45°");
             r.in.yaw_deg=r.p.park_arc_deg; r.in.odo_cm-=0.3; plan=tick(r);
             Check(plan.reason=="DO_XE_LUI_2","Quay đủ park_arc_deg phải sang cung 2");
             for (int i=0;i<20;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
             Check(plan.cmd.cms<0 && plan.cmd.deg>0,"Lùi cung 2 ô phải: lái trái");
             r.in.yaw_deg=2; r.in.odo_cm-=0.3; plan=tick(r);
-            Check(plan.state==control::PlannerState::DO_XE_XONG && plan.cmd.cms==0,"Về hướng đầu phải đứng yên");
+            Check(plan.reason=="DO_XE_TIEN_GIUA","Về hướng đầu phải sang tiến căn giữa");
+            for (int i=0;i<10;++i) { r.in.odo_cm+=0.2; plan=tick(r); }
+            Check(plan.cmd.cms>0 && plan.cmd.cms<=6+1e-9,"Tiến căn giữa: tiến <= 6 cm/s");
+            for (int i=0;i<200 && plan.reason=="DO_XE_TIEN_GIUA";++i) { r.in.odo_cm+=0.24; plan=tick(r); }
+            Check(plan.reason=="DO_XE_KIEM" && plan.cmd.cms==0,"Đủ quãng căn giữa phải dừng kiểm hướng");
+            for (int i=0;i<20 && plan.reason=="DO_XE_KIEM";++i) plan=tick(r,50);
+            Check(plan.state==control::PlannerState::DO_XE_XONG && plan.cmd.cms==0,"Lệch <= 3° phải đỗ xong, đứng yên");
             for (int i=0;i<20;++i) Check(tick(r).cmd.cms==0,"Đã đỗ phải đứng yên");
         }
         { // Ô bên trái: lái trái ở cung 1, quay theo chiều yaw giảm.
@@ -654,17 +660,18 @@ void Case(const std::string& name) {
         { // ToF không hợp lệ: dừng an toàn, KHÔNG BAO GIỜ lùi.
             Rig r; control::Plan plan=to_scan(r,-1); tf=tr=-1;
             for (int i=0;i<2000 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm+=1; plan=tick(r,50); Check(plan.cmd.cms>=0,"ToF lỗi không được lùi"); }
-            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_TOF_KHONG_RO","ToF lỗi phải dừng DO_XE_TOF_KHONG_RO");
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"ToF lỗi: chuyển ô cố định; không thấy cuối đường 20 s thì dừng");
         }
         { // Mẫu ToF không bao giờ cập nhật (cũ): dừng, không lùi.
             Rig r; control::Plan plan=to_scan(r,-1);
-            for (int i=0;i<200 && plan.state!=control::PlannerState::DUNG;++i) { r.now+=50; r.in.detections={{},r.now,++r.frame}; plan=r.step(); Check(plan.cmd.cms>=0,"ToF cũ không được lùi"); }
-            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_TOF_KHONG_RO","ToF cũ phải dừng");
+            for (int i=0;i<800 && plan.state!=control::PlannerState::DUNG;++i) { r.now+=50; r.in.detections={{},r.now,++r.frame}; plan=r.step(); Check(plan.cmd.cms>=0,"ToF cũ không được lùi"); }
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"ToF cũ: chuyển ô cố định rồi hết hạn");
         }
         { // Mọi ô có vật tới hết 400 cm: dừng DO_XE_KHONG_CO_O, không lùi.
             Rig r; control::Plan plan=to_scan(r,-1); tf=tr=150;
             for (int i=0;i<4000 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm+=0.5; plan=tick(r,50); Check(plan.cmd.cms>=0,"Không có ô trống không được lùi"); }
-            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_CO_O","Không thấy ô trống phải dừng DO_XE_KHONG_CO_O");
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"Không thấy ô trống: chuyển ô cố định");
+            Check(r.planner.ParkNote().find("KHONG_CO_O")!=std::string::npos,"Ghi chú phải nêu KHONG_CO_O");
         }
         { // Hai ToF bất đồng (trước trống, sau có vật) coi là KHÔNG RÕ, không được coi là ô trống.
             Rig r; control::Plan plan=to_scan(r,-1); tf=600; tr=150;
@@ -674,7 +681,7 @@ void Case(const std::string& name) {
         { // Ô trống nhưng không bao giờ thấy mép xa: dừng DO_XE_KHONG_THAY_MEP.
             Rig r; control::Plan plan=to_scan(r,-1); tf=tr=600;
             for (int i=0;i<4000 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm+=0.5; plan=tick(r,50); Check(plan.cmd.cms>=0,"Không thấy mép không được lùi"); }
-            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_MEP","Không thấy mép xa phải dừng");
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"Không thấy mép xa: chuyển ô cố định");
         }
         { // Ô bên trái dùng khe [1] trước, [0] sau.
             Rig r; control::Plan plan=to_scan(r,1);
@@ -734,6 +741,79 @@ void Case(const std::string& name) {
                 r.in.odo_cm+=1; const auto plan=tick(r);
                 Check(plan.state!=control::PlannerState::DO_XE && plan.cmd.cms>=0,"Có ý định rẽ thì không được dừng để lùi");
             }
+        }
+        // Ô cố định (park_tof_map 0 = ToF chưa đo): bám làn <= 10 cm/s tới cuối đường (hàng 90% mặt nạ trống),
+        // lùi thẳng park_entry_cm -> cung 1 -> cung 2 -> tiến căn giữa -> kiểm hướng (FSM ucr, Quân 11/11 18:54).
+        auto end_mask=[](Rig& r) { r.mask(60,140); r.in.mask.rowRange(0,55).setTo(0); };
+        auto to_fixed=[&](Rig& r, int side) {
+            r.p.park_enable=1; r.p.park_tof_map=0; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            control::Plan plan;
+            for (int i=0;i<30;++i) { r.in.odo_cm+=0.4; plan=tick(r);
+                Check(plan.cmd.cms>=0 && plan.cmd.cms<=10+1e-9,"Ô cố định: tiến <= 10 cm/s, không lùi"); }
+            Check(r.planner.ParkNote().find("TOF_CHUA_HIEU_CHUAN")!=std::string::npos,"Chưa đo ToF phải log TOF_CHUA_HIEU_CHUAN");
+            end_mask(r); r.in.odo_cm+=0.4; plan=tick(r);
+            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_CHO" && plan.cmd.cms==0,"Cuối đường phải dừng chờ lùi");
+            for (int i=0;i<20 && plan.reason=="DO_XE_CHO";++i) plan=tick(r,50);
+            return plan;
+        };
+        { // Ô phải, đủ chuỗi pha; lái cung tới 45° khi park_steer_deg 45 dù steer_max_deg 40.
+            Rig r; r.p.steer_max_deg=40; r.p.park_steer_deg=45; r.p.park_entry_cm=10; auto plan=to_fixed(r,-1);
+            Check(plan.reason=="DO_XE_LUI_THANG","Ô cố định: lùi thẳng trước");
+            for (int i=0;i<200 && plan.reason=="DO_XE_LUI_THANG";++i) { r.in.odo_cm-=0.24;
+                plan=tick(r); if(plan.reason=="DO_XE_LUI_THANG") Check(plan.cmd.cms<0 && plan.cmd.cms>=-6-1e-9 && std::abs(plan.cmd.deg)<1e-9,std::string("Lùi thẳng: lùi <= 6 cm/s, lái 0; cms=")+std::to_string(plan.cmd.cms)+" deg="+std::to_string(plan.cmd.deg)); }
+            Check(plan.reason=="DO_XE_LUI_1","Lùi đủ park_entry_cm phải sang cung 1");
+            double peak=0;
+            for (int i=0;i<100;++i) { r.in.odo_cm-=0.24; plan=tick(r); peak=std::min(peak,plan.cmd.deg); }
+            Check(peak<=-45+1e-6 && peak>=-45-1e-9,"Cung 1 pha đỗ phải tới đúng 45° (không vượt)");
+            r.in.yaw_deg=r.p.park_arc_deg; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.reason=="DO_XE_LUI_2","Quay đủ phải sang cung 2");
+            r.in.yaw_deg=1; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.reason=="DO_XE_TIEN_GIUA","Về hướng đầu phải tiến căn giữa");
+            double fwd=0;
+            for (int i=0;i<400 && plan.reason=="DO_XE_TIEN_GIUA";++i) { r.in.odo_cm+=0.24; fwd+=0.24; plan=tick(r); }
+            Check(plan.reason=="DO_XE_KIEM" && fwd>=31 && fwd<=32.5,"Lối vào 10 cm: căn giữa ~31,4 cm như ucr; fwd="+std::to_string(fwd));
+            for (int i=0;i<20 && plan.reason=="DO_XE_KIEM";++i) plan=tick(r,50);
+            Check(plan.state==control::PlannerState::DO_XE_XONG,"Kiểm hướng đạt phải đỗ xong");
+        }
+        { // Sau đỗ, chặng khác vẫn kẹp steer_max_deg (Space -> G -> bám làn).
+            Rig r; r.p.steer_max_deg=40; r.p.park_steer_deg=45; auto plan=to_fixed(r,-1);
+            r.in.stop=true; tick(r); r.in.stop=false; r.mask(20,180); r.in.go=true; tick(r); r.in.go=false;
+            for (int i=0;i<200;++i) { r.in.odo_cm+=0.5; plan=tick(r); Check(std::abs(plan.cmd.deg)<=40+1e-9,"Ngoài pha đỗ lái <= steer_max_deg"); }
+        }
+        { // Cung 1 quay sai chiều > 10°: dừng DO_XE_SAI_CHIEU.
+            Rig r; r.p.park_entry_cm=0; auto plan=to_fixed(r,-1);
+            Check(plan.reason=="DO_XE_LUI_1","park_entry_cm 0: vào thẳng cung 1");
+            r.in.yaw_deg=-11; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_SAI_CHIEU" && plan.cmd.cms==0,"Quay sai chiều phải dừng");
+        }
+        { // Tiến căn giữa lệch hướng > 8°: dừng DO_XE_LECH_HUONG.
+            Rig r; r.p.park_entry_cm=0; auto plan=to_fixed(r,-1);
+            r.in.yaw_deg=r.p.park_arc_deg; r.in.odo_cm-=0.3; tick(r);
+            r.in.yaw_deg=2; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.reason=="DO_XE_TIEN_GIUA","phải tới tiến căn giữa");
+            r.in.yaw_deg=9; r.in.odo_cm+=0.3; plan=tick(r);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_LECH_HUONG" && plan.cmd.cms==0,"Lệch > 8° khi căn giữa phải dừng");
+        }
+        { // Kiểm cuối lệch > 3°: không báo đỗ xong.
+            Rig r; r.p.park_entry_cm=0; auto plan=to_fixed(r,-1);
+            r.in.yaw_deg=r.p.park_arc_deg; r.in.odo_cm-=0.3; tick(r);
+            r.in.yaw_deg=2; r.in.odo_cm-=0.3; plan=tick(r);
+            for (int i=0;i<400 && plan.reason=="DO_XE_TIEN_GIUA";++i) { r.in.odo_cm+=0.24; plan=tick(r); }
+            r.in.yaw_deg=5; for (int i=0;i<20 && plan.reason=="DO_XE_KIEM";++i) plan=tick(r,50);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_LECH_HUONG","Lệch 5° lúc kiểm không được báo xong");
+        }
+        { // Không thấy cuối đường trong 20 s: dừng, không lùi.
+            Rig r; r.p.park_enable=1; r.p.park_tof_map=0; r.p.park_side=-1; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            control::Plan plan;
+            for (int i=0;i<1000 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm+=0.4; plan=tick(r,50); Check(plan.cmd.cms>=0,"Chưa tới cuối đường không lùi"); }
+            Check(plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && plan.cmd.cms==0,"Hết 20 s phải dừng");
+        }
+        { // Space khi lùi thẳng: dừng, lái 0.
+            Rig r; r.p.park_entry_cm=10; to_fixed(r,-1); r.in.odo_cm-=0.3; tick(r);
+            r.in.stop=true; auto plan=tick(r); r.in.stop=false;
+            Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0,"Space khi lùi thẳng phải dừng");
         }
         { // park_enable 0 (đặt tường minh vì mặc định đã BẬT theo Quân 11/11): biển parking không làm gì.
             Rig r; r.p.park_enable=0; r.in.odo_cm=0;

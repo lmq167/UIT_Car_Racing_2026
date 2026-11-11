@@ -137,7 +137,7 @@ int main(int argc, char **argv) {
             {"control_period_ms: 19\n","control_period_ms"}, {"regain_frames: 3.5\n","regain_frames"},
             {"record_every_n: -1\n","record_every_n"}, {"record_every_n: 41\n","record_every_n"},
             {"record_every_n: 0.5\n","record_every_n"},
-            {"park_rev_cms: 5.1\n","park_rev_cms"}, {"park_rev_cms: 1.9\n","park_rev_cms"},
+            {"park_rev_cms: 6.1\n","park_rev_cms"}, {"park_tof_map: 1123\n","park_tof_map"}, {"park_tof_map: 1235\n","park_tof_map"}, {"park_tof_map: 123\n","park_tof_map"}, {"park_steer_deg: 46\n","park_steer_deg"},{"park_rev_cms: 1.9\n","park_rev_cms"},
             {"cruise_cms: \"8\"\n","cruise_cms"}, {"kp: []\n","kp"},
             {"kp:\n","kp"}, {"lane1_width_frac: []\n","lane1_width_frac"},
             {"lane1_width_frac: [0.1, 0.2]\n","lane1_width_frac"}, {"lane1_width_frac: [0.5]\n","lane1_width_frac"},

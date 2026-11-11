@@ -64,5 +64,7 @@ park_enable: 1 # TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển par
 park_side: -1 # TẠM: phía ô đỗ (-1 = phải, 1 = trái)
 park_forward_cm: 10 # Quân 11/11: đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ, cm (0–200)
 park_arc_deg: 45 # TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất, độ (10–80)
-park_rev_cms: 5 # TẠM, CHƯA ĐO: tốc độ lùi, cm/s (2–5; Quân 11/11: tối đa 5)
-park_steer_deg: 30 # TẠM, CHƯA ĐO: góc lái khi lùi, độ (5 đến steer_max_deg)
+park_rev_cms: 6 # TẠM, CHƯA ĐO: tốc độ lùi khi đỗ, cm/s (2–6; Quân 11/11 18:54: pha đỗ tới 6)
+park_steer_deg: 45 # TẠM, CHƯA ĐO: góc lái hai cung lùi khi đỗ, độ (5–45; riêng pha đỗ được 45)
+park_entry_cm: 10 # TẠM, CHƯA ĐO: lùi thẳng trước cung 1, cm (0–120; 10 = ô giữa hàng như ucr)
+park_tof_map: 0 # 0 = ánh xạ ToF CHƯA ĐO -> ô cố định cuối đường; đo xong ghi 4 chữ số khe+1 của trái-sau, trái-trước, phải-trước, phải-sau

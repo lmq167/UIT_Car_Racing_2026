@@ -46,8 +46,10 @@ const Parameter table[] = {
     {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
     {"park_forward_cm",10.0,&ControlParams::park_forward_cm,0,200,"cm","Quân 11/11: đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ"},
     {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
-    {"park_rev_cms",5.0,&ControlParams::park_rev_cms,2,5,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi (Quân 11/11: tối đa 5 cm/s)"},
-    {"park_steer_deg",30.0,&ControlParams::park_steer_deg,5,40,"độ","TẠM, CHƯA ĐO: góc lái khi lùi, không vượt steer_max_deg"},
+    {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,6,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi khi đỗ (Quân 11/11 18:54: pha đỗ lùi tới 6 cm/s, như FSM ucr)"},
+    {"park_steer_deg",45.0,&ControlParams::park_steer_deg,5,45,"độ","TẠM, CHƯA ĐO: góc lái hai cung lùi khi đỗ (Quân 11/11 18:54: riêng pha đỗ tới 45°, như FSM ucr)"},
+    {"park_entry_cm",10.0,&ControlParams::park_entry_cm,0,120,"cm","TẠM, CHƯA ĐO: lùi thẳng trước cung 1 (ucr: 10 cm = ô giữa hàng; thêm 50 cm mỗi ô lùi xa hơn)"},
+    {"park_tof_map",0,&ControlParams::park_tof_map,0,4444,"1","Ánh xạ ToF CHƯA ĐO = 0 (dùng ô cố định cuối đường). Đo xong: 4 chữ số = khe+1 của trái-sau, trái-trước, phải-trước, phải-sau (vd 1234)"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
     {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},
@@ -140,9 +142,14 @@ void ControlParams::Validate() const {
     Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
     Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
     Require(park_side==-1 || park_side==1,"park_side");
+    if(park_tof_map) {  // 4 chữ số khác nhau trong 1..4
+        int seen=0, m=park_tof_map;
+        for(int i=0;i<4;++i) { const int d=m%10; m/=10; Require(d>=1 && d<=4 && !(seen&(1<<d)),"park_tof_map"); seen|=1<<d; }
+        Require(m==0,"park_tof_map");
+    }
     // park_enable mặc định BẬT (Quân 11/11) nên KHÔNG ràng buộc chéo ở đây: yaml có max_speed_cms/steer_max_deg nhỏ hoặc
     // turn_enable 0 vẫn phải nạp được. Planner tự kẹp: đỗ chỉ chạy khi turn_enable (yaw/encoder), tốc độ lùi
-    // min(park_rev_cms, max_speed_cms), góc lái min(park_steer_deg, steer_max_deg).
+    // min(park_rev_cms, max_speed_cms), góc lái pha đỗ min(park_steer_deg, 45) (riêng pha đỗ được vượt steer_max_deg, Quân 11/11 18:54).
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
 }

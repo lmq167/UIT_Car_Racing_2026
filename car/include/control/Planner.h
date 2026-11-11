@@ -118,7 +118,8 @@ private:
     double l_seen_odo_=0;
     int l_right_run_=0, l_open_run_=0;
     // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11).
-    enum class ParkPhase { NONE, TIEN, QUET, CHO, LUI1, LUI2, XONG };
+    // FSM đỗ theo ucr (Quân 11/11 18:54): CHO -> LUI_THANG -> LUI1 (cung về phía ô) -> LUI2 (cung ngược) -> TIEN_GIUA -> KIEM -> XONG.
+    enum class ParkPhase { NONE, TIEN, QUET, CHO, LUI_THANG, LUI1, LUI2, TIEN_GIUA, KIEM, XONG };
     ParkPhase park_phase_=ParkPhase::NONE;
     double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
     int64_t park_ms0_=-1, park_prog_ms_=-1;
@@ -127,6 +128,9 @@ private:
     int park_mode_=0, park_unknown_=0;
     double park_step_cm_=0, park_scan_cm_=0, park_creep_cm_=0, park_cap_cms_=0;
     int64_t park_scan_ms0_=-1;
+    // Ô cố định (ToF chưa hiệu chuẩn hoặc quét mơ hồ): bám làn chậm tới cuối đường (hàng 90% mặt nạ không còn đường).
+    bool park_fixed_=false;
+    int64_t park_fixed_ms0_=-1, park_last_mask_ms_=-1;
     std::string park_note_;
     void ClearTurn();
 };
