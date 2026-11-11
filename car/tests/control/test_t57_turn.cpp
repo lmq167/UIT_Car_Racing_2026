@@ -526,6 +526,56 @@ void Case(const std::string& name) {
         // Phần quay xảy ra trước cửa sổ 60 cm không tính: quay -30° ở 0-10 cm rồi thẳng 100 cm.
         auto e=run(false,{{0,0},{10,-30},{40,-30},{80,-30},{110,-30}});
         Check(std::abs(e.first-full(e.second,false))<1e-6,"Quay trước 60 cm cuối không được tính");
+    } else if (name=="l_turn_after_bridge") {
+        // Cua L phải hai làn sau cầu trước VX1 (Quân duyệt 11/11): đảo nhỏ ở mép phải ảnh rồi các hàng gần phủ kín ảnh
+        // -> rẽ phải cung cố định (RE_L_CAU), một lần mỗi G; thiếu điều kiện nào cũng chỉ bám làn.
+        auto island=[](Rig& r, double cx, float width) {
+            r.now+=40;
+            r.in.detections={{{"round_barrier",cv::Rect2f(float(cx*1280-width/2),300,width,60),0.9f,r.now}},r.now,++r.frame};
+            return r.step();
+        };
+        auto empty=[](Rig& r) { r.now+=40; r.in.detections={{},r.now,++r.frame}; return r.step(); };
+        auto run=[&](double cx, double gap_cm, bool& turned, std::string& reason, double& deg) {
+            Rig r; r.in.yaw_deg=0; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=2; island(r,cx,130); }
+            r.in.odo_cm+=gap_cm;
+            r.mask(0,200);  // góc cua rộng: mọi hàng chạm hai mép ảnh
+            control::Plan plan;
+            turned=false;
+            for (int i=0;i<r.p.vote_min+1 && !turned;++i) {
+                r.in.odo_cm+=1; plan=empty(r);
+                turned=plan.state==control::PlannerState::RE_PHAI;
+            }
+            reason=plan.reason; deg=plan.cmd.deg;
+            return r.p;
+        };
+        bool turned; std::string reason; double deg;
+        auto p=run(0.90,60,turned,reason,deg);
+        Check(turned && reason=="RE_L_CAU","Đảo bên phải rồi hàng gần phủ kín ảnh phải rẽ L phải");
+        Check(deg<0 && std::abs(deg)<=p.steer_max_deg,"Rẽ L phải lái phải trong giới hạn");
+        run(0.50,60,turned,reason,deg);
+        Check(!turned,"Đảo giữa ảnh không được kích hoạt cua L");
+        run(0.90,200,turned,reason,deg);
+        Check(!turned,"Quá 150 cm sau khi thấy đảo bên phải không được rẽ");
+        { // Không thấy đảo: góc rộng phủ kín ảnh chỉ bám làn.
+            Rig r; r.mask(0,200); control::Plan plan;
+            for (int i=0;i<3*r.p.vote_min;++i) { r.in.odo_cm+=1; plan=empty(r); }
+            Check(plan.state==control::PlannerState::BAM_LAN,"Không thấy đảo bên phải thì không rẽ L");
+        }
+        { // Một lần mỗi G: rẽ xong, gặp lại điều kiện thì không rẽ nữa.
+            Rig r; r.in.yaw_deg=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=2; island(r,0.90,130); }
+            r.mask(0,200); control::Plan plan;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; plan=empty(r); }
+            Check(plan.state==control::PlannerState::RE_PHAI,"Lượt đầu phải rẽ");
+            r.in.yaw_deg=-r.p.turn_yaw_deg; r.in.odo_cm+=1; plan=empty(r);
+            Check(plan.state!=control::PlannerState::RE_PHAI,"Đủ yaw phải xong rẽ");
+            r.in.yaw_deg-=1; r.mask(60,140); empty(r);
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=2; island(r,0.90,130); }
+            r.mask(0,200); bool again=false;
+            for (int i=0;i<2*r.p.vote_min;++i) { r.in.odo_cm+=1; again=again || empty(r).state==control::PlannerState::RE_PHAI; }
+            Check(!again,"Cua L chỉ rẽ một lần mỗi G");
+        }
     } else if (name=="obstacle_blocked_in_roundabout") {
         // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
         Rig r; r.p.obstacle_action=2;

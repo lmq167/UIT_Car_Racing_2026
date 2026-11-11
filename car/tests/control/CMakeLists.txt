@@ -82,6 +82,8 @@ add_test(NAME test_t57_turn_steer_by_type COMMAND test_t57_turn turn_steer_by_ty
 set_tests_properties(test_t57_turn_steer_by_type PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t57_pre_turn_steer_scale COMMAND test_t57_turn pre_turn_steer_scale)
 set_tests_properties(test_t57_pre_turn_steer_scale PROPERTIES LABELS "control" TIMEOUT 60)
+add_test(NAME test_t57_l_turn_after_bridge COMMAND test_t57_turn l_turn_after_bridge)
+set_tests_properties(test_t57_l_turn_after_bridge PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t57_obstacle_blocked_in_roundabout COMMAND test_t57_turn obstacle_blocked_in_roundabout)
 set_tests_properties(test_t57_obstacle_blocked_in_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t74_barrier_turn COMMAND test_t57_turn barrier_turn)
