@@ -20,6 +20,9 @@ cv::Mat Strip(int h, int w, int a, int b) {
 control::ControlParams Params() {
     control::ControlParams p;
     p.max_speed_cms=10; p.cruise_cms=8; p.slow_per_deg=0.1; p.obstacle_action=0;
+    // 624c8bd đổi kp mặc định 30→35; ca PD đặt hệ số tường minh để kiểm phép tính.
+    // Cùng commit đổi tuổi mặt nạ mặc định 300→400 ms; ca biên dưới đây kiểm mốc 300 ms.
+    p.kp=30; p.mask_max_age_ms=300;
     p.lane1_width_frac={0.4,0.4}; p.kd=0; p.steer_rate_dps=1000;
     p.max_jump_frac=0.5;  // ca PD/rate đổi làn đột ngột; giới hạn nhảy có ca riêng (acc_t79_A10)
     return p;

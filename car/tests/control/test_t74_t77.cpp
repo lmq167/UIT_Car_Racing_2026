@@ -200,9 +200,9 @@ void T74(const std::string& name) {
     if (name=="thresholds") {
         struct Sample { float conf,cx,y2_px; bool turn; };
         const Sample samples[]={{.499f,.5f,576,false},{.5f,.5f,576,true},
-            // Rào hẹp (cx<0,62, rào 1 đường 1 làn) kích hoạt sớm 0,05 so với y2_frac; rào rộng (cx 0,62-0,82, rào 2 đường 2 làn) theo y2_frac.
-            {.9f,.5f,431.9f,false},{.9f,.5f,432,true},
-            {.9f,.75f,467.9f,false},{.9f,.75f,468,true},
+            // 624c8bd: y2_frac mặc định 0,55; 9c71115: ranh tâm rộng 0,55 (state.md:11). Rào hẹp sớm 0,05: 360 px; rộng: 396 px.
+            {.9f,.5f,359.9f,false},{.9f,.5f,360,true},
+            {.9f,.75f,395.9f,false},{.9f,.75f,396,true},
             {.9f,.25f,576,true},{.9f,.81f,576,true},
             {.9f,.2499f,576,false},{.9f,.8201f,576,false},{.9f,.86f,576,false}};
         for (const auto& s:samples) {

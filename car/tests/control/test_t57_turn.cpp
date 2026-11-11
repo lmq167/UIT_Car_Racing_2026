@@ -899,7 +899,8 @@ void Case(const std::string& name) {
         { Rig r; r.in.sensor_ok=false; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN",
                 "IMU lỗi + rào gần: dừng trước rào, không rẽ");
-          for (int i=0;i<5;++i) plan=box(r,0.5f,0.58f);
+          // 624c8bd hạ y2_frac 0,65→0,55: 0,58 nay là gần; đặt rào giữa biên tiếp cận và rẽ hẹp.
+          for (int i=0;i<5;++i) plan=box(r,0.5f,static_cast<float>(r.p.work_barrier_y2_frac-.075));
           Check(plan.cmd.cms>0 && plan.reason!="DUNG_RAO_LOI_CAM_BIEN","IMU lỗi + rào còn xa: chưa dừng");
           r.in.stop=true; plan=box(r,0.5f,0.80f); r.in.stop=false;
           r.in.go=true; plan=box(r,0.5f,0.80f); r.in.go=false;
