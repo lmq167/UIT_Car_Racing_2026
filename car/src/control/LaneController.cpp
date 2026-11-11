@@ -11,6 +11,7 @@ constexpr double kNoRealEdgePenalty=0.1; // TẠM, CHƯA ĐO: hai biên không t
 constexpr double kMergeFactor=1.5;   // TẠM, CHƯA ĐO: gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
 constexpr double kMinWidthRatio=0.6; // TẠM, CHƯA ĐO: bề rộng dưới 0,6·w(y) là bất thường
 constexpr double kRightLaneFrac=0.25, kLeftLaneFrac=0.75;  // tâm làn phải/trái của đường hai làn
+constexpr double kReturnKpScale=1.5;  // TẠM, CHƯA ĐO: độ lợi P khi về làn phải sau né (mô hình xe: dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°)
 const char *const kThat="THAT";
 const char *const kEdge="MEP_ANH";
 const char *const kJump="NHAY";
@@ -268,7 +269,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         return finish(params.lost_cms,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_GIU");
     }
     if(mode!=mode_) derivative_ready_=false;
-    result.debug.p=params.kp*result.debug.e;
+    // Về làn phải sau né cần dịch ngang ~30 cm trong quãng ngắn (log 11/11 m4: lái chỉ tới 23° với e 0,67): tăng độ lợi khi RETURN_RIGHT.
+    result.debug.p=params.kp*(mode==TrajMode::RETURN_RIGHT ? kReturnKpScale : 1.0)*result.debug.e;
     result.debug.d=derivative_ready_ && dt>0 ? params.kd*(result.debug.e-error_)/dt : 0;
     const double desired=Clamp(-(result.debug.p+result.debug.d),-params.steer_max_deg,params.steer_max_deg);
     const double step=params.steer_rate_dps*dt;

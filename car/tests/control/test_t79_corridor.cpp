@@ -482,6 +482,14 @@ void LaneMemory() {
     Check(single_cut.debug.rows.size()==single_fresh_cut.debug.rows.size(),"Số hàng");
     for(size_t i=0;i<single_cut.debug.rows.size();++i)
         Near(single_cut.debug.rows[i].target,single_fresh_cut.debug.rows[i].target,1e-9,"Đường một làn không nhớ hai làn");
+    // Về làn phải (RETURN_RIGHT) có độ lợi P lớn hơn bám làn thường (log 11/11: dịch ngang 30 cm trong quãng ngắn).
+    {
+        LaneController lane, back;
+        const cv::Mat off=Road(q,kW/2.0+30,2.0);
+        const auto a=lane.Step(off,now+50,now+50,q,TrajMode::LANE,false);
+        const auto c=back.Step(off,now+50,now+50,q,TrajMode::RETURN_RIGHT,false);
+        Check(std::abs(a.debug.e)>0.05 && std::abs(c.debug.p)>std::abs(a.debug.p)*1.4,"RETURN_RIGHT: độ lợi P lớn hơn bám làn thường");
+    }
     // Mặt nạ cũ xóa bộ nhớ.
     LaneController stale;
     for(int i=0;i<3;++i) step(stale,full);

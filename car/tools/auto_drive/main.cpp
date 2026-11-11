@@ -96,6 +96,8 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
     out<<','<<dbg.route_step<<','<<csvString(dbg.route_note)<<','<<dbg.turn_dir<<','<<csvString(dbg.mode)<<','
        <<dbg.look_x<<','<<dbg.look_y<<',';
     if (dbg.fit.size()>=3) out<<dbg.fit[2];
+    // Cột cua IMU: đang rẽ, yaw bắt đầu, yaw đích, sai lệch còn lại, lý do kết thúc/hủy gần nhất.
+    out<<','<<dbg.turn_active<<','<<dbg.turn_yaw0<<','<<dbg.turn_yaw_tgt<<','<<dbg.turn_yaw_err<<','<<csvString(dbg.turn_end);
     out<<'\n';
     return out.str();
 }
@@ -273,6 +275,11 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         }
                         plan.debug.route_step=planner.RouteStep(); plan.debug.route_note=planner.RouteNote();
                         plan.debug.turn_dir=planner.TurnDirection();  // chỉ để ghi log chẩn đoán
+                        {
+                            const auto turn=planner.Turn();
+                            plan.debug.turn_active=turn.active; plan.debug.turn_yaw0=turn.yaw0;
+                            plan.debug.turn_yaw_tgt=turn.target; plan.debug.turn_yaw_err=turn.err; plan.debug.turn_end=turn.end;
+                        }
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
                             plan.state==control::PlannerState::DUNG_DEN_DO ||
                             plan.state==control::PlannerState::DUNG_VAT_CAN || plan.state==control::PlannerState::GIU_HUONG ||

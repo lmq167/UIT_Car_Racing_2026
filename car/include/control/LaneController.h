@@ -31,6 +31,8 @@ struct ControlDebug {
     std::string state="MAT_LAN", reason="CHUA_CO_LAN";
     int route_step=0, turn_dir=0;  // Planner điền sau Step, chỉ để ghi log chẩn đoán
     std::string route_note;
+    // Rẽ IMU (Planner điền sau Step, chỉ để ghi log): đang rẽ, yaw bắt đầu, yaw đích, sai lệch còn lại (độ), lý do kết thúc/hủy gần nhất.
+    int turn_active=0; double turn_yaw0=0, turn_yaw_tgt=0, turn_yaw_err=0; std::string turn_end;
 };
 struct ControlResult { Command cmd; ControlDebug debug; };
 // Hàm thuần, không trạng thái: hành lang theo hàng từ mask 0/1 (2 cũng là đường).

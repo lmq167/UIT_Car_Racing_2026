@@ -71,9 +71,9 @@ void Run(const std::string &name) {
                 plan=r.step(r.in.odo_cm+1);
                 Check(plan.state==(right?control::PlannerState::RE_PHAI:control::PlannerState::RE_TRAI),"Nhảy biên không được kết thúc sớm");
             }
-            r.in.yaw_deg=right?139:-139;
+            r.in.yaw_deg=right?115:-112;  // quay 66°/69°: ngưỡng giao = đích-10° (Quân 11/11: IMU quyết định, mask chỉ xác nhận): phải 63,6°, trái 70°
             for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1);
-            Check((plan.state==control::PlannerState::BAM_LAN)==(right && corridor),"Ngưỡng tiếp quản 41,4/45 độ: "+std::to_string(right)+"/"+std::to_string(corridor)+" "+plan.reason);
+            Check((plan.state==control::PlannerState::BAM_LAN)==(right && corridor),"Ngưỡng tiếp quản 63,6/70 độ (đích-10°): "+std::to_string(right)+"/"+std::to_string(corridor)+" "+plan.reason);
             if(right && corridor) continue;
             r.in.yaw_deg=right?101:-101;
             plan=r.step(r.in.odo_cm+1);
@@ -87,28 +87,28 @@ void Run(const std::string &name) {
         r.mask(1);
         for(int i=0;i<r.p.vote_min;++i) plan=r.step(0,"work_barrier");
         Turn(plan,"RE_GIAO_LO");
-        r.mask(0); r.in.yaw_deg=50;
+        r.mask(0); r.in.yaw_deg=72;
         for(int i=0;i<r.p.vote_min+1;++i) {
             plan=r.step(r.in.odo_cm+1,"work_barrier");
             Check(plan.state==control::PlannerState::RE_TRAI,"Rào còn trong khung không giao hành lang cũ");
         }
         r.in.yaw_deg=30;
         for(int i=0;i<r.p.vote_min;++i) r.step(r.in.odo_cm+1);
-        r.in.yaw_deg=50;
+        r.in.yaw_deg=72;
         plan=r.step(r.in.odo_cm+1,"work_barrier",false);
         Check(plan.state==control::PlannerState::RE_TRAI,"Rào xuất hiện lại trên mặt nạ lặp phải xóa phiếu tiếp quản");
         for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1);
         Check(plan.state==control::PlannerState::BAM_LAN,"Rào mất, đủ yaw/hành lang thì tiếp quản");
         return;
     }
-    // Rào trôi ra mép ảnh khi xe đã quay không chặn tiếp quản; chưa đủ 45° vẫn rẽ tiếp.
+    // Rào trôi ra mép ảnh khi xe đã quay không chặn tiếp quản; chưa đủ đích-10° vẫn rẽ tiếp.
     if(name=="barrier_edge_handover") {
         Rig r; control::Plan plan;
         for(int i=0;i<r.p.vote_min;++i) r.step(0,"work_barrier");
         r.mask(1);
         for(int i=0;i<r.p.vote_min;++i) plan=r.step(0,"work_barrier");
         Turn(plan,"RE_GIAO_LO");
-        r.mask(0); r.box_cx=896; r.in.yaw_deg=50;  // tâm 0,70 (rào work 2 còn chắn) vẫn chặn
+        r.mask(0); r.box_cx=896; r.in.yaw_deg=72;  // tâm 0,70 (rào work 2 còn chắn) vẫn chặn
         for(int i=0;i<r.p.vote_min+1;++i) {
             plan=r.step(r.in.odo_cm+1,"work_barrier");
             Check(plan.state==control::PlannerState::RE_TRAI,"Rào tâm 0,70 vẫn chặn tiếp quản");
@@ -116,9 +116,9 @@ void Run(const std::string &name) {
         r.box_cx=1215; r.in.yaw_deg=30;
         for(int i=0;i<r.p.vote_min+1;++i) {
             plan=r.step(r.in.odo_cm+1,"work_barrier");
-            Check(plan.state==control::PlannerState::RE_TRAI,"Chưa quay 45° không được tiếp quản");
+            Check(plan.state==control::PlannerState::RE_TRAI,"Chưa quay đủ (đích-10°) không được tiếp quản");
         }
-        r.in.yaw_deg=50;
+        r.in.yaw_deg=72;
         for(int i=0;i<r.p.vote_min;++i) plan=r.step(r.in.odo_cm+1,"work_barrier");
         Check(plan.state==control::PlannerState::BAM_LAN,"Rào ở mép ảnh, đủ yaw/hành lang thì tiếp quản: "+plan.reason);
         return;
@@ -152,7 +152,7 @@ void Run(const std::string &name) {
                 Check(plan.state==state && plan.cmd.cms==(ceiling==20?8:6),"Tốc độ đang rẽ phải là 8 có chặn trần");
                 continue;
             }
-            r.in.yaw_deg=right?-42:(name=="handover_low_yaw"?30:50);
+            r.in.yaw_deg=right?-66:(name=="handover_low_yaw"?30:72);
             if(name!="handover_no_corridor" && name!="imu_timeout") r.mask(0);
             else {
                 r.in.mask.setTo(0); r.in.mask.colRange(0,141).setTo(1);

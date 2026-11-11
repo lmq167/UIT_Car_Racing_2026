@@ -491,13 +491,15 @@ void Case(const std::string& name) {
         Rig left; left.turn(true); Rig right; right.turn(false);
         control::Plan pl, pr;
         for (int i=0;i<10;++i) { left.now+=40; pl=left.step(); right.now+=40; pr=right.step(); }
-        Check(std::abs(pl.cmd.deg-left.p.turn_steer_deg)<1e-9,"Rẽ trái theo biển giữ turn_steer_deg");
-        Check(std::abs(pr.cmd.deg+std::min(right.p.steer_max_deg,1.12*right.p.turn_steer_deg))<1e-9,"Rẽ phải lái 1,12 lần");
+        // Quân 11/11: góc cơ bản là mức tối thiểu; phản hồi yaw IMU chỉ được tăng (khi chậm tiến độ), không vượt steer_max_deg.
+        Check(pl.cmd.deg>=left.p.turn_steer_deg-1e-9 && pl.cmd.deg<=left.p.steer_max_deg+1e-9,"Rẽ trái theo biển: >= turn_steer_deg, <= steer_max_deg");
+        Check(-pr.cmd.deg>=std::min(right.p.steer_max_deg,1.12*right.p.turn_steer_deg)-1e-9 && -pr.cmd.deg<=right.p.steer_max_deg+1e-9,"Rẽ phải: >= 1,12 lần, <= steer_max_deg");
     } else if (name=="pre_turn_steer_scale") {
         // Lỗi 2 (Quân chọn C 11/11): bám làn đã quay sẵn về phía rẽ trong 60 cm trước RE_* thì giảm góc rẽ cố định
         // theo hệ số 1 - quay_sẵn/90°, kẹp [0,75; 1]. Quay ngược chiều hoặc quay trước 60 cm không tính.
         auto run=[](bool left, const std::vector<std::pair<double,double>>& path) {
-            Rig r; r.arm(left?"left":"right");
+            Rig r; r.p.turn_max_cm=200;  // quãng lớn: phản hồi yaw IMU chưa vượt góc cơ bản, ca chỉ kiểm hệ số quay sẵn
+            r.arm(left?"left":"right");
             for (const auto& s:path) { r.in.odo_cm=s.first; r.in.yaw_deg=s.second; r.now+=40; r.step(); }
             const auto start=r.junction();
             Check(control::StateName(start.state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Thiết lập phải đang rẽ");
@@ -1111,6 +1113,33 @@ void Case(const std::string& name) {
             Check(control::StateName(plan.state)==std::string("RE_TRAI"),"Biển mới không đổi phiên trước hạn ms");
         }
         ++clock.now; Cancelled(clock.step(),clock.p);
+    } else if (name=="turn_imu_primary") {
+        // Quân 11/11: IMU là phản hồi chính của cua. (1) chậm tiến độ yaw thì góc lái tăng (không vượt steer_max_deg);
+        // (2) mặt nạ thấy đường ra ở yaw thấp (< đích-10°) không được kết thúc cua; (3) đủ yaw (đích-10°) và mặt nạ thì giao;
+        // (4) yaw qua mốc ±180 vẫn đếm đúng; (5) kết thúc ghi lý do.
+        {   Rig r; r.p.turn_steer_deg=20; r.p.turn_max_cm=90; r.in.yaw_deg=170; r.in.odo_cm=0;
+            auto plan=r.turn(); const double first=std::abs(plan.cmd.deg);
+            double last=first;
+            for (int i=0;i<60;++i) { r.in.odo_cm+=1; r.in.yaw_deg=170+360*0+((i+1)*0.2); plan=r.advance(0.0); last=std::abs(plan.cmd.deg); }
+            Check(control::StateName(plan.state)==std::string("RE_TRAI"),"Chậm yaw: vẫn đang rẽ");
+            Check(last>20.5,"Chậm tiến độ yaw: góc lái phải tăng trên góc cơ bản");
+            Check(last<=r.p.steer_max_deg+1e-9,"Góc lái không vượt steer_max_deg");
+        }
+        {   Rig r; r.in.yaw_deg=170; r.in.odo_cm=0; r.turn();
+            r.in.yaw_deg=-170+360*0; // 170 -> -170 = +20° qua mốc ±180 (rẽ trái = yaw tăng)
+            auto plan=r.advance(1);
+            Check(control::StateName(plan.state)==std::string("RE_TRAI"),"Qua mốc 180: mới quay 20° vẫn rẽ");
+            Check(std::abs(r.planner.Turn().err-(r.p.turn_yaw_deg-20))<1.0,"Qua mốc 180: sai lệch yaw đúng (đích-20)");
+        }
+        {   Rig r; r.in.yaw_deg=10; r.turn(); r.in.yaw_deg=10+50; r.mask(40,120);
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_min+4;++i) plan=r.advance(0.2);
+            Check(control::StateName(plan.state)==std::string("RE_TRAI"),"Mặt nạ thấy đường ra ở yaw 50° không được kết thúc cua");
+            r.in.yaw_deg=10+r.p.turn_yaw_deg-5;
+            for (int i=0;i<r.p.vote_min+4;++i) plan=r.advance(0.2);
+            Check(control::StateName(plan.state)==std::string("BAM_LAN"),"Đủ yaw (đích-10°) và mặt nạ xác nhận: giao bám làn");
+            Check(r.planner.Turn().end=="XONG_IMU_VA_MASK" || r.planner.Turn().end=="XONG_IMU_CHUA_THAY_LAN","Phải ghi lý do kết thúc cua");
+        }
     } else if (name=="after_turn_lane") {
         Rig r; r.p.kd=2; r.mask(40,120); ++r.now; r.step(); r.turn();
         r.mask(80,160); r.in.yaw_deg=r.p.turn_yaw_deg; ++r.now;

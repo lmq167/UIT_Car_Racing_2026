@@ -40,6 +40,9 @@ public:
     const std::string &RouteNote() const { return route_note_; }
     // Hướng rẽ đang giữ (0 không có, 1 phải, -1 trái; chỉ đọc, để ghi log chẩn đoán).
     int TurnDirection() const { return turn_direction_; }
+    // Thông tin cua IMU để ghi log (chỉ đọc).
+    struct TurnInfo { int active=0; double yaw0=0, target=0, err=0; std::string end; };
+    TurnInfo Turn() const { return {turning_ ? 1 : 0,yaw0_,turn_target_deg_,turn_err_deg_,turn_end_note_}; }
     // Ghi chú quét ô ToF gần nhất (để ghi log); rỗng nếu chưa quét.
     const std::string &ParkNote() const { return park_note_; }
 private:
@@ -106,6 +109,8 @@ private:
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
     std::deque<std::pair<double,double>> pre_turn_;  // (odo, yaw) khi bám làn chờ rẽ, trong kPreTurnWindowCm gần nhất
+    double turn_target_deg_=0, turn_err_deg_=0;  // góc quay đích và sai lệch còn lại của cua IMU hiện tại (log)
+    std::string turn_end_note_;                    // lý do kết thúc/hủy cua gần nhất (log)
     double turn_steer_scale_=1;  // hệ số góc rẽ cố định theo phần yaw đã quay sẵn trước RE_* (lỗi 2)
     // Cua L phải sau cầu trước VX1 (Quân duyệt 11/11): đảo thấy ở mép phải rồi các hàng gần phủ kín ảnh.
     bool l_armed_=false, l_done_=false, l_turning_=false;

@@ -383,6 +383,18 @@ void Unit() {
       }
       Check(released,"Hết vật trước mặt phải nhả KHONG_DUONG_NE");
     }
+    { // Log xe 11/11 (m4 148-152 s): đang VE_PHAI mà vật 2 trước mặt (làn trái) đã sát thì phải DỪNG, không lao tới.
+      Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); r.auto_box=false;
+      bool returning=false;
+      for(int n=0;n<400 && !returning;++n) {
+          const auto ms=r.now+50; r.in.detections={{},ms,++r.frame};
+          plan=r.step(); returning=plan.reason=="VE_PHAI";
+      }
+      Check(returning,"Chuẩn bị: phải vào VE_PHAI");
+      const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(576,500,128,160),0.9f,ms}},ms,++r.frame};
+      plan=r.step();
+      Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" && plan.cmd.cms==0,"VE_PHAI + vật trước mặt sát: phải dừng KHONG_DUONG_NE");
+    }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); r.auto_box=false;
       bool returned=false;
       for(int n=0;n<1000;++n) {

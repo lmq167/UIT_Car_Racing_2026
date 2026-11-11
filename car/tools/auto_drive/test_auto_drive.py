@@ -815,7 +815,8 @@ def t57_log(rows):
         need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
 # Hai cột T57 rồi các cột chẩn đoán lộ trình/quỹ đạo (nối cuối, không đổi cột cũ).
 T57_TAIL_FIELDS = ['yaw_deg', 'odo_cm', 'route_step', 'route_note', 'turn_dir', 'traj_mode',
-                   'look_x', 'look_y', 'fit_curv']
+                   'look_x', 'look_y', 'fit_curv', 'turn_active', 'turn_yaw0', 'turn_yaw_tgt',
+                   'turn_yaw_err', 'turn_end']
 
 
 def t57_fault_csv(rows, failed, odo=0):

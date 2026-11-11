@@ -171,7 +171,8 @@ void LogWriter::run() noexcept {
             "image_age_ms,mask_age_ms,det_age_ms,scan_rows,e,p,d,requested_steer_deg,requested_speed_cms,"
             "sent_steer_deg,sent_speed_cms,reason,road_ms,yolo_ms,loop_ms,dropped,csv_dropped,"
             "camera_fps,loop_p95_ms,rss_mb,free_mb,command_id,command_ms,mask_id,det_frame_id,det_captured_ms,detections_dropped,yaw_deg,odo_cm,"
-            "route_step,route_note,turn_dir,traj_mode,look_x,look_y,fit_curv\n");
+            "route_step,route_note,turn_dir,traj_mode,look_x,look_y,fit_curv,"
+            "turn_active,turn_yaw0,turn_yaw_tgt,turn_yaw_err,turn_end\n");
         const auto detectionsPath=folder+"/detections.csv";
         writeFile(detectionsPath,"frame_id,captured_ms,class,conf,x1,y1,x2,y2\n");
         auto nextDisk=int64_t(0),nextStats=timeMs()+2000;
