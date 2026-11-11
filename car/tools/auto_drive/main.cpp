@@ -443,7 +443,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             }
             if (model.frame.id && model.frame.id!=lastImage) {
                 lastImage=model.frame.id;
-                if (every>0 && model.frame.id%every==0) writer->tryImage(model);
+                // Chỉ ghi ảnh/mặt nạ khi đã bấm G (đang chạy); chờ G hoặc sau Space chỉ ghi CSV.
+                if (every>0 && enabled && model.frame.id%every==0) writer->tryImage(model);
             }
             if (newCommand || forceLog) {
                 const bool applied=commandFresh && enabled && maskFresh && commandMaskFresh && latch.empty() && !forceLog;
@@ -469,7 +470,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             drive::PreviewState ps;
             std::snprintf(ps.state,sizeof(ps.state),"%s",state.c_str());
             ps.cmd_speed=speed; ps.cmd_steer=angle; ps.frame_age_ms=image<0 ? -1 : now-image;
-            ps.images=frameCount; ps.recording=every>0 && writer->imagesEnabled;
+            ps.images=frameCount; ps.recording=every>0 && enabled && writer->imagesEnabled;
             preview.publishState(ps);
             if (debugData) {
                 const bool withRows=command.params && !command.plan.debug.rows.empty();
