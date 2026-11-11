@@ -38,6 +38,8 @@ public:
     // Lộ trình chặng vòng xuyến (chỉ đọc, cho test/phát lại): chặng 0-7 và lý do đổi gần nhất.
     int RouteStep() const { return route_step_; }
     const std::string &RouteNote() const { return route_note_; }
+    // Hướng rẽ đang giữ (0 không có, 1 phải, -1 trái; chỉ đọc, để ghi log chẩn đoán).
+    int TurnDirection() const { return turn_direction_; }
     // Ghi chú quét ô ToF gần nhất (để ghi log); rỗng nếu chưa quét.
     const std::string &ParkNote() const { return park_note_; }
 private:

@@ -91,6 +91,11 @@ std::string csvRow(const CommandStamped& command,const ModelResult& model,
     if (measured && std::isfinite(command.sensor.yaw_deg)) out<<command.sensor.yaw_deg;
     out<<',';
     if (measured && std::isfinite(command.sensor.odo_cm)) out<<command.sensor.odo_cm;
+    // Cột chẩn đoán: bước lộ trình, ghi chú, hướng rẽ, chế độ quỹ đạo, điểm nhìn trước (pixel) và độ cong fit[2].
+    const auto& dbg=command.plan.debug;
+    out<<','<<dbg.route_step<<','<<csvString(dbg.route_note)<<','<<dbg.turn_dir<<','<<csvString(dbg.mode)<<','
+       <<dbg.look_x<<','<<dbg.look_y<<',';
+    if (dbg.fit.size()>=3) out<<dbg.fit[2];
     out<<'\n';
     return out.str();
 }
@@ -266,6 +271,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             lastParkNote=planner.ParkNote();
                             if (!lastParkNote.empty()) { std::cout<<"PARK: "<<lastParkNote<<std::endl; trace("park",lastParkNote); }
                         }
+                        plan.debug.route_step=planner.RouteStep(); plan.debug.route_note=planner.RouteNote();
+                        plan.debug.turn_dir=planner.TurnDirection();  // chỉ để ghi log chẩn đoán
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
                             plan.state==control::PlannerState::DUNG_DEN_DO ||
                             plan.state==control::PlannerState::DUNG_VAT_CAN || plan.state==control::PlannerState::GIU_HUONG ||

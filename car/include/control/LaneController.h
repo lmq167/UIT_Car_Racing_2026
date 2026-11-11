@@ -29,6 +29,8 @@ struct ControlDebug {
     double e=0, p=0, d=0, angle_deg=0, speed_cms=0;
     int valid_rows=0;
     std::string state="MAT_LAN", reason="CHUA_CO_LAN";
+    int route_step=0, turn_dir=0;  // Planner điền sau Step, chỉ để ghi log chẩn đoán
+    std::string route_note;
 };
 struct ControlResult { Command cmd; ControlDebug debug; };
 // Hàm thuần, không trạng thái: hành lang theo hàng từ mask 0/1 (2 cũng là đường).

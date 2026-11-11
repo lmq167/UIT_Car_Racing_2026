@@ -810,9 +810,12 @@ def t57_log(rows):
     """Chỉ nối hai cột cuối; khi tắt để trống cả dòng thoát."""
     need(rows, 'Thiếu CSV để kiểm T57', 't57_log')
     for row in rows:
-        need(list(row) == T57_OLD_FIELDS + ['yaw_deg', 'odo_cm'],
+        need(list(row) == T57_OLD_FIELDS + T57_TAIL_FIELDS,
              'T57 đổi/mất/thừa/đảo cột cũ hoặc không nối cuối', 't57_log')
         need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
+# Hai cột T57 rồi các cột chẩn đoán lộ trình/quỹ đạo (nối cuối, không đổi cột cũ).
+T57_TAIL_FIELDS = ['yaw_deg', 'odo_cm', 'route_step', 'route_note', 'turn_dir', 'traj_mode',
+                   'look_x', 'look_y', 'fit_curv']
 
 
 def t57_fault_csv(rows, failed, odo=0):
@@ -3359,7 +3362,7 @@ def selftest():
             bad = dict(fault_row); bad[column] = value
             fails(lambda: t57_fault_csv([bad], failed), 't57_fault_csv')
     # T57: tự kiểm bộ đọc log bằng CSV đúng và các bản cố ý làm sai.
-    row = dict((key, '') for key in T57_OLD_FIELDS + ['yaw_deg', 'odo_cm'])
+    row = dict((key, '') for key in T57_OLD_FIELDS + T57_TAIL_FIELDS)
     t57_log([row])
     fails(lambda: t57_log([]), 't57_log')
     bad = dict(row); bad['yaw_deg'] = '0'
