@@ -441,7 +441,9 @@ void Unit() {
           r.in.detections={{{"red",cv::Rect2f(1050,100,200,100),1.0f,ms}},ms,++r.frame};
           const auto plan=r.step();
           Check(plan.cmd.cms==0 && plan.cmd.deg==0,"Đèn đỏ/vật cản phát lệnh chạy");
-          if(n==r.p.vote_min) Check(plan.state==PlannerState::DUNG_DEN_DO,"Vật cản che chốt đèn đỏ");
+          // Đổi kỳ vọng 12/11 (review lượt 5, LOW đã sửa ở 94e8405): đèn đỏ chốt KHÔNG thay DUNG_VAT_CAN, nếu không
+          // đèn xanh sau đó đưa xe về bám làn lao vào vật còn đứng trước; xe vẫn đứng yên (kiểm cms/deg ở trên).
+          if(n==r.p.vote_min) Check(plan.state==PlannerState::DUNG_VAT_CAN,"Đèn đỏ không được thay chốt vật cản");
       }
     }
     { Rig r; r.latch(); r.in.stop=true;

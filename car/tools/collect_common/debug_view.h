@@ -66,8 +66,8 @@ inline std::vector<DebugInfoLine> debugInfoLines(const PreviewDebug& d, int64_t 
     std::snprintf(b, sizeof(b), "khung QD tuoi=%lldms | hien thi moi hon %lldms", decided, lag);
     out.push_back({b, lag > kDebugLagWarnMs || decided > kDebugDecisionWarnMs});
     const bool imu_bad = !d.sensor_ok || d.sensor_age_ms < 0 || d.sensor_age_ms > kDebugSensorWarnMs;
-    if (d.sensor_ok) std::snprintf(b, sizeof(b), "IMU yaw=%.1f odo=%.1fcm tuoi=%dms", double(d.yaw_deg), double(d.odo_cm), int(d.sensor_age_ms));
-    else std::snprintf(b, sizeof(b), "IMU/encoder LOI (tuoi=%dms)", int(d.sensor_age_ms));
+    if (d.sensor_ok) std::snprintf(b, sizeof(b), "yaw=%.1f odo=%.1fcm cam bien tuoi=%dms", double(d.yaw_deg), double(d.odo_cm), int(d.sensor_age_ms));
+    else std::snprintf(b, sizeof(b), "cam bien yaw/odo LOI (tuoi=%dms)", int(d.sensor_age_ms));
     out.push_back({b, imu_bad});
     char note[sizeof(d.route_note) + 1] = {}, end[sizeof(d.turn_end) + 1] = {};
     std::memcpy(note, d.route_note, sizeof(d.route_note)); std::memcpy(end, d.turn_end, sizeof(d.turn_end));
