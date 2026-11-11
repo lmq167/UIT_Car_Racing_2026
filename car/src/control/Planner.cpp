@@ -35,7 +35,7 @@ constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
 // Rào work 1 (vào đường 1 làn) lệch giữa (tâm hộp 0,43-0,54), work 2 (vào đường 2 làn) lệch phải (0,70-0,71): đo ở hai phiên 07/11.
-constexpr double kWideBarrierCx=0.62, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
+constexpr double kWideBarrierCx=0.55, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
 constexpr double kBarrierBlockMinCx=0.25, kBarrierBlockMaxCx=0.75;  // dải tâm hộp rào còn chắn trước (chặn tiếp quản)
 // Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
 constexpr double kRightTurnYawFactor=0.92;

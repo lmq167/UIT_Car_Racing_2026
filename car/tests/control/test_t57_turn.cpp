@@ -786,6 +786,16 @@ void Case(const std::string& name) {
           r.in.yaw_deg=5+r.p.turn_yaw_deg; plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN,"Đủ yaw về bám làn");
           for (int i=0;i<6;++i) { plan=box(r,0.5f,0.80f); Check(plan.state==control::PlannerState::BAM_LAN,"Rào còn trong ảnh không rẽ lại"); } }
+        // Log xe 11/11 (m4 phiên 8599, 4-10 s): rào tâm 0,56-0,65 (giữa work 1 và work 2) rộng 92-120 px chỉ đủ 1 phiếu mỗi cửa sổ
+        // vì ranh giới tâm 0,62 tách hai luật; xe tới sát rào mà không rẽ. Tâm 0,58 rộng 92-98 px phải đủ phiếu rồi rẽ trái.
+        { Rig r; r.in.yaw_deg=5; control::Plan plan;
+          for (int i=0;i<r.p.vote_min;++i) {
+              r.now+=40; const float w=92.f+3.f*i;
+              r.in.detections={{{"work_barrier",cv::Rect2f(0.58f*1280-w/2,0.70f*720-60,w,60),0.9f,r.now}},r.now,++r.frame};
+              plan=r.step();
+          }
+          plan=r.junction();
+          Check(plan.state==control::PlannerState::RE_TRAI,"Rào tâm 0,58 rộng 92-98 px phải chốt ý định rẽ trái"); }
         { Rig r; r.in.sensor_ok=false; control::Plan plan; for (int i=0;i<5;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms==0 && plan.reason=="DUNG_RAO_LOI_CAM_BIEN",
                 "IMU lỗi + rào gần: dừng trước rào, không rẽ");
