@@ -618,8 +618,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     if (stopping) code=0;
     if (watchdog) { watchdog->cleanupCode=code; watchdog->cleanupAt=nowMs(); }
     // Dừng trước mọi join, ghi đĩa, đóng preview.
-    if (!stopVehicle(motor,servo)) { if (!code) code=1; warning(); }
-    tui.stop();  // sau lệnh dừng: trả terminal, các dòng sau in như cũ
+    const bool stopped=stopVehicle(motor,servo);
+    tui.stop();  // sau lệnh dừng: trả terminal; cảnh báo in SAU để khung cuối không xóa mất
+    if (!stopped) { if (!code) code=1; warning(); }
     if (writer) {
         try {
             writer->offerControl(csvRow(CommandStamped{},ModelResult{},*params,nowMs(),imageMs.load(),0,0,

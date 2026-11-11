@@ -1,6 +1,6 @@
 #pragma once
 // Phần chạy của TUI (P5b): chỉ bật khi stdout là terminal. std::cout/std::cerr được gom thành dòng sự kiện; một luồng
-// riêng <= 10 Hz vẽ khung bằng write() không chặn (terminal nghẽn thì bỏ khung). Vòng điều khiển chỉ gọi update()
+// riêng <= 10 Hz vẽ khung bằng poll + write từng mẩu 256 byte (terminal nghẽn thì bỏ khung; Ctrl+S vẫn có thể giữ luồng này, không giữ vòng điều khiển). Vòng điều khiển chỉ gọi update()
 // (chép vài số dưới khóa). Không đụng tín hiệu, phím hay đường dừng; warning() vẫn ghi thẳng stderr.
 #include "tui.h"
 #include <poll.h>
@@ -84,7 +84,7 @@ private:
         while (n) {
             pollfd fd{STDOUT_FILENO, POLLOUT, 0};
             if (::poll(&fd, 1, block ? 200 : 0) <= 0 || !(fd.revents & POLLOUT)) return false;
-            const ssize_t k = ::write(STDOUT_FILENO, p, n);
+            const ssize_t k = ::write(STDOUT_FILENO, p, n < 256 ? n : 256);  // mẩu nhỏ: POLLOUT chỉ bảo đảm còn ít chỗ
             if (k <= 0) return false;
             p += k; n -= size_t(k);
         }
