@@ -11,6 +11,7 @@
 #include "hardware/Motor.h"
 #include "hardware/Servo.h"
 #include "sensor/BNO055.h"
+#include "sensor/TOF.h"
 #include "common/ConfigValue.h"
 #endif
 #include <algorithm>
@@ -341,6 +342,49 @@ struct DriveImu {
         if (!ok) return false;
         yaw+=(Axis(data.gyroscopeDegPerSec)-bias)*dt*sign;
         sample.yaw_deg=yaw; return std::isfinite(yaw);
+#endif
+    }
+};
+// ToF 4 cảm biến hai bên (Quân duyệt 11/11): CHỈ ĐỌC và in khi xe đứng (trước G / sau Space) để xác nhận ánh xạ khe -> bánh.
+// Không đọc khi xe đang chạy nên không ảnh hưởng điều khiển; mọi lỗi ToF chỉ in cảnh báo, không dừng chương trình.
+struct DriveTof {
+    bool initialized=false;
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+    sensor::TOF device;
+    int64_t lastPrintMs=0;
+#endif
+    void init(const DriveImu& imu) {
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+        // ToF cấp địa chỉ qua 0x29: IMU ở 0x29 sẽ xung đột (BTC cấm), nên bỏ ToF.
+        if (imu.initialized && imu.device && imu.device->address()==0x29) {
+            std::cerr<<"TOF BO QUA: IMU o 0x29 trung dia chi khoi tao ToF\n"; return;
+        }
+        // Init mất vài giây tới chục giây và ghi I2C/GPIO của chính các ToF (mã BTC); xe đang đứng, chưa có G.
+        if (!device.Init("/dev/i2c-1")) { std::cerr<<"TOF LOI: "<<device.LastError()<<'\n'; return; }
+        initialized=true;
+        std::cout<<"TOF: khoi tao OK (doc va in khi xe dung)\n"<<std::flush;
+#else
+        (void)imu;
+#endif
+    }
+    void pollAndPrint() {
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+        if (!initialized || hardwareFault) return;
+        const int64_t now=nowMs();
+        if (now-lastPrintMs<500) return;
+        lastPrintMs=now;
+        sensor::TOFReadings r;
+        bool ok;
+        try { HardwareCall call(2); ok=device.Read(r,std::chrono::milliseconds(500)); }
+        catch (const std::exception& e) { std::cerr<<"TOF LOI doc: "<<e.what()<<'\n'; return; }
+        std::cout<<"TOF mm(rangeStatus):";
+        for (std::size_t i=0;i<r.size();++i) {
+            std::cout<<" ["<<i<<"] ";
+            if (!r[i].initialized) std::cout<<"khong_khoi_tao";
+            else if (r[i].valid) std::cout<<r[i].distanceMm<<'('<<int(r[i].rangeStatus)<<')';
+            else std::cout<<"x("<<int(r[i].rangeStatus)<<",api"<<r[i].apiError<<(r[i].timedOut?",cu":"")<<')';
+        }
+        std::cout<<(ok ? "" : " LOI_API")<<'\n'<<std::flush;
 #endif
     }
 };

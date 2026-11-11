@@ -101,6 +101,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
               const perception::YoloInfo* yoloInfo,std::unique_ptr<perception::IInferEngine>& yoloEngine) {
     DriveMotor motor(kReverseMotor); DriveServo servo;
     DriveImu imu;
+    DriveTof tof;
     terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
     std::unique_ptr<Camera> camera;
     drive::PreviewOptions previewOptions;
@@ -145,6 +146,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 trace("imu_error",e.what());
             }
         }
+        try { tof.init(imu); } catch (const std::exception& e) { std::cerr<<"TOF LOI: "<<e.what()<<'\n'; }
         trace("state","CHO_SAN_SANG");
         if (!motor.init()) throw Failure(1,"Motor::Init thất bại");
         if (!motor.SetSpeedCms(0)) throw Failure(1,"Không xác nhận motor 0 sau Init");
@@ -406,6 +408,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             }
             if (exit || stopping) break;
+            if (!enabled) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;
