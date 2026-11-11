@@ -59,7 +59,7 @@ def check(cond, message):
 
 def run_case(cfg, root, use_pty):
     _use_pty['on'] = use_pty
-    with tad.running(cfg, root, values=dict(cruise_cms=8, max_speed_cms=10, steer_max_deg=30)) as r:
+    with tad.running(cfg, root) as r:
         r.boot()
         r.go()
         r.frames(10)
