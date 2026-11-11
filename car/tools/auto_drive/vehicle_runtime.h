@@ -387,8 +387,8 @@ struct DriveServo {
         return device.Init() && device.IsReady() && device.SetPWMFreq(kServoPwmHz);
 #endif
     }
-    bool rawAngle(int a) {
-        a = clampAutoSteer(a);
+    bool rawAngle(int a, bool park = false) {
+        a = clampAutoSteer(a, park);
 #if defined(UCR_AUTO_TEST_HOOKS) && UCR_AUTO_TEST_HOOKS
         const bool ok = !fakeOpenFail("servo");
         trace("servo_angle", std::to_string(a) + (ok ? "" : " fail"));
@@ -397,10 +397,10 @@ struct DriveServo {
         return device.SetAngle(static_cast<int16_t>(a));
 #endif
     }
-    bool SetAngle(int a) {
+    bool SetAngle(int a, bool park = false) {
         HardwareCall call(2);
         if (hardwareFault) return false; // Như motor: watchdog đã nhận quyền dừng.
-        return rawAngle(a);
+        return rawAngle(a, park);
     }
 };
 // Đường dự phòng khi terminate: dừng motor trước servo, giữ khóa tới khi thoát.

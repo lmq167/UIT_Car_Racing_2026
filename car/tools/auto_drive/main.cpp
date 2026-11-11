@@ -458,7 +458,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             } else { sensor=plannerSensor=SensorSample{}; sensorFaultPending=false; }
             inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor});
-            double speed=0; int angle=0;
+            double speed=0; int angle=0; bool parkSteer=false;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
             const bool commandFresh=command.created_ms>=0 && command.epoch==epoch &&
@@ -480,17 +480,21 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (!std::isfinite(speed) || !std::isfinite(command.plan.cmd.deg)) {
                     enabled=false; latch="LOI_DIEU_KHIEN"; ++epoch;
                     speed=0; state="DUNG"; reason=latch;
-                } else angle=int(std::lround(std::max(-double(kMaxAutoSteerDeg),
-                                                      std::min(double(kMaxAutoSteerDeg),command.plan.cmd.deg))));
+                } else {
+                    // Trần 45° chỉ khi lệnh hiện hành là pha đỗ (DO_XE); mọi trạng thái khác giữ 40°.
+                    parkSteer=command.plan.state==control::PlannerState::DO_XE;
+                    const double m=parkSteer ? kMaxParkSteerDeg : kMaxAutoSteerDeg;
+                    angle=int(std::lround(std::max(-m,std::min(m,command.plan.cmd.deg))));
+                }
             }
             if (stopping) break;
             // Kẹp độc lập YAML, ngay tại tầng gửi; motor luôn trước servo trên đường dừng.
-            speed=clampAutoSpeed(static_cast<float>(speed)); angle=clampAutoSteer(angle);
+            speed=clampAutoSpeed(static_cast<float>(speed)); angle=clampAutoSteer(angle,parkSteer);
             if (speed==0 && angle==0) {
                 if (!stopVehicle(motor,servo)) throw Failure(1,"Không xác nhận được dừng");
             } else {
                 if (!motor.SetSpeedCms(static_cast<float>(speed))) throw Failure(1,"Lỗi gửi motor");
-                if (!servo.SetAngle(angle)) throw Failure(1,"Lỗi gửi servo");
+                if (!servo.SetAngle(angle,parkSteer)) throw Failure(1,"Lỗi gửi servo");
             }
             // Quét ô đỗ: đọc ToF SAU khi lệnh tốc độ 0 của bước này đã gửi (đọc I2C không được trễ lệnh dừng).
             if (enabled && !eventStop && speed==0 && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&

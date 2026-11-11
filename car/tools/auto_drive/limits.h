@@ -5,6 +5,8 @@
 namespace auto_drive {
 constexpr float kMaxAutoSpeedCms = 20;
 constexpr int kMaxAutoSteerDeg = 40;
+// Riêng pha đỗ (Planner ở DO_XE; Quân 11/11 18:54): lái tới 45°. Chặng khác giữ 40°.
+constexpr int kMaxParkSteerDeg = 45;
 constexpr bool kReverseMotor = false;
 constexpr int kStaleFrameMs = control::kStaleImageMs, kPollMs = 10, kUartPollMs = 50;
 constexpr int kHardwareTimeoutMs = 300, kInitTimeoutMs = 5000;
@@ -21,8 +23,9 @@ inline float clampAutoSpeed(float v) {
     return !std::isfinite(v) ? 0 : v < -kMaxAutoSpeedCms ? -kMaxAutoSpeedCms :
         v > kMaxAutoSpeedCms ? kMaxAutoSpeedCms : v;
 }
-inline int clampAutoSteer(int a) {
-    return a < -kMaxAutoSteerDeg ? -kMaxAutoSteerDeg : a > kMaxAutoSteerDeg ? kMaxAutoSteerDeg : a;
+inline int clampAutoSteer(int a, bool park = false) {
+    const int m = park ? kMaxParkSteerDeg : kMaxAutoSteerDeg;
+    return a < -m ? -m : a > m ? m : a;
 }
 inline float applyMotorSign(float v, bool reverse) { return v == 0 ? +0.0f : reverse ? -v : v; }
 }
