@@ -115,7 +115,7 @@ void Planner::ClearTurn() {
 void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;
-    obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+    obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
@@ -418,7 +418,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(params.obstacle_action!=2 || state_!=PlannerState::BAM_LAN || entered_wait) {
         swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; return_cm_=-1;
         if(params.obstacle_action==2 && state_!=PlannerState::DUNG_VAT_CAN) {
-            obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+            obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
         }
     }
     // Quãng pha: kẹp bước encoder; mẫu hỏng/đứng 1,5 s dùng tích phân lệnh đã gửi.
@@ -467,11 +467,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 pass_cm_=params.obstacle_pass_cm;
             else if(swerve_==Swerve::PASS && ahead_stop) {
                 state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
-                swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0;
+                swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0; ahead_clear_lots_=0;
             }
-            // Đang dừng vì không có đường né mà YOLO còn thấy vật gần trước mặt: không cho mặt nạ tự nhả
-            // (bộ đếm lỗ bỏ qua lỗ ở nửa trái đường hai làn, đúng chỗ vật này đang đứng).
-            if(state_==PlannerState::DUNG_VAT_CAN && reason_=="KHONG_DUONG_NE" && ahead_close) obstacle_clear_run_=0;
+            // Dừng vì vật trước mặt (YOLO): chỉ nhả khi đủ vote_window lô YOLO tươi liên tiếp không còn vật gần; mặt nạ một
+            // mình không nhả được (bộ đếm lỗ bỏ qua lỗ ở nửa trái đường hai làn, đúng chỗ vật này đứng; YOLO cũ thì giữ dừng).
+            if(ahead_clear_lots_>=0) ahead_clear_lots_=ahead_close ? 0 : ahead_clear_lots_+1;
             if(swerve_==Swerve::LEFT) {
                 swerve_peak_w_=std::max(swerve_peak_w_,widest);
                 present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;
@@ -525,8 +525,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
             if(state_==PlannerState::DUNG_VAT_CAN && reason_=="KHONG_DUONG_NE") {
                 obstacle_clear_run_=mask_obstacle || (near_hole && !avoid_ok) ? 0 : obstacle_clear_run_+1;
-                if(obstacle_clear_run_>=params.vote_window) {
-                    state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset();
+                if(obstacle_clear_run_>=params.vote_window && (ahead_clear_lots_<0 || ahead_clear_lots_>=params.vote_window)) {
+                    state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; lane_.Reset(); ahead_clear_lots_=-1;
                     obstacle_votes_.clear(); obstacle_clear_run_=0;
                 }
             }
@@ -550,7 +550,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
         }
     } else {
-        obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+        obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
@@ -734,7 +734,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(swerve_!=Swerve::NONE) {
                 state_=PlannerState::DUNG; reason_="MAT_LAN_NE"; lane_.Reset(); green_run_=0;
                 swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; return_cm_=-1;
-                obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0;
+                obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
                 plan=Plan{}; plan.state=state_; plan.reason=reason_;
                 plan.debug.state=StateName(state_); plan.debug.reason=reason_;
                 return plan;

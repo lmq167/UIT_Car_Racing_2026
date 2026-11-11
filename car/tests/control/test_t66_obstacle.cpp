@@ -330,6 +330,19 @@ void Unit() {
           const auto held=r.step();
           Check(held.state==PlannerState::DUNG_VAT_CAN && held.cmd.cms==0,"Mặt nạ sạch nhả dừng khi YOLO còn vật gần");
       }
+      // Lô YOLO thưa (không có lô mới) rồi YOLO cũ: mặt nạ sạch vẫn không được nhả (duyệt an toàn lượt 4).
+      for(int n=0;n<3*r.p.vote_window;++n)
+          Check(r.step().cmd.cms==0,"Mặt nạ sạch nhả dừng giữa hai lô YOLO");
+      r.now+=r.p.det_max_age_ms;
+      for(int n=0;n<3*r.p.vote_window;++n)
+          Check(r.step().cmd.cms==0,"YOLO cũ: mặt nạ sạch nhả dừng vật trước mặt");
+      // Lô tươi có một lô lỡ hộp xen giữa: chưa đủ vote_window lô vắng liên tiếp thì chưa nhả.
+      for(int n=0;n<r.p.vote_window-1;++n) {
+          const auto t=r.now+50; r.in.detections={{},t,++r.frame};
+          Check(r.step().cmd.cms==0,"Nhả trước khi đủ lô YOLO vắng liên tiếp");
+      }
+      { const auto t=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(576,450,128,200),0.9f,t}},t,++r.frame};
+        Check(r.step().cmd.cms==0,"Vật quay lại vẫn dừng"); }
       // Vật đã khuất khỏi YOLO và mặt nạ sạch: nhả như cũ (không kẹt dừng mãi).
       bool released=false;
       for(int n=0;n<4*r.p.vote_window && !released;++n) {

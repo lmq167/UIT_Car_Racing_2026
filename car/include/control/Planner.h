@@ -56,6 +56,7 @@ private:
     int64_t last_exit_mask_ms_=-1;  // ý định rẽ đến từ lượt chờ sau vòng xuyến (giữ tới ngã T, không hủy theo quãng)  // lần gần nhất cạnh trái/phải ở hàng gần là cạnh thật
     int64_t last_mask_ms_=-1;
     int obstacle_clear_run_=0;
+    int ahead_clear_lots_=-1;  // -1: không dừng vì vật trước mặt; >=0: số lô YOLO tươi liên tiếp vắng vật gần
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
     double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
