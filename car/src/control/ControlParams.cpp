@@ -46,7 +46,7 @@ const Parameter table[] = {
     {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
     {"park_forward_cm",30.0,&ControlParams::park_forward_cm,0,200,"cm","TẠM, CHƯA ĐO: quãng bám làn từ lúc biển parking đủ phiếu tới lúc dừng để lùi"},
     {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
-    {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,10,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi"},
+    {"park_rev_cms",5.0,&ControlParams::park_rev_cms,2,5,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi (Quân 11/11: tối đa 5 cm/s)"},
     {"park_steer_deg",30.0,&ControlParams::park_steer_deg,5,40,"độ","TẠM, CHƯA ĐO: góc lái khi lùi, không vượt steer_max_deg"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
