@@ -301,6 +301,21 @@ void Unit() {
           Check(r.step().reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Vật xa nhỏ giữ pha trái mãi");
       }
     }
+    { // Lỗi 3 (log m3 11/11, 2 phiên): vật 1 làn phải đã qua, vật 2 trước mặt làn trái KHÔNG được giữ NE_TRAI mãi.
+      Rig r; r.auto_box=false; r.p.obstacle_action=2;
+      auto send=[&](bool right, bool ahead) {
+          const auto ms=r.now+50; r.in.detections={{},ms,++r.frame};
+          if(right) r.in.detections.items.push_back({"obstacle",cv::Rect2f(900,200,200,200),0.9f,ms});     // tâm 0,78
+          if(ahead) r.in.detections.items.push_back({"obstacle",cv::Rect2f(440,380,150,120),0.9f,ms});     // tâm 0,40, đáy 0,69
+          return r.step();
+      };
+      for(int n=0;n<r.p.vote_min;++n) { const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(600,100,128,100),0.9f,ms}},ms,++r.frame}; r.step(); }
+      for(int n=0;n<4;++n) Check(send(true,true).reason=="NE_TRAI","Vật 1 còn bên phải phải giữ NE_TRAI");
+      Plan plan;
+      for(int n=1;n<=r.p.vote_window;++n) { plan=send(false,true); Check(plan.reason==(n==r.p.vote_window ? "NE_QUA" : "NE_TRAI"),"Vật 1 đã qua: chỉ vật 2 trước mặt không giữ NE_TRAI"); }
+      // Vật bên phải xuất hiện lại khi đang qua: làn phải chưa trống, quay về pha trái.
+      Check(send(true,true).reason=="NE_TRAI","Có vật bên phải lại phải quay về NE_TRAI");
+    }
     { // Lỗi 1 (log lan3 10/11, b9bedce): trong NE_QUA vật thứ hai nằm ngay trước trên làn trái (tâm 0,46–0,48, đáy hộp
       // 0,57→0,63) và xe chỉ về phải sau đủ quãng pass -> va vật thứ hai. Vật trước mặt đủ gần thì kết thúc PASS sớm,
       // nhưng không sớm hơn 0,85·obstacle_pass_cm (giữ khoảng hở đuôi xe với vật đang né).

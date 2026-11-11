@@ -54,6 +54,9 @@ constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.85;
 // Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
 constexpr double kPassStopY2=0.85;
+// Lỗi 3 (log 11/11 m3, 2 phiên): vật 1 ở làn phải đã qua nhưng vật 2 (trước mặt, làn trái) vẫn giữ NE_TRAI tới sát vật 2.
+// Khi đã thấy vật ở nửa phải (tâm >= 0,60), pha trái chỉ giữ bởi hộp ở nửa phải; hộp trước mặt/bên trái không giữ (Quân 11/11).
+constexpr double kHoldRightCx=0.60;
 // Lỗi 2 (log 10/11 lan2/lan3, 6 lượt rẽ phải): bám làn đã quay sẵn 9-20° theo miệng ngã trong 60 cm trước RE_*,
 // rồi cung lái cố định cắt góc. Quân chọn C (11/11): giảm góc rẽ cố định theo phần đã quay sẵn. TẠM, CHƯA ĐO trên sa bàn:
 // hệ số = 1 - quay_sẵn/90°, kẹp [0,75; 1] (quay sẵn 20° -> 0,78; 25° x 1,12 = 28° -> 21,8°).
@@ -144,7 +147,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_seen_odo_=0; l_right_run_=l_open_run_=0;
     park_phase_=ParkPhase::NONE; park_run_=0; park_ms0_=park_prog_ms_=-1;
-    swerve_peak_w_=0;
+    swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
@@ -486,7 +489,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         bool present=false, present_left=false;
         if(input.yolo_enabled && fresh && new_obstacle_batch) {
             bool obstacle=false, ahead_close=false, ahead_stop=false;
-            double widest=0;
+            double widest=0, widest_right=0;
             for(const auto &d:batch.items) {
                 const auto &b=d.box;
                 if(d.class_name!="obstacle" || d.captured_ms!=batch.captured_ms ||
@@ -496,6 +499,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 present=true;
                 widest=std::max(widest,double(b.width)/1280.0);
                 const double cx=(double(b.x)+b.width/2)/1280.0;
+                if(cx>=kHoldRightCx) widest_right=std::max(widest_right,double(b.width)/1280.0);
                 const bool ahead=cx>=kPassAheadMinCx && cx<=kPassAheadMaxCx && b.width/1280.0>=params.obstacle_near_w_frac;
                 ahead_close=ahead_close || (ahead && (double(b.y)+b.height)/720.0>=kPassAheadY2);
                 ahead_stop=ahead_stop || (ahead && (double(b.y)+b.height)/720.0>=kPassStopY2);
@@ -507,6 +511,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Vật trước mặt đã gần trong PASS: về làn phải ngay khi đã đi đủ phần tối thiểu của quãng pass.
             if(swerve_==Swerve::PASS && ahead_close && pass_cm_>=kPassMinFrac*params.obstacle_pass_cm)
                 pass_cm_=params.obstacle_pass_cm;
+            else if(swerve_==Swerve::PASS && swerve_right_seen_ && widest_right>=params.obstacle_near_w_frac) {
+                // Lại có vật ở nửa phải khi đang qua/về: làn phải chưa trống, quay lại pha trái (không chuyển vào làn bị chiếm).
+                swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
+            }
             else if(swerve_==Swerve::PASS && ahead_stop) {
                 state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
                 swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0; ahead_clear_lots_=0;
@@ -517,6 +525,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(swerve_==Swerve::LEFT) {
                 swerve_peak_w_=std::max(swerve_peak_w_,widest);
                 present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;
+                const bool right_present=widest_right>=0.5*params.obstacle_near_w_frac;
+                if(right_present) swerve_right_seen_=true;
+                if(swerve_right_seen_) present_left=right_present;  // đã thấy vật ở làn phải: chỉ nó giữ pha trái
             }
             if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 &&
                !rb_holding_ && !rb_in_pass_ && !turn_direction_) {
@@ -525,7 +536,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(std::count(obstacle_votes_.begin(),obstacle_votes_.end(),true)>=params.vote_min) {
                     obstacle_votes_.clear(); obstacle_clear_run_=0;
                     if(params.obstacle_action==1) { state_=PlannerState::DUNG_VAT_CAN; reason_="VAT_CAN"; }
-                    else { swerve_=Swerve::LEFT; pass_cm_=0; swerve_peak_w_=widest; present_left=true; }
+                    else { swerve_=Swerve::LEFT; pass_cm_=0; swerve_peak_w_=widest; present_left=true; swerve_right_seen_=false; }
                 }
             } else obstacle_votes_.clear();
         }
