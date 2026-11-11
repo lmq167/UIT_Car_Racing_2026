@@ -16,7 +16,6 @@ public:
     explicit Backend(const common::Config &config);
     ~Backend();
     void Init();
-    bool EmergencyOpenAndStop();
     bool Frame(cv::Mat &frame);
     bool Sensors(common::Observation &o, double dt);
     bool Position(float &cm);

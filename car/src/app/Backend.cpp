@@ -69,21 +69,6 @@ void Backend::Init() {
     if (!c_.fake_source.empty()) Check(camera_.open(c_.fake_source), "Loi mo nguon anh gia lap");
 #endif
 }
-bool Backend::EmergencyOpenAndStop() {
-#ifdef UCR_FAKE_HW
-    fake::TraceNumber("motor_speed",0);
-    fake::TraceNumber("servo_angle",c_.servo_trim_deg);
-    std::cout << "Gia lap: motor 0, servo " << c_.servo_trim_deg << '\n'; return true;
-#else
-    // Thử cả hai thiết bị ngay cả khi một cổng lỗi; không khởi tạo driver motor.
-    const bool m=motor_.OpenPortOnly();
-    bool sent=false;
-    if(m) { motor_.SetSpeedCms(0); sent=motor_.LastWriteOk(); }
-    const bool s=servo_.Init() && servo_.SetPWMFreq(50);
-    const bool centered=s && servo_.SetAngle(c_.servo_trim_deg);
-    return m && sent && centered;
-#endif
-}
 bool Backend::Frame(cv::Mat &frame) {
 #ifdef UCR_FAKE_HW
     if(fake::CameraGap()) return false;
