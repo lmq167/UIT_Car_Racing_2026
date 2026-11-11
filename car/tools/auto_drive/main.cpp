@@ -491,7 +491,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             if (stopping) break;
             // Kẹp độc lập YAML, ngay tại tầng gửi; motor luôn trước servo trên đường dừng.
             speed=clampAutoSpeed(static_cast<float>(speed)); angle=clampAutoSteer(angle,parkSteer);
-            if (speed<0 && !parkSteer) speed=0;  // chỉ pha đỗ (DO_XE) được lùi
             if (speed==0 && angle==0) {
                 if (!stopVehicle(motor,servo)) throw Failure(1,"Không xác nhận được dừng");
             } else {
