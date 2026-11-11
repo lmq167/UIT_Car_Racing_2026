@@ -167,7 +167,7 @@ void Planner::Reset(bool preserve_lights) {
     park_phase_=ParkPhase::NONE; park_run_=0; park_ms0_=park_prog_ms_=-1;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
-    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1;
+    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=0;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -773,7 +773,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     // Đỗ xe (chặng 8). Cần turn_enable (yaw/encoder chỉ được đọc khi bật rẽ).
     auto park_go_fixed=[&](const std::string &why) {  // ô cố định cuối đường (ToF chưa hiệu chuẩn/quét mơ hồ)
-        park_phase_=ParkPhase::TIEN; park_fixed_=true; park_fixed_ms0_=now_ms; park_last_mask_ms_=input.mask_ms;
+        park_phase_=ParkPhase::TIEN; park_fixed_=true; park_end_run_=0; park_fixed_ms0_=now_ms; park_last_mask_ms_=input.mask_ms;
         park_odo0_=input.odo_cm; park_step_cm_=0; park_cap_cms_=kParkFixedCms;
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
     };
@@ -794,13 +794,16 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                                             rb_in_pass_ || rb_holding_)) { park_phase_=ParkPhase::NONE; park_fixed_=false; }
         if(park_phase_==ParkPhase::TIEN && park_fixed_) {
             if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) park_fixed_ms0_+=now_ms-command_ms_;  // đứng vì người không tính
-            bool end_row=false;
+            // Cuối đường: vote_min mặt nạ MỚI liên tiếp có hàng 90% trống VÀ các hàng sát đầu xe (dưới hàng đó) vẫn có
+            // đường; mặt nạ trống toàn bộ (segmentation hụt) không tính (review P6 M-1).
             if(input.mask_ms!=park_last_mask_ms_ && mask_fresh && !input.mask.empty() && input.mask.type()==CV_8UC1) {
                 park_last_mask_ms_=input.mask_ms;
-                const int y=std::max(0,std::min(input.mask.rows-1,int(std::lround((input.mask.rows-1)*kParkEndRowFrac))));
-                end_row=cv::countNonZero(input.mask.row(y))==0;
+                const int y=std::max(0,std::min(input.mask.rows-2,int(std::lround((input.mask.rows-1)*kParkEndRowFrac))));
+                const bool row_empty=cv::countNonZero(input.mask.row(y))==0;
+                const bool near_road=cv::countNonZero(input.mask.rowRange(y+1,input.mask.rows))>0;
+                park_end_run_=row_empty && near_road ? park_end_run_+1 : 0;
             }
-            if(end_row) {
+            if(park_end_run_>=std::max(1,params.vote_min)) {
                 ClearTurn(); park_ms0_=now_ms; state_=PlannerState::DO_XE; park_phase_=ParkPhase::CHO;
                 reason_="DO_XE_CHO"; park_note_+=" -> CUOI_DUONG";
             } else if(now_ms-park_fixed_ms0_>kParkFixedMaxMs) {
@@ -826,7 +829,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Xe đứng: đợi ổn định, rồi chỉ nhận mẫu ToF lấy SAU thời điểm đó. Mơ hồ/không thấy ô: chuyển ô cố định.
             const bool left=params.park_side==1;
             const int slot_f=ParkTofSlot(params.park_tof_map,left ? 1 : 2), slot_r=ParkTofSlot(params.park_tof_map,left ? 0 : 3);
-            const TofSlot &sf=input.tof[slot_f], &sr=input.tof[slot_r];
+            static const TofSlot kNoTof{};  // phòng thủ: ánh xạ không hợp lệ thì coi như không có mẫu
+            const TofSlot &sf=slot_f>=0 && slot_f<4 ? input.tof[slot_f] : kNoTof, &sr=slot_r>=0 && slot_r<4 ? input.tof[slot_r] : kNoTof;
             const int64_t min_ms=park_scan_ms0_+kParkSettleMs, waited=now_ms-park_scan_ms0_;
             ScanCell cf=ClassifyTofSample(sf,now_ms,kParkOccMm,kParkTofAgeMs), cr=ClassifyTofSample(sr,now_ms,kParkOccMm,kParkTofAgeMs);
             if(sf.sample_ms<min_ms) cf=ScanCell::UNKNOWN;

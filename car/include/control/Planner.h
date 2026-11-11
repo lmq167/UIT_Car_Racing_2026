@@ -130,6 +130,7 @@ private:
     int64_t park_scan_ms0_=-1;
     // Ô cố định (ToF chưa hiệu chuẩn hoặc quét mơ hồ): bám làn chậm tới cuối đường (hàng 90% mặt nạ không còn đường).
     bool park_fixed_=false;
+    int park_end_run_=0;  // số mặt nạ mới liên tiếp thấy cuối đường
     int64_t park_fixed_ms0_=-1, park_last_mask_ms_=-1;
     std::string park_note_;
     void ClearTurn();

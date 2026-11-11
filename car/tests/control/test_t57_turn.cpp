@@ -752,8 +752,11 @@ void Case(const std::string& name) {
             for (int i=0;i<30;++i) { r.in.odo_cm+=0.4; plan=tick(r);
                 Check(plan.cmd.cms>=0 && plan.cmd.cms<=10+1e-9,"Ô cố định: tiến <= 10 cm/s, không lùi"); }
             Check(r.planner.ParkNote().find("TOF_CHUA_HIEU_CHUAN")!=std::string::npos,"Chưa đo ToF phải log TOF_CHUA_HIEU_CHUAN");
-            end_mask(r); r.in.odo_cm+=0.4; plan=tick(r);
-            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_CHO" && plan.cmd.cms==0,"Cuối đường phải dừng chờ lùi");
+            end_mask(r);
+            for (int i=0;i<r.p.vote_min-1;++i) { r.in.odo_cm+=0.4; plan=tick(r);
+                Check(plan.state!=control::PlannerState::DO_XE && plan.cmd.cms>=0,"Chưa đủ vote_min mặt nạ cuối đường thì chưa dừng"); }
+            r.in.odo_cm+=0.4; plan=tick(r);
+            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_CHO" && plan.cmd.cms==0,"Đủ vote_min mặt nạ cuối đường phải dừng chờ lùi");
             for (int i=0;i<20 && plan.reason=="DO_XE_CHO";++i) plan=tick(r,50);
             return plan;
         };
@@ -802,6 +805,21 @@ void Case(const std::string& name) {
             for (int i=0;i<400 && plan.reason=="DO_XE_TIEN_GIUA";++i) { r.in.odo_cm+=0.24; plan=tick(r); }
             r.in.yaw_deg=5; for (int i=0;i<20 && plan.reason=="DO_XE_KIEM";++i) plan=tick(r,50);
             Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_LECH_HUONG","Lệch 5° lúc kiểm không được báo xong");
+        }
+        { // Mặt nạ trống toàn bộ (segmentation hụt) hoặc cuối đường chỉ một mặt nạ lẻ: không vào DO_XE, không lùi.
+            Rig r; r.p.park_enable=1; r.p.park_tof_map=0; r.p.park_side=-1; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            control::Plan plan;
+            for (int i=0;i<5;++i) { r.in.odo_cm+=0.4; plan=tick(r); }
+            r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0));
+            for (int i=0;i<r.p.vote_min+3;++i) { r.in.odo_cm+=0.4; plan=tick(r);
+                Check(plan.state!=control::PlannerState::DO_XE && plan.cmd.cms>=0,"Mặt nạ trống toàn bộ không phải cuối đường"); }
+            r.mask(60,140);
+            for (int k=0;k<6;++k) {
+                end_mask(r); r.in.odo_cm+=0.4; plan=tick(r);
+                Check(plan.state!=control::PlannerState::DO_XE,"Cuối đường một mặt nạ lẻ không đủ");
+                r.mask(60,140); r.in.odo_cm+=0.4; plan=tick(r);
+            }
         }
         { // Không thấy cuối đường trong 20 s: dừng, không lùi.
             Rig r; r.p.park_enable=1; r.p.park_tof_map=0; r.p.park_side=-1; r.in.odo_cm=0;
