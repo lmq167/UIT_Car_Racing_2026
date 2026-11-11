@@ -185,13 +185,36 @@ int main(int argc, char **argv) {
         Require(options.count("--run") && options.count("--out"),"Dùng: ucr_replay_control --run <dir> [--control <yaml>] --out <dir>");
         const auto run=Absolute(options.at("--run"));
         const auto output=NewOutput(options.at("--out"),run);
-        cv::FileStorage session(run+"/session.json",cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
-        Require(session.isOpened() && session.root().isMap(),"session.json phải là object JSON");
+        // OpenCV >= 4.13 (laptop) không đọc được session.json có chuỗi dài chứa \u000a (control_yaml): dùng bộ quét văn bản dự phòng
+        // chỉ để lấy yolo_enabled (replay không dùng khóa nào khác). Hợp đồng vẫn bắt buộc session.json là một object JSON.
+        int yoloValue=-1;  // -1: không có khóa
+        {
+            bool parsed=false;
+            try {
+                cv::FileStorage session(run+"/session.json",cv::FileStorage::READ | cv::FileStorage::FORMAT_JSON);
+                if (session.isOpened() && session.root().isMap()) {
+                    const auto node=session.root()["yolo_enabled"];
+                    Require(node.empty() || (node.isInt() && (int(node)==0 || int(node)==1)),"session yolo_enabled sai");
+                    yoloValue=node.empty() ? -1 : int(node); parsed=true;
+                }
+            } catch (const cv::Exception&) {}
+            if (!parsed) {
+                std::ifstream raw(run+"/session.json", std::ios::binary);
+                const std::string text((std::istreambuf_iterator<char>(raw)), std::istreambuf_iterator<char>());
+                size_t first=text.find_first_not_of(" \t\r\n"), last=text.find_last_not_of(" \t\r\n");
+                Require(first!=std::string::npos && text[first]=='{' && text[last]=='}',"session.json phải là object JSON");
+                const size_t key=text.find("\"yolo_enabled\"");
+                if (key!=std::string::npos) {
+                    const size_t colon=text.find(':',key);
+                    const size_t value=text.find_first_not_of(" \t\r\n",colon+1);
+                    Require(colon!=std::string::npos && value!=std::string::npos && (text[value]=='0' || text[value]=='1'),"session yolo_enabled sai");
+                    yoloValue=text[value]-'0';
+                }
+            }
+        }
         const std::string config=options.count("--control") ? options.at("--control") : run+"/control.yaml";
         const auto params=control::ControlParams::Load(config,std::cout);
-        const auto yoloNode=session.root()["yolo_enabled"];
-        Require(yoloNode.empty() || (yoloNode.isInt() && (int(yoloNode)==0 || int(yoloNode)==1)),"session yolo_enabled sai");
-        const bool yoloEnabled=!yoloNode.empty() && int(yoloNode)==1;
+        const bool yoloEnabled=yoloValue==1;
         std::map<uint64_t,control::Detections> batches;
         std::ifstream detectionLog(run+"/detections.csv");
         if (yoloEnabled && !detectionLog) std::cerr<<"Thiếu detections.csv: không tái hiện đủ luật đèn\n";
