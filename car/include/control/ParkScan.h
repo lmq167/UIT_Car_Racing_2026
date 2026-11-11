@@ -22,6 +22,8 @@ struct ParkSlotResult {
     double near_x_cm=0, far_x_cm=0;
     bool open_near=false;
 };
+// Phân loại MỘT mẫu ToF: UNKNOWN nếu chưa khởi tạo/không mẫu/lỗi API/không hợp lệ/quá cũ; OCCUPIED nếu mm <= occ_mm, ngược lại EMPTY.
+ScanCell ClassifyTofSample(const TofSlot& s, int64_t now_ms, double occ_mm, int max_age_ms);
 class ParkScan {
 public:
     explicit ParkScan(const ParkScanConfig&);

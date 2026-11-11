@@ -12,12 +12,15 @@ void ParkScan::Reset() {
     result_=ParkSlotResult{};
     why_="chua_thay_mep_xa";
 }
-ScanCell ParkScan::Classify(int64_t now, const TofSlot& s) const {
+ScanCell ClassifyTofSample(const TofSlot& s, int64_t now, double occ_mm, int max_age_ms) {
     if (!s.initialized || !s.has_sample || s.api_error!=0 || !s.valid ||
         s.mm<0 || s.sample_ms<0 || s.sample_ms>now ||
-        static_cast<long double>(now)-s.sample_ms>cfg_.max_age_ms)
+        static_cast<long double>(now)-s.sample_ms>max_age_ms)
         return ScanCell::UNKNOWN;
-    return s.mm<=cfg_.occ_mm ? ScanCell::OCCUPIED : ScanCell::EMPTY;
+    return s.mm<=occ_mm ? ScanCell::OCCUPIED : ScanCell::EMPTY;
+}
+ScanCell ParkScan::Classify(int64_t now, const TofSlot& s) const {
+    return ClassifyTofSample(s,now,cfg_.occ_mm,cfg_.max_age_ms);
 }
 void ParkScan::Sample(int i, double x, ScanCell cell) {
     Run& r=runs_[i];

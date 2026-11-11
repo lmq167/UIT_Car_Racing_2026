@@ -1,6 +1,7 @@
 #pragma once
 #include "options.h"
 #include "hooks.h"
+#include "control/ParkScan.h"
 #include <functional>
 #include <sys/stat.h>
 #include "../collect_common/preview.h"
@@ -278,6 +279,7 @@ struct SensorSample {
     bool sensor_ok=false;
     int64_t sensor_ms=-1;
     uint64_t fault_id=0;
+    control::TofSlot tof[4];  // mẫu ToF gần nhất (chỉ cập nhật khi xe đứng quét ô đỗ)
 };
 struct DriveImu {
     bool initialized=false;
@@ -358,7 +360,7 @@ struct DriveTof {
     bool initialized=false;
 #if UCR_AUTO_TOF_REAL
     sensor::TOF device;
-    int64_t lastPrintMs=0;
+    int64_t lastPrintMs=0, lastSampleMs=0;
 #endif
     void init(const DriveImu& imu) {
 #if UCR_AUTO_TOF_REAL
@@ -373,6 +375,32 @@ struct DriveTof {
         std::cout<<"TOF: khoi tao OK (doc va in khi xe dung)\n"<<std::flush;
 #else
         (void)imu;
+#endif
+    }
+    // Quét ô đỗ: đọc 4 ToF khi xe ĐÃ đứng (planner đang DO_XE_QUET, lệnh tốc độ 0); tối đa 10 lần/giây.
+    void sample(control::TofSlot out[4]) {
+#if UCR_AUTO_TOF_REAL
+        if (!initialized || hardwareFault) return;
+        const int64_t now=nowMs();
+        if (now-lastSampleMs<100) return;
+        lastSampleMs=now;
+        sensor::TOFReadings r;
+        try { HardwareCall call(2); device.Read(r,std::chrono::milliseconds(500)); }
+        catch (const std::exception& e) { std::cerr<<"TOF LOI doc: "<<e.what()<<'\n'; return; }
+        const auto steady=std::chrono::steady_clock::now();
+        for (std::size_t i=0;i<r.size() && i<4;++i) {
+            control::TofSlot s;
+            s.initialized=r[i].initialized; s.valid=r[i].valid; s.has_sample=r[i].hasSample;
+            s.mm=r[i].distanceMm; s.api_error=r[i].apiError; s.range_status=r[i].rangeStatus;
+            const auto age=std::chrono::duration_cast<std::chrono::milliseconds>(steady-r[i].updatedAt).count();
+            s.sample_ms=r[i].updatedAt==std::chrono::steady_clock::time_point{} ? -1 : now-age;
+            out[i]=s;
+        }
+        std::cout<<"TOF quet:";
+        for (int i=0;i<4;++i) std::cout<<" ["<<i<<"] "<<(out[i].valid ? std::to_string(out[i].mm) : std::string("x"))<<'('<<out[i].range_status<<')';
+        std::cout<<std::endl;
+#else
+        (void)out;
 #endif
     }
     void pollAndPrint() {

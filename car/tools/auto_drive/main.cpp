@@ -231,6 +231,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         controllerThread=std::thread([&] {
             try {
                 control::Planner planner;
+                std::string lastParkNote;
                 ControlInput input;
                 uint64_t epoch=~uint64_t(0),id=0;
                 bool goPending=false;
@@ -250,6 +251,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         pi.detections=input.yolo.detections; pi.yolo_enabled=!options.noYolo;
                         pi.yaw_deg=input.sensor.yaw_deg; pi.odo_cm=input.sensor.odo_cm;
                         pi.sensor_ok=input.sensor.sensor_ok; pi.sensor_ms=input.sensor.sensor_ms;
+                        for (int i=0;i<4;++i) pi.tof[i]=input.sensor.tof[i];
                         if (epoch!=input.epoch) {
                             planner.Reset(!options.noYolo); epoch=input.epoch; goPending=input.enabled;
                         }
@@ -260,6 +262,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
+                        if (planner.ParkNote()!=lastParkNote) {  // log quá trình đỗ: biển P, quét ToF, chọn ô, quyết định
+                            lastParkNote=planner.ParkNote();
+                            if (!lastParkNote.empty()) { std::cout<<"PARK: "<<lastParkNote<<std::endl; trace("park",lastParkNote); }
+                        }
                         if (plan.state==control::PlannerState::BAM_LAN || plan.state==control::PlannerState::CHO_DEN_XUAT_PHAT ||
                             plan.state==control::PlannerState::DUNG_DEN_DO ||
                             plan.state==control::PlannerState::DUNG_VAT_CAN || plan.state==control::PlannerState::GIU_HUONG ||
@@ -332,6 +338,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         watchdog->heartbeat=nowMs(); watchdog->initialized=true;
         const auto boot=nowMs();
         bool enabled=false,ready=false,exit=false;
+        control::TofSlot lastTof[4];
         double safetyPeakMs=0;
         auto safetyPrevious=Clock::now();
         std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
@@ -408,12 +415,15 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             }
             if (exit || stopping) break;
-            if (!enabled && !eventStop) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
+            if (!enabled && !eventStop) tof.pollAndPrint();
+            else if (enabled && !eventStop && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&
+                     command.plan.reason=="DO_XE_QUET" && command.plan.cmd.cms==0) tof.sample(lastTof);  // chỉ khi xe đã đứng  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;
                 if (eventStop && !stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng trước đọc cảm biến");
                 sensor=SensorSample{};
+                for (int i=0;i<4;++i) sensor.tof[i]=lastTof[i];
                 const bool imuOk=imu.read(sensor);
                 if (!imuOk) sensor.yaw_deg=std::numeric_limits<double>::quiet_NaN();
                 float cm=0;

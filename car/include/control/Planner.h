@@ -1,6 +1,7 @@
 #pragma once
 #include "control/Detections.h"
 #include "control/LaneController.h"
+#include "control/ParkScan.h"
 #include <deque>
 
 namespace control {
@@ -21,6 +22,7 @@ struct PlannerInput {
     bool encoder_ok=false; // Encoder riêng: hữu hạn và tươi, không phụ thuộc yaw.
     int64_t sensor_ms=-1;
     bool go=false, stop=false;
+    TofSlot tof[4];  // 4 ToF theo khe BTC 0..3 ([0] trái-sau, [1] trái-trước, [2] phải-trước, [3] phải-sau); chỉ đọc khi xe đứng
 };
 struct Plan {
     PlannerState state=PlannerState::CHO_SAN_SANG;
@@ -36,6 +38,8 @@ public:
     // Lộ trình chặng vòng xuyến (chỉ đọc, cho test/phát lại): chặng 0-7 và lý do đổi gần nhất.
     int RouteStep() const { return route_step_; }
     const std::string &RouteNote() const { return route_note_; }
+    // Ghi chú quét ô ToF gần nhất (để ghi log); rỗng nếu chưa quét.
+    const std::string &ParkNote() const { return park_note_; }
 private:
     // Lộ trình theo hướng lượng tử 90° (Bắc = yaw lúc mở lần qua đảo đầu tiên). Không bị Reset/Space xóa.
     int route_step_=0, route_q_=0, route_cand_q_=0;  // route_q_: hướng (bội 90°) của chặng hiện tại
@@ -105,11 +109,16 @@ private:
     double l_seen_odo_=0;
     int l_right_run_=0, l_open_run_=0;
     // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11).
-    enum class ParkPhase { NONE, TIEN, CHO, LUI1, LUI2, XONG };
+    enum class ParkPhase { NONE, TIEN, QUET, CHO, LUI1, LUI2, XONG };
     ParkPhase park_phase_=ParkPhase::NONE;
     double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
     int64_t park_ms0_=-1, park_prog_ms_=-1;
     int park_run_=0;  // số lô YOLO tươi liên tiếp có biển parking
+    // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
+    int park_mode_=0, park_unknown_=0;
+    double park_step_cm_=0, park_scan_cm_=0, park_creep_cm_=0, park_cap_cms_=0;
+    int64_t park_scan_ms0_=-1;
+    std::string park_note_;
     void ClearTurn();
 };
 }
