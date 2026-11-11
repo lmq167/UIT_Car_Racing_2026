@@ -53,6 +53,7 @@ private:
     double route_yaw_ref_=0;
     bool route_anchored_=false, route_g_seen_=false, route_sync_=false, route_ambig_=false;
     bool route_check_rb_=false, route_pass_seen_=false;
+    bool rb_hold_check_=false; // G-sau-Space: lần qua đảo kế tiếp (chỉ một lần) không giữ hướng theo yaw lúc mở
     std::string route_note_;
     void RouteStable(int q);
     struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false; };

@@ -189,7 +189,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             (params.start_wait_green && !start_cleared_) ? PlannerState::CHO_DEN_XUAT_PHAT : PlannerState::BAM_LAN;
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
         // G sau Space/reset (không phải G đầu chương trình): đồng bộ lại chặng khi hướng ổn định (R1-R6).
-        if(route_g_seen_) { route_sync_=route_check_rb_=true; route_cand_ms_=-1; }
+        if(route_g_seen_) { route_sync_=route_check_rb_=rb_hold_check_=true; route_cand_ms_=-1; }
         route_g_seen_=true;
     }
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
@@ -331,7 +331,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;  // đang dừng (Space) không mở lần qua mới
                 // Lần qua mở ngay sau G-sau-Space (route_check_rb_): xe có thể đang giữa đảo nên yaw lúc này
                 // không phải hướng lúc vào; không giữ hướng theo nó (log 18:01 10/11 289 s lái trái ở lối ra phải).
-                rb_yaw0_=l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg; rb_hold_odo_=input.odo_cm; rb_hold_spent_=route_check_rb_;
+                rb_yaw0_=l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg; rb_hold_odo_=input.odo_cm;
+                // LOW L2: chỉ lần qua ĐẦU TIÊN mở sau G-sau-Space bỏ giữ hướng; route_check_rb_ còn treo (chưa đồng bộ được) không tắt GIU_HUONG các lần qua sau.
+                rb_hold_spent_=rb_hold_check_; rb_hold_check_=false;
                 if(!sensor_bad && !route_anchored_) {  // Bắc = hướng xe lúc vào đảo lần đầu (xuất phát chặng trước VX1)
                     // Đảo mở khi đang rẽ cua L sau cầu: Bắc = hướng sau cua (yaw lúc bắt đầu cua − 90°), không phải yaw giữa cua.
                     route_anchored_=true; route_yaw_ref_=l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg; route_step_=route_q_=0;
@@ -452,7 +454,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             red_latched_=true;
         }
         // Đang đỗ (lùi/đã đỗ): đèn không kéo xe sang DUNG_DEN_DO rồi BAM_LAN tiến khi xanh (review đỗ xe MEDIUM-1).
-        if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG &&
+        // LOW (review lượt 5): đèn đỏ chốt không ghi đè DUNG_VAT_CAN (nếu ghi đè, đèn xanh sẽ nhả thẳng sang BAM_LAN khi vật còn trước mặt);
+        // vật hết thì DUNG_VAT_CAN tự nhả về BAM_LAN, bước sau đèn đỏ còn chốt sẽ chuyển DUNG_DEN_DO.
+        if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG_VAT_CAN &&
            state_!=PlannerState::DO_XE && state_!=PlannerState::DO_XE_XONG) {
             if(red_latched_) {
                 if(turning_) { ClearTurn(); lane_.Reset(); }
