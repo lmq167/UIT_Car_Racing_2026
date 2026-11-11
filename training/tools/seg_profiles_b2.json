@@ -1,0 +1,16 @@
+{
+  "_note": "Hồ sơ tham số build_seg_masks.py theo chặng (c trong phieu_luot). default = bộ tham số chung đã duyệt bằng mắt; chang.<số> ghi đè riêng cho chặng đó. Khung đầu/cuối mỗi lượt (edge_frames khung) có thể còn thuộc chặng trước/sau nên chỉ dùng default. Muốn chỉnh riêng một chặng: thêm tham số vào chang.<số>, chạy lại, xem make_seg_review.py. Tên tham số: sat_max val_min loc_blur loc_diff loc_sat_max close_kernel min_area tophat_kernel tophat_min tophat_sat_max object_dilate sharp_min tophat_adapt_slope tophat_adapt_min tophat_rel tophat_floor weak_ratio weak_zone hole_fill blob_area blob_aspect.",
+  "edge_frames": 10,
+  "default": {
+    "tophat_adapt_slope": 0.15,
+    "tophat_adapt_min": 11,
+    "tophat_rel": 0.25,
+    "weak_ratio": 1.2,
+    "hole_fill": 150,
+    "blob_area": 70
+  },
+  "chang": {
+    "3": {},
+    "7": {}
+  }
+}
