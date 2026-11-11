@@ -213,6 +213,12 @@ target_link_libraries(test_park_scan PRIVATE ucr_control)
 add_test(NAME control_park_scan COMMAND test_park_scan)
 set_tests_properties(control_park_scan PROPERTIES LABELS "control" TIMEOUT 15)
 
+add_executable(test_p4_imu_turn test_p4_imu_turn.cpp)
+target_link_libraries(test_p4_imu_turn PRIVATE ucr_control)
+target_compile_options(test_p4_imu_turn PRIVATE -Wall -Wextra)
+add_test(NAME control_p4_imu_turn COMMAND test_p4_imu_turn)
+set_tests_properties(control_p4_imu_turn PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+
 add_executable(test_p3_low test_p3_low.cpp)
 target_link_libraries(test_p3_low PRIVATE ucr_control)
 add_test(NAME control_p3_low COMMAND test_p3_low)
