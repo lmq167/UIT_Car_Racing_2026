@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Test chấp nhận – cấu hình xấu, tham số dòng lệnh lạ, SIGINT/SIGTERM trực tiếp và
 # (mất ảnh đầu-cuối bằng chương trình thật). Chạy ở UCR_FAKE_HW=ON.
-# Dùng: acc_cli.sh <main> <ucr_stop> <acc_make_frames> <acc_sigrun>
+# Dùng: acc_cli.sh <main> <acc_make_frames> <acc_sigrun>
 #
 # Yêu cầu gốc:
 #  - Tham số lạ: "Tham số dòng lệnh lạ -> thông báo 'tham số không biết', mã thoát khác 0."
@@ -16,9 +16,8 @@
 #  - Quy tắc an toàn (dừng khi thoát): thoát bằng Ctrl+C/SIGTERM phải dừng sạch.
 source "$(dirname "$0")/acc_lib.sh"
 MAIN=${1:?can duong dan main}
-STOP=${2:?can duong dan ucr_stop}
-FRAMES=${3:-}
-export ACC_SIGRUN=${4:?can acc_sigrun}
+FRAMES=${2:-}
+export ACC_SIGRUN=${3:?can acc_sigrun}
 
 # Đạt khi mã thoát là "từ chối sạch": 1..127 (không phải 0, không bị tín hiệu giết, không hết giờ).
 clean_nonzero() { [[ $1 -ge 1 && $1 -le 127 && $1 -ne 124 ]]; }
@@ -201,10 +200,4 @@ if [[ -n $FRAMES ]]; then
 fi
 
 # ---------------------------------------------------------------------------------------------------------------
-# ucr_stop (bản giả lập): thoát 0 khi cấu hình tốt; mã khác 0 sạch khi cấu hình không đọc được (docs/ucr_car.md)
-out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$STOP" --config "$T/u/ok.yaml" 2>&1); rc=$?
-check "ucr_stop voi config tot (ban gia lap) phai thoat 0, nhan $rc; dau ra: $out" test "$rc" -eq 0
-out=$(cd "$T/u" && acc_run timeout --foreground -k 2s 10 "$STOP" --config "$T/u/khong_ton_tai.yaml" 2>&1); rc=$?
-check "ucr_stop voi config khong doc duoc phai thoat khac 0 va sach, nhan $rc" clean_nonzero "$rc"
-
 acc_finish acc_cli

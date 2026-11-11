@@ -6,7 +6,6 @@ set -m   # job control: tiến trình nền nhận SIGINT mặc định (không 
 
 ACC_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 ROOT=$(CDPATH= cd -- "$ACC_DIR/../.." && pwd -P)       # thư mục gốc ucr_car
-RUNSH="$ROOT/scripts/run.sh"
 ACC_CHECKS=0
 ACC_FAILS=0
 ACC_TMP_PARENT=$(CDPATH= cd -- "${TMPDIR:-/tmp}" && pwd -P)

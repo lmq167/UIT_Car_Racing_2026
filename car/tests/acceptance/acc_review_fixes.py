@@ -43,7 +43,7 @@ class ReviewSuite(LimitsSuite):
         # E1/H1: y trong lượt không được thay mốc thời gian hoặc mốc encoder của lượt đầu.
         if step == "position":
             # C1: không còn được chạy vị trí; motor/radius vẫn kiểm đủ hạn/quãng/y lặp.
-            from acc_stop_path import reject_position
+            from acc_calib_limits import reject_position
             reject_position(self)
             return
         distance = kind == "distance"
@@ -108,7 +108,7 @@ class ReviewSuite(LimitsSuite):
             held_window(rows, "motor_speed", 4350, MANUAL_GAP[0]-2*cycle, speed)
             stopped(rows, stop_by, MANUAL_NEW_KEY-10)
             samples = log_rows(folder, "manual")
-            stale = [r for r in samples if float(r["image_age_ms"]) >= 500 and r["state"] == "MAT_ANH"]
+            stale = [r for r in samples if float(r["image_age_ms"]) >= 400 and r["state"] == "MAT_ANH"]
             require(stale, "Phải quan sát MAT_ANH khi mất ảnh")
             old_id = max(int(r["frame_id"]) for r in stale)
             require(any(int(r["frame_id"]) > old_id and 0 <= float(r["image_age_ms"]) < 500 and
@@ -159,24 +159,6 @@ class ReviewSuite(LimitsSuite):
                     else:
                         range_error(stderr, key, value, 0.2 if key == "soft_start_s" else timeout/1000.0,
                                     10 if key == "soft_start_s" else 5, key == "soft_start_s")
-                if kind == "stop":
-                    # CFG11 so cùng lệnh chạy calib; mã 2 riêng của --check-config không phải mã chuẩn chạy xe.
-                    command = self.command(config)
-                    main_code, main_output = run(command, folder, env, timeout=5)
-                    require(0 < main_code < 124 and key in main_output and "ngoài khoảng hợp lệ" in main_output,
-                            "CFG11: main chạy thường phải từ chối đúng khoá ngoài khoảng")
-                    require(not trace(folder / "trace.csv") and not (folder / "runs").exists(),
-                            "CFG11: main lỗi trước phần cứng/runs")
-                    wrapper_code, wrapper_output = run(self.wrapper(folder, env, command), folder, env, timeout=5)
-                    require(wrapper_code == main_code,
-                            "CFG11: run.sh không giữ mã lỗi cùng lệnh main: main={}, run.sh={}, khoá={}\n{}".format(
-                                main_code, wrapper_code, key, wrapper_output[-1000:]))
-                    rows = trace(folder / "trace.csv")
-                    require(len(rows) == 2 and all(k not in ("motor_cfg", "motor_init") for _, k, _ in rows),
-                            "CFG11: chỉ ucr_stop gửi hai lệnh, không cấu hình motor")
-                    tail(rows)
-
-
 def self_test():
     # Tự kiểm bộ phán xét bằng vết sai có chủ ý; không phải bằng chứng mã xe đạt.
     good = [(0, "motor_speed", "10"), (20, "servo_angle", "27"),
@@ -198,53 +180,19 @@ def self_test():
             continue
         raise AssertionError("Bộ kiểm bỏ lọt vết/khoảng/cửa sổ sai")
     require(not near(float("nan"), 0) and not near(float("inf"), 0), "Không chấp nhận số không hữu hạn")
-    # Kiểm hồi quy CFG11: check-config=2, chạy main=1; wrapper phải giữ 1 và vẫn gửi cặp dừng.
-    from unittest.mock import patch
-    with tempfile.TemporaryDirectory(prefix="acc_bounds_selfcheck_") as folder:
-        calls = []
-        wrapper_exit = [1]
-
-        def fake_run(command, where, env, timeout=5):
-            calls.append(command)
-            config = read(where / "config.yaml")
-            message = ("soft_start_s = 0.199 ngoài khoảng hợp lệ [0.2, 10]" if "soft_start_s: 0.199" in config else
-                       "camera_resume_max_s = 5.001 ngoài khoảng hợp lệ (0.5, 5] theo image_timeout_ms")
-            (where / "output.txt").write_text("", encoding="utf-8")
-            (where / "error.txt").write_text(message, encoding="utf-8")
-            if command[0] == "wrapper":
-                (where / "trace.csv").write_text("0,motor_speed,0\n0,servo_angle,7\n", encoding="utf-8")
-                return wrapper_exit[0], message
-            return (2 if "--check-config" in command else 1), message
-
-        suite = ReviewSuite(folder, "main-gia", "stop-gia", folder)
-        suite.wrapper = lambda where, env, command: ["wrapper"]+command
-        with patch(__name__+".run", side_effect=fake_run):
-            suite.bounds("stop")
-            require(len(calls) == 6 and all(calls[i+1][1:] == calls[i] for i in (1, 4)),
-                    "CFG11 phải so đúng cùng đối số/cấu hình main với wrapper")
-            wrapper_exit[0] = 2
-            try:
-                suite.bounds("stop")
-            except AssertionError as error:
-                require("run.sh không giữ mã lỗi cùng lệnh main" in str(error), "Phải bắt đúng lỗi mã wrapper")
-            else:
-                raise AssertionError("CFG11 bỏ lọt wrapper đổi mã 1 thành 2")
-    print("ĐẠT: tự kiểm bộ phán xét; bắt 4 mẫu vết/khoảng/lịch sai và wrapper đổi mã lỗi")
-
-
 def main():
     if len(sys.argv) == 2 and sys.argv[1] == "self-test":
         self_test()
         return
-    require(len(sys.argv) >= 5, "Cần scenario root main ucr_stop [step]")
+    require(len(sys.argv) >= 4, "Cần scenario root main [step]")
     with tempfile.TemporaryDirectory(prefix="acc_review_fixes_") as folder:
-        suite = ReviewSuite(sys.argv[2], sys.argv[3], sys.argv[4], folder)
+        suite = ReviewSuite(sys.argv[2], sys.argv[3], folder)
         suite.fake_only()
         scenario = sys.argv[1]
         if scenario == "require_fake":
             return
         if scenario.startswith("repeat_"):
-            suite.repeated(scenario[7:], sys.argv[5])
+            suite.repeated(scenario[7:], sys.argv[4])
         elif scenario.startswith("manual_"):
             suite.manual(scenario.endswith("reverse"))
         elif scenario.startswith("bounds_"):

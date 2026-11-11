@@ -8,7 +8,7 @@
 // Yêu cầu gốc (không lấy từ mã nguồn):
 //  - Quy tắc cứng của dự án: chuỗi khởi tạo motor BTC (Motor::Init -> SendInitCommand, có SaveAndResetDriver) chỉ chạy
 //    ĐÚNG MỘT lần lúc khởi động chương trình chính; không gọi lại ở mở lại UART, luồng odometry, xử lý lỗi;
-//    `ucr_stop` tuyệt đối không gửi lệnh cấu hình; không AutoTunePid.
+//    không AutoTunePid.
 //  - Yêu cầu khởi tạo motor: "chống gọi lặp"; hàm chỉ mở cổng: hàm chỉ-mở-cổng (OpenPortOnly) không gửi lệnh `$...`.
 //  - Yêu cầu lệnh tốc độ: "gửi lệnh tốc độ ... không chờ phản hồi (SendCommand(cmd,false) hoặc tương đương) để luồng Actuator
 //    không bị chậm" (code mẫu BTC: ~110 ms mỗi lệnh).
@@ -191,7 +191,7 @@ void SpeedCommandsDoNotWait(Responder mode, const char *label) {
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// Ca 5 (mức Motor): đường "chỉ mở cổng" (dùng bởi ucr_stop) chỉ được gửi tốc độ / đọc vị trí, không lệnh cấu hình.
+// Ca 5 (mức Motor): đường "chỉ mở cổng" chỉ được gửi tốc độ / đọc vị trí, không lệnh cấu hình.
 void OpenPortOnlySendsNoConfig() {
     auto body = [](const char *slave) -> int {
         Motor m(slave);

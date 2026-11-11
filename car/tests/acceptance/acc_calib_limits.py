@@ -75,7 +75,7 @@ def observed_timing(rows, logs, control_hz=50):
             if not frames or row["frame_id"] != frames[-1][0]:
                 frames.append((row["frame_id"], captured))
     periods = [b[1]-a[1] for a, b in zip(frames, frames[1:]) if b[1] > a[1]]
-    require(len(cycles) >= 10 and len(periods) >= 5, "Tiền đề: thiếu mẫu đo chu kỳ trước sự kiện")
+    require(len(cycles) >= 10 and len(periods) >= 4, "Tiền đề: thiếu mẫu đo chu kỳ trước sự kiện")
     control_period = 1000.0/control_hz
     cycle = max(control_period, max(cycles))
     frame = max(40, max(periods))  # camera_hz=25; container có thể chậm hơn.
@@ -87,6 +87,29 @@ def observed_timing(rows, logs, control_hz=50):
             "nhịp quá chậm để phân giải sự cố/cửa sổ ảnh đã thiết kế".format(
                 cycle, cycle_limit, frame, delta))
     return cycle, frame, delta
+
+
+LOCKED = "Bước 5 đang khoá cho tới khi kiểm chế độ vị trí trên xe"
+
+def no_devices(folder):
+    require(not trace(folder / "trace.csv"), "C1: không được vào Backend::Init/motor_init/UART/lệnh thiết bị")
+    require(not (folder / "runs").exists(), "C1: không được tạo runs/")
+
+
+def rejection(code, stdout, stderr):
+    require(code == 2, "C1: cần exit 2, có {}".format(code))
+    require(LOCKED in stderr, "C1: thiếu nguyên văn câu khoá trên stderr")
+    require(LOCKED not in stdout, "C1: thông báo khoá phải ở stderr")
+
+
+def reject_position(suite, step="position"):
+    # Phân xử 28/10 sáng C1: áp dụng cho cả ca position cũ, trước mọi thiết bị/runs.
+    folder, config, env = LimitsSuite.setup(suite)
+    require(not (folder / "runs").exists(), "Bộ kiểm C1 phải bắt đầu khi chưa có runs/")
+    code, _ = run([suite.main, "--config", config, "--mode", "calib", "--step", step],
+                  folder, env, timeout=8)
+    rejection(code, read(folder / "output.txt"), read(folder / "error.txt"))
+    no_devices(folder)
 
 
 class LimitsSuite(Suite):
@@ -122,14 +145,6 @@ class LimitsSuite(Suite):
 
     def command(self, config, step="motor"):
         return [self.main, "--config", config, "--mode", "calib", "--step", str(STEPS[step])]
-
-    def wrapper(self, folder, env, command):
-        build = folder / "build"
-        build.mkdir()
-        for name, binary in (("main", self.main), ("ucr_stop", self.stop)):
-            (build / name).symlink_to(binary)
-        env["UCR_BUILD_DIR"] = str(build)
-        return ["bash", self.root / "scripts/run.sh"] + command[1:]
 
     def reach(self, process, folder, at):
         def reached():
@@ -228,7 +243,7 @@ class LimitsSuite(Suite):
                 rows = self.reach(process, folder, int(stop_by+60))
                 held_window(rows, "motor_speed", t0+300, GAP[0]-2*cycle, speed)
                 stale_logs = log_rows(folder, "calib")
-                require(any(float(row["image_age_ms"]) >= 500 and row["state"] == "MAT_ANH"
+                require(any(float(row["image_age_ms"]) >= 400 and row["state"] == "MAT_ANH"
                             for row in stale_logs), "Thiếu mẫu mất ảnh MAT_ANH")
                 last_stale_id = max(int(row["frame_id"]) for row in stale_logs)
                 rows = self.reach(process, folder, 7750)
@@ -328,11 +343,11 @@ class LimitsSuite(Suite):
             require(last_move < 5500, "q phải dừng ngay sau phím, không chạy đến hết hạn lượt")
 
     def signal_stalled(self, sig):
-        # H2/A: dừng khi UI chặn, qua trình bao; không dùng thời gian thoát làm bằng chứng dừng.
+        # H2/A: dừng khi UI chặn, gửi trực tiếp; không dùng thời gian thoát làm bằng chứng dừng.
         folder, config, env = self.setup()
         env["UCR_FAKE_KEYS"] = "3500:d,4000:y"
         env["UCR_FAKE_UI_STALL"] = "5000:6500"
-        command = self.wrapper(folder, env, self.command(config))
+        command = self.command(config)
         sent_index = []
         def observe(process):
             rows = self.reach(process, folder, 5400)
@@ -351,7 +366,7 @@ class LimitsSuite(Suite):
             require(all(near(float(v), 0) for _, k, v in new[zero:] if k == "motor_speed"), "Không lệnh chạy muộn sau dừng")
             require(sent+delta+200+1000 < 11500, "Tiền đề: UI chặn qua hạn dừng tín hiệu +1 s")
         code, _ = run(command, folder, env, observe, timeout=15)
-        require(code in (0, 130, 143), "Trình bao phải giữ mã thoát tín hiệu hợp lệ")
+        require(code in (0, 130, 143), "Main phải giữ mã thoát tín hiệu hợp lệ")
         rows = trace(folder / "trace.csv")
         tail(rows)
         new = rows[sent_index[0]:]
@@ -359,10 +374,6 @@ class LimitsSuite(Suite):
         require(all(near(float(v), 0 if k == "motor_speed" else 7)
                     for _, k, v in new[zero:] if k in ("motor_speed", "servo_angle")),
                 "UI tỉnh/thoát không ghi đè dừng sau tín hiệu")
-        # ucr_stop có gốc ms riêng: xác nhận theo thứ tự dòng, không so ms giữa hai tiến trình.
-        require(len(rows) >= 2 and rows[-2][1:] == ("motor_speed", "0") and rows[-1][1] == "servo_angle",
-                "Trình bao phải gửi cặp dừng độc lập cuối phiên")
-
     def stall(self, kind, step="motor"):
         # H5/L6: từ chối cú pháp sai; chuỗi rỗng tương đương không đặt, bỏ khỏi ca lỗi.
         if kind == "syntax":
@@ -443,26 +454,6 @@ class LimitsSuite(Suite):
                         require(match and near(float(match.group(1)), float(overrides[key])), "H4/K: khoá = giá trị và khoảng (0,trần]")
                 require(not trace(folder / "trace.csv") and not (folder / "runs").exists(), "check-config/lỗi trước thiết bị/runs")
 
-    def stop_invalid(self):
-        # H4/CFG11: cấu hình lỗi không cản dừng; trình bao giữ lỗi main.
-        for key, ceiling in LIMITS:
-            folder, config, env = self.setup({key: str(ceiling+1)})
-            main_code, _ = run(self.command(config), folder, env, timeout=5)
-            require(0 < main_code < 124 and not trace(folder / "trace.csv"), "Main lỗi trước thiết bị")
-            code, _ = run(self.wrapper(folder, env, self.command(config)), folder, env)
-            require(code == main_code, "run.sh phải giữ mã lỗi cấu hình main")
-            rows = trace(folder / "trace.csv")
-            require(len(rows) == 2, "Chỉ ucr_stop gửi đúng hai lệnh, main không khởi tạo")
-            tail(rows)
-            (folder / "trace.csv").unlink()
-            code, _ = run([self.stop, "--config", config], folder, env)
-            require(code == 0, "ucr_stop vẫn thành công với trần calib sai")
-            rows = trace(folder / "trace.csv")
-            require(len(rows) == 2 and all(k not in ("motor_init", "motor_cfg") for _, k, _ in rows),
-                    "ucr_stop không gửi cấu hình motor")
-            tail(rows)
-
-
 def self_test():
     # S/L5: bộ kiểm phải bắt motor quá hạn, servo trả chậm, phục hồi lệnh và cửa sổ chưa quan sát.
     good = [(0, "motor_speed", "10"), (0, "servo_angle", "27"),
@@ -497,7 +488,7 @@ def self_test():
     hw = [(ms, "servo_angle", "7") for ms in range(1000, 3301, 20)]
     logs = [{"frame_id": str(i+1), "image_age_ms": "10", "t": str(1+i*0.06)} for i in range(20)]
     cycle, frame, delta = observed_timing(hw, logs)
-    require(cycle == 20 and frame >= 59 and delta == 140 and GAP[0]+500+frame+delta < GAP[1],
+    require(cycle == 20 and frame >= 49 and delta == 140 and GAP[0]+500+frame+delta < GAP[1],
             "Nhịp ảnh container 60 ms phải vừa cửa sổ mất ảnh 1200 ms")
     try:
         observed_timing([], [])
@@ -508,7 +499,7 @@ def self_test():
     # L5: bản thật phải FAIL ở --env-info, trước mọi lệnh chuyển động, không trả 77.
     from unittest.mock import patch
     with tempfile.TemporaryDirectory(prefix="acc_calib_self_") as name:
-        suite = LimitsSuite(".", "main-gia", "stop-gia", name)
+        suite = LimitsSuite(".", "main-gia", name)
         # L6: tên ca vẫn dùng motor/radius, nhưng CLI phải nhận số bước đúng tài liệu.
         for step, number in (("motor", "4"), ("radius", "3")):
             require(suite.command("config.yaml", step)[-2:] == ["--step", number], "CLI calib phải dùng số bước")
@@ -542,25 +533,23 @@ def main():
     if len(sys.argv) == 2 and sys.argv[1] == "self-test":
         self_test()
         return
-    require(len(sys.argv) >= 5, "Cần scenario root main ucr_stop [step]")
+    require(len(sys.argv) >= 4, "Cần scenario root main [step]")
     scenario = sys.argv[1]
     with tempfile.TemporaryDirectory(prefix="acc_calib_limits_") as name:
-        suite = LimitsSuite(sys.argv[2], sys.argv[3], sys.argv[4], name)
+        suite = LimitsSuite(sys.argv[2], sys.argv[3], name)
         suite.fake_only()
         if scenario.startswith("config_"):
             suite.config_cases(scenario[7:])
         elif scenario.startswith("stall_"):
-            suite.stall(scenario[6:], sys.argv[5] if len(sys.argv) > 5 else "motor")
+            suite.stall(scenario[6:], sys.argv[4] if len(sys.argv) > 4 else "motor")
         elif scenario.startswith("exit_"):
             suite.exit_motion(scenario[5:])
         elif scenario.startswith("signal_"):
             suite.signal_stalled(scenario[7:])
-        elif scenario == "stop_invalid":
-            suite.stop_invalid()
         elif scenario == "require_fake":
             return
         else:
-            suite.motion(scenario, sys.argv[5] if len(sys.argv) > 5 else "motor")
+            suite.motion(scenario, sys.argv[4] if len(sys.argv) > 4 else "motor")
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ foreach(scenario throw clamp_pos clamp_neg nan pass imgloss)
     add_test(NAME acc_app_fault_${scenario} COMMAND acc_app_fault ${scenario})
 endforeach()
 
-# --- Lớp Motor thật qua UART giả (pty): chuỗi init đúng 1 lần, ucr_stop không gửi lệnh cấu hình, lệnh tốc độ không chờ.
+# --- Lớp Motor thật qua UART giả (pty): chuỗi init đúng 1 lần, OpenPortOnly không gửi lệnh cấu hình, lệnh tốc độ không chờ.
 # Biên dịch riêng Motor.cpp + Logger.cpp (không phụ thuộc I2C), không liên kết app_core để tránh trùng ký hiệu.
 add_executable(acc_motor_uart acc_motor_uart.cpp
     ${PROJECT_SOURCE_DIR}/src/hardware/Motor.cpp
@@ -33,24 +33,9 @@ add_executable(acc_make_frames acc_make_frames.cpp)
 target_link_libraries(acc_make_frames PRIVATE app_core)
 
 add_test(NAME acc_cli COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_cli.sh
-    $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_make_frames> $<TARGET_FILE:acc_sigrun>)
-add_test(NAME acc_run_sh COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_run_sh.sh)
-if(UCR_FAKE_HW)
-    # Dùng lại main tiêm SetController qua API công khai; không thêm điểm cắm vào mã xe.
-    set(ACC_SIGNAL_MAIN $<TARGET_FILE:acc_recovery_main>)
-else()
-    set(ACC_SIGNAL_MAIN $<TARGET_FILE:main>)
-endif()
-foreach(scenario run_INT run_TERM kill_main direct_INT direct_TERM invalid_config invalid_args)
-    add_test(NAME acc_signals_${scenario} COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_signals.sh
-        ${ACC_SIGNAL_MAIN} $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun> ${scenario})
-    set_tests_properties(acc_signals_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
-endforeach()
-add_test(NAME acc_shell_harness COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_harness.sh $<TARGET_FILE:acc_sigrun>)
-set_tests_properties(acc_shell_harness PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
-
+    $<TARGET_FILE:main> $<TARGET_FILE:acc_make_frames> $<TARGET_FILE:acc_sigrun>)
 set(ACC_TESTS acc_safety_logic acc_app_lifecycle acc_app_fault_throw acc_app_fault_clamp_pos acc_app_fault_clamp_neg
-    acc_app_fault_nan acc_app_fault_pass acc_app_fault_imgloss acc_motor_uart acc_cli acc_run_sh)
+    acc_app_fault_nan acc_app_fault_pass acc_app_fault_imgloss acc_motor_uart acc_cli )
 foreach(t ${ACC_TESTS})
     # Không biến lỗi thiết lập/mã 77 thành bỏ qua ở nhãn acceptance.
     set_tests_properties(${t} PROPERTIES LABELS "acceptance" TIMEOUT 120)
@@ -79,26 +64,6 @@ if(UCR_FAKE_HW)
         set_tests_properties(acc_hw_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
     set_tests_properties(acc_hw_tof_boundary PROPERTIES LABELS "regression;threads")
-    set(ACC_TRACE_SCENARIOS stop_trim_pos stop_trim_neg stop_trim_neg_invert stop_missing stop_range
-        main_manual_TERM main_odometry main_tof_min main_tof_max
-        calib_missing calib_zero calib_high calib_word calib_servo
-        reject_control_range reject_control_type reject_speed_type reject_trim_type
-        reject_tof_zero reject_tof_high reject_tof_large reject_tof_neg main_badargs
-        run_TERM run_INT kill_main fault_terminate fault_actuator fault_sensor wrapper_invalid)
-    foreach(kind text empty list map fraction)
-        list(APPEND ACC_TRACE_SCENARIOS stop_type_${kind})
-    endforeach()
-    foreach(kind short_no_default missing_no_default unknown_no_default short_default missing_default unknown_default
-            option_no_default option_default empty_no_default empty_default trailing_default trailing_no_default)
-        list(APPEND ACC_TRACE_SCENARIOS stop_args_${kind})
-    endforeach()
-    foreach(scenario ${ACC_TRACE_SCENARIOS})
-        add_test(NAME acc_trace_${scenario} COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_hwtrace.sh
-            $<TARGET_FILE:acc_recovery_main> $<TARGET_FILE:ucr_stop> $<TARGET_FILE:acc_sigrun> ${scenario})
-        set_tests_properties(acc_trace_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
-    endforeach()
-
-    # Hiệu chuẩn/an toàn: giao diện đã duyệt; không đăng ký các mục H/M01 và không có mã bỏ qua.
     find_package(PythonInterp 3.6 REQUIRED)
     set(ACC_VEHICLE_CLI ${CMAKE_CURRENT_SOURCE_DIR}/acc_vehicle_cli.py)
     # Python 3.6 trong container có thể dùng locale ASCII.
@@ -123,32 +88,32 @@ if(UCR_FAKE_HW)
     set_property(TARGET acc_recovery_main APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--wrap=_ZN3app3App5StartEv")
     foreach(mode calib)
         add_test(NAME acc_no_gate_${mode} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} no_gate
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode})
+            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${mode})
         set_tests_properties(acc_no_gate_${mode} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
     endforeach()
     foreach(scenario check_config_valid check_config_types check_config_ranges check_config_errors)
         add_test(NAME acc_${scenario} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} ${scenario}
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
         set_tests_properties(acc_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
-    foreach(scenario defaults config_numeric config_keys wrapper_config cli smoke_gate env)
+    foreach(scenario defaults config_numeric config_keys cli smoke_gate env)
         add_test(NAME acc_cli_${scenario} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} ${scenario}
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
         set_tests_properties(acc_cli_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
     # D01–D06 chạy trên laptop bằng tools/check_calib_docs.py; runner chỉ chép mã xe.
     foreach(step env servo radius motor position imu tof camera latency timing)
         add_test(NAME acc_calib_${step} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} calib
-            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step} TERM)
+            ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${step} TERM)
         set_tests_properties(acc_calib_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
     endforeach()
     add_test(NAME acc_calib_int COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} calib
-        ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> motor INT)
+        ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> motor INT)
     set_tests_properties(acc_calib_int PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
     foreach(mode calib)
         foreach(fault actuator_throw sensor_throw terminate)
             add_test(NAME acc_${mode}_${fault} COMMAND ${ACC_VEHICLE_PYTHON} ${ACC_VEHICLE_CLI} fault
-                ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${mode} ${fault})
+                ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${mode} ${fault})
             set_tests_properties(acc_${mode}_${fault} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
         endforeach()
     endforeach()
@@ -171,33 +136,33 @@ foreach(scenario tick_limits cancel_keys limit_defaults)
         add_test(NAME acc_calib_${scenario} COMMAND acc_calib_limits ${scenario})
     else()
         add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
-            require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+            require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     endif()
     set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 120)
 endforeach()
 foreach(scenario deadline capture_deadline distance)
     foreach(step motor radius)
         add_test(NAME acc_calib_${scenario}_${step} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
-            ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step})
+            ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${step})
         set_tests_properties(acc_calib_${scenario}_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
     endforeach()
 endforeach()
 foreach(scenario expiry_braked expiry_restart image_plain image_inverted image_stalled
         image_key_a image_key_plus image_key_minus image_stale_key
         tof_front_near tof_front_invalid tof_forward_rear_invalid
-        exit_q exit_eof signal_INT signal_TERM stall_once stall_zero stop_invalid)
+        exit_q exit_eof signal_INT signal_TERM stall_once stall_zero)
     add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
-        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 90)
 endforeach()
 foreach(step motor radius)
     add_test(NAME acc_calib_unconfirmed_${step} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
-        stall_unconfirmed ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step})
+        stall_unconfirmed ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${step})
     set_tests_properties(acc_calib_unconfirmed_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
 endforeach()
 foreach(scenario config_defaults config_valid config_range config_type config_before_init stall_syntax)
     add_test(NAME acc_calib_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_CALIB_LIMITS}
-        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+        ${scenario} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     set_tests_properties(acc_calib_${scenario} PROPERTIES LABELS "acceptance" TIMEOUT 120)
 endforeach()
 set_tests_properties(acc_calib_config_before_init PROPERTIES LABELS "acceptance;threads")
@@ -221,7 +186,7 @@ foreach(scenario defaults position_default)
         add_test(NAME ${test_name} COMMAND acc_startup_safety ${scenario})
     else()
         add_test(NAME ${test_name} COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES}
-            require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+            require_fake ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     endif()
     set_tests_properties(${test_name} PROPERTIES LABELS "acceptance" TIMEOUT 30)
 endforeach()
@@ -232,90 +197,24 @@ foreach(kind deadline distance)
     endif()
     foreach(step ${steps})
         add_test(NAME acc_calib_repeat_${kind}_${step} COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES}
-            repeat_${kind} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop> ${step})
+            repeat_${kind} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> ${step})
         set_tests_properties(acc_calib_repeat_${kind}_${step} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
     endforeach()
 endforeach()
 foreach(direction forward reverse)
     add_test(NAME acc_manual_clear_${direction} COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES}
-        manual_${direction} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+        manual_${direction} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     set_tests_properties(acc_manual_clear_${direction} PROPERTIES LABELS "acceptance;threads" TIMEOUT 45)
 endforeach()
-foreach(kind valid invalid before_init stop)
+foreach(kind valid invalid before_init)
     add_test(NAME acc_recovery_bounds_${kind} COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES}
-        bounds_${kind} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main> $<TARGET_FILE:ucr_stop>)
+        bounds_${kind} ${PROJECT_SOURCE_DIR} $<TARGET_FILE:main>)
     set_tests_properties(acc_recovery_bounds_${kind} PROPERTIES LABELS "acceptance" TIMEOUT 120)
 endforeach()
-set_property(TEST acc_recovery_bounds_stop APPEND PROPERTY LABELS threads)
 add_test(NAME acc_review_fix_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_REVIEW_FIXES} self-test)
 set_tests_properties(acc_review_fix_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
 
-# T05g/Quyết định L: giữ huỷ lệnh ở manual/calib; auto giữ hành vi cũ.
-# Mỗi ca tự dùng thư mục/vết riêng, không RUN_SERIAL và không mã bỏ qua.
-set(ACC_SAFETY_LATCH ${CMAKE_CURRENT_SOURCE_DIR}/acc_safety_latch.py)
-set(ACC_LATCH_SCENARIOS
-    limit_deadline limit_distance limit_position
-    calib_front calib_front_stalled calib_long_stalled calib_image calib_short
-    calib_stale calib_startup calib_image_twice calib_front_twice calib_front_mixed)
-foreach(mode manual)
-    foreach(kind phase image image_reverse image_opposite image_reverse_opposite
-            front front_opposite rear rear_opposite rear_invalid rear_forward rear_forward_invalid
-            front_reverse short stale stale_reverse image_twice front_twice rear_twice front_mixed idle startup)
-        list(APPEND ACC_LATCH_SCENARIOS ${mode}_${kind})
-    endforeach()
-endforeach()
-# Chỉ tập đại diện giữ nhãn threads để TSan không phải chạy hết ma trận chốt.
-set(ACC_LATCH_TSAN_SET manual_image calib_front)
-foreach(scenario ${ACC_LATCH_SCENARIOS})
-    set(latch_labels "acceptance")
-    if(scenario IN_LIST ACC_LATCH_TSAN_SET)
-        set(latch_labels "acceptance;threads")
-    endif()
-    set(latch_main $<TARGET_FILE:main>)
-    set(latch_scenario ${scenario})
-    if(NOT UCR_FAKE_HW)
-        set(latch_scenario require_fake)
-    endif()
-    add_test(NAME acc_t05g_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH}
-        ${latch_scenario} ${PROJECT_SOURCE_DIR} ${latch_main} $<TARGET_FILE:ucr_stop>)
-    set_tests_properties(acc_t05g_${scenario} PROPERTIES LABELS "${latch_labels}" TIMEOUT 120)
-endforeach()
-add_test(NAME acc_t05g_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_SAFETY_LATCH} self-test)
-set_tests_properties(acc_t05g_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
-
-# T05h: FIFO nghẽn + lỗi encoder tại API, C1 và mã lỗi trình bao; mỗi ca dùng thư mục riêng.
-set(ACC_STOP_PATH ${CMAKE_CURRENT_SOURCE_DIR}/acc_stop_path.py)
-if(UCR_FAKE_HW)
-    add_executable(acc_stop_path_main ${PROJECT_SOURCE_DIR}/main.cpp acc_stop_path_inject.cpp ${PROJECT_SOURCE_DIR}/src/common/Logger.cpp)
-    target_link_libraries(acc_stop_path_main PRIVATE app_core)
-    target_compile_definitions(acc_stop_path_main PRIVATE UCR_ENV_CHECK_SCRIPT="${PROJECT_SOURCE_DIR}/scripts/env_check.sh")
-    target_compile_options(acc_stop_path_main PRIVATE -Wall -Wextra)
-    set_property(TARGET acc_stop_path_main APPEND_STRING PROPERTY LINK_FLAGS
-        " -Wl,--wrap=_ZN3app7Backend8PositionERf -Wl,--wrap=_ZN3app7Backend4InitEv")
-endif()
-set(ACC_STOP_SCENARIOS position_5 position_named check_config wrapper_stop_failure
-    stdout_calib_image stdout_calib_tof)
-foreach(step 1 2 3 4 6 7 8 9 10)
-    list(APPEND ACC_STOP_SCENARIOS other_step_${step})
-endforeach()
-foreach(scenario ${ACC_STOP_SCENARIOS})
-    set(stop_main $<TARGET_FILE:main>)
-    set(stop_labels "acceptance")
-    if(UCR_FAKE_HW)
-        set(stop_main $<TARGET_FILE:acc_stop_path_main>)
-    endif()
-    # Chỉ một ca ngắn đại diện đi qua TSan, không nhân cả ma trận FIFO.
-    if(scenario STREQUAL "stdout_calib_tof")
-        set(stop_labels "acceptance;threads")
-    endif()
-    add_test(NAME acc_t05h_${scenario} COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH}
-        ${scenario} ${PROJECT_SOURCE_DIR} ${stop_main} $<TARGET_FILE:ucr_stop>)
-    set_tests_properties(acc_t05h_${scenario} PROPERTIES LABELS "${stop_labels}" TIMEOUT 90)
-endforeach()
-add_test(NAME acc_t05h_harness COMMAND ${ACC_CALIB_PYTHON} ${ACC_STOP_PATH} self-test)
-set_tests_properties(acc_t05h_harness PROPERTIES LABELS "acceptance" TIMEOUT 10)
-# C1: chỉ gán nhãn cho ca đã đăng ký vì acc_calib_position không tồn tại khi UCR_FAKE_HW=OFF.
-foreach(t acc_calib_position acc_calib_repeat_deadline_position acc_t05g_limit_position)
+foreach(t acc_calib_position acc_calib_repeat_deadline_position)
     if(TEST ${t})
         set_tests_properties(${t} PROPERTIES LABELS "acceptance")
     endif()

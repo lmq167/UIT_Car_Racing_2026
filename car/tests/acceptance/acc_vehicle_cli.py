@@ -191,10 +191,9 @@ def run(command, folder, env=None, observe=None, timeout=EXIT_TIMEOUT):
 
 
 class Suite:
-    def __init__(self, root, main, stop, folder):
+    def __init__(self, root, main, folder):
         self.root = Path(root).resolve()
         self.main = Path(main).resolve()
-        self.stop = Path(stop).resolve()
         self.folder = Path(folder).resolve()
         self.number = 0
 
@@ -222,7 +221,7 @@ class Suite:
         return folder, config, env
 
 
-    def reject(self, key, value, wrapper=False, remove=()):
+    def reject(self, key, value, remove=()):
         folder, config, env = self.setup({key: value} if key else {}, remove)
         if not key:
             if value == "missing":
@@ -230,13 +229,6 @@ class Suite:
             else:
                 config.write_text("%YAML:1.0\n---\n[not: valid\n", encoding="utf-8")
         cmd = [self.main, "--config", config, "--mode", "manual"]
-        if wrapper:
-            build = folder / "build"
-            build.mkdir()
-            for name, binary in [("main", self.main), ("ucr_stop", self.stop)]:
-                (build / name).symlink_to(binary)
-            env["UCR_BUILD_DIR"] = str(build)
-            cmd = ["bash", self.root / "scripts/run.sh", "--config", config, "--mode", "manual"]
         label = "{}={}".format(key or "file", value)
         try:
             code, output = run(cmd, folder, env)
@@ -257,13 +249,8 @@ class Suite:
             require(key in errors and re.search(r"\[\s*1\s*,\s*500\s*\]", errors),
                     label + ": stderr phải có khóa và khoảng [1,500]")
         rows = trace(folder / "trace.csv")
-        if wrapper:
-            require(len(rows) == 2, "CFG11: chỉ hai lệnh dừng, main không được khởi tạo")
-            require(not any(k in ("motor_cfg", "motor_init") for _, k, _ in rows), "CFG11: dừng không cấu hình motor")
-            tail(rows)
-        else:
-            require(not rows, label + ": phải từ chối trước mọi thiết bị")
-            require(not list((folder / "runs").iterdir()), label + ": không tạo lượt chạy")
+        require(not rows, label + ": phải từ chối trước mọi thiết bị")
+        require(not list((folder / "runs").iterdir()), label + ": không tạo lượt chạy")
 
     def config_numeric(self):
         # CFG03/04: chuỗi số vẫn sai kiểu; không hữu hạn/tràn không được thành mặc định.
@@ -296,15 +283,6 @@ class Suite:
             self.reject("tof_names", value)
         for value in ("missing", "malformed"):
             self.reject(None, value)
-
-    def wrapper_config(self):
-        # CFG11: lỗi từng khóa mới vẫn gọi dừng độc lập qua run.sh.
-        for key, values in [("camera_resume_max_s", ['"2"', "0.5"]),
-                            ("soft_start_s", ['"1"', "0"]),
-                            ("resume_stable_s", ['"2"', "0", "0.499", "30.001"]),
-                            ("tof_mapping_confirmed", ['"true"', "2"])]:
-            for value in values:
-                self.reject(key, value, wrapper=True)
 
     def check_config(self, scenario):
         # F: dùng cùng lệnh kiểm cho mọi khóa, không cần smoke và không được mở thiết bị.
@@ -473,28 +451,6 @@ class Suite:
             require("smoke" in output.lower() or (kind == "mapping" and "tof_mapping_confirmed" in output),
                     label + ": thiếu lý do gate/ánh xạ")
             require(not trace(folder / "trace.csv"), label + ": từ chối trước thiết bị, không chuyển động")
-            if not (kind == "missing" or
-                    (kind == "wrong" and field == "passed" and type(value) is int and value == 0)):
-                continue
-            # Gate thiếu và KHÔNG ĐẠT không được chặn đường dừng độc lập.
-            build = folder / "build"
-            build.mkdir()
-            for name, binary in (("main", self.main), ("ucr_stop", self.stop)):
-                (build / name).symlink_to(binary)
-            env["UCR_BUILD_DIR"] = str(build)
-            code, _ = run(["bash", self.root / "scripts/run.sh", "--config", config, "--mode", "auto"], folder, env)
-            rows = trace(folder / "trace.csv")
-            require(0 < code < 124 and len(rows) == 2, "S15/16: run.sh giữ lỗi main và vẫn dừng")
-            require(not any(k in ("motor_init", "motor_cfg") for _, k, _ in rows), "S15/16: dừng không cấu hình motor")
-            tail(rows)
-            (folder / "trace.csv").unlink()
-            code, _ = run([self.stop, "--config", config], folder, env)
-            require(code == 0, "S15/16: ucr_stop độc lập không bị cổng chặn")
-            rows = trace(folder / "trace.csv")
-            require(len(rows) == 2 and not any(k in ("motor_init", "motor_cfg") for _, k, _ in rows),
-                    "S15/16: ucr_stop chỉ dừng motor/servo")
-            tail(rows)
-
     def cli(self):
         # C01/C14: giao diện leader chốt --step <1..10>, lỗi trước thiết bị.
         invalid = [["--mode", "calib"], ["--mode", "calib", "--step"]]
@@ -510,6 +466,7 @@ class Suite:
         # S17: phải thấy log/cảm biến trước tín hiệu; mã thoát một mình không chứng minh đã khởi động.
         folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
         require(not (folder / "runs/smoke_gate.json").exists(), "S17: tiền điều kiện không có cổng smoke")
+        args = [self.main, "--config", config, "--mode", mode]
         args = [self.main, "--config", config, "--mode", mode]
         if mode == "calib":
             args += ["--step", "2"]
@@ -527,7 +484,7 @@ class Suite:
         # C02/C13/A01: mỗi bước số hợp lệ, stdin giữ mở tới hết quan sát.
         if step == "position":
             # C1 (28/10): bước vị trí bị khoá trước khởi tạo, giữ các bước còn lại.
-            from acc_stop_path import reject_position
+            from acc_calib_limits import reject_position
             reject_position(self, "5")
             return
         folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
@@ -563,16 +520,11 @@ class Suite:
 
 
     def fault(self, mode, fault):
-        # A02: tiêm lỗi khi chờ nhập calib; terminate qua trình bao vẫn phải dừng độc lập.
+        # A02: tiêm lỗi khi chờ nhập calib; terminate phải dừng trong tiến trình.
         folder, config, env = self.setup({"tof_mapping_confirmed": "1"})
         # Lỗi xảy ra sau pha chuẩn bị; không tính thời gian khởi động ASan vào hạn dừng an toàn.
         env["UCR_FAKE_FAULT"] = fault + "@15000"
-        build = folder / "build"
-        build.mkdir()
-        for name, binary in [("main", self.main), ("ucr_stop", self.stop)]:
-            (build / name).symlink_to(binary)
-        env["UCR_BUILD_DIR"] = str(build)
-        args = ["bash", self.root / "scripts/run.sh", "--config", config, "--mode", mode]
+        args = [self.main, "--config", config, "--mode", mode]
         if mode == "calib":
             args += ["--step", "4"]
         def observe(process):
@@ -588,7 +540,7 @@ class Suite:
         code, _ = run(args, folder, env, observe=observe, timeout=25)
         require(code != 0, "A02: lỗi luồng phải thoát lỗi")
         if fault == "terminate":
-            require(code == 134, "A02: giữ mã terminate 134")
+            require(code == -signal.SIGABRT, "A02: giữ tín hiệu SIGABRT")
         rows = trace(folder / "trace.csv")
         require(sum(k == "motor_init" for _, k, _ in rows) == 1, "A02: không khởi tạo motor lại")
         require(sum(k == "motor_cfg" and "$101=1" in v for _, k, v in rows) == 1, "A02: không lưu/reset lại")
@@ -697,7 +649,7 @@ def self_test():
         require(caught and time.monotonic() - started < 4, "Phải ngắt tiến trình treo trong hạn")
         from unittest.mock import patch
         (folder / "config.yaml").write_text("%YAML:1.0\n---\n", encoding="utf-8")
-        suite = Suite(folder, sys.executable, sys.executable, folder)
+        suite = Suite(folder, sys.executable, folder)
         with patch(__name__ + ".run", side_effect=subprocess.TimeoutExpired(["manual"], 15)):
             caught = False
             try:
@@ -711,7 +663,7 @@ def self_test():
         (folder / "config.yaml").write_text("%YAML:1.0\n---\n" + "".join(k+": "+v[0]+"\n" for k,v in CHECK_RULES.items()), encoding="utf-8")
         protocol = folder / "giao-thuc"
         protocol.mkdir()
-        suite = Suite(folder, sys.executable, sys.executable, protocol)
+        suite = Suite(folder, sys.executable, protocol)
         rename = Path.rename
         def rename_py36(source, destination):
             rename(source, destination)  # Giữ tác dụng đổi tên; trả None như Python 3.6.
@@ -744,17 +696,17 @@ def main():
         static(root, scenario)
     else:
         with tempfile.TemporaryDirectory(prefix="acc_vehicle_cli_") as folder:
-            suite = Suite(root, sys.argv[3], sys.argv[4], folder)
-            if scenario in ("config_numeric", "config_keys", "wrapper_config", "cli", "smoke_gate"):
+            suite = Suite(root, sys.argv[3], folder)
+            if scenario in ("config_numeric", "config_keys", "cli", "smoke_gate"):
                 getattr(suite, scenario)()
             elif scenario.startswith("check_config_"):
                 suite.check_config(scenario)
             elif scenario == "calib":
-                suite.calib(sys.argv[5], signal.SIGINT if sys.argv[6] == "INT" else signal.SIGTERM)
+                suite.calib(sys.argv[4], signal.SIGINT if sys.argv[5] == "INT" else signal.SIGTERM)
             elif scenario == "fault":
-                suite.fault(sys.argv[5], sys.argv[6])
+                suite.fault(sys.argv[4], sys.argv[5])
             elif scenario == "no_gate":
-                suite.no_gate(sys.argv[5])
+                suite.no_gate(sys.argv[4])
             else:
                 raise AssertionError("Ca không hợp lệ: " + scenario)
     print(scenario + ": ĐẠT")
