@@ -33,7 +33,7 @@ target_include_directories(ucr_test_camera PRIVATE include tests/hardware ${Open
 target_link_libraries(ucr_test_camera PRIVATE ${OpenCV_LIBS})
 include(CTest)
 add_subdirectory(tools/perception)
-add_library(ucr_control STATIC src/control/ControlParams.cpp src/control/LaneController.cpp src/control/Planner.cpp)
+add_library(ucr_control STATIC src/control/ControlParams.cpp src/control/LaneController.cpp src/control/Planner.cpp src/control/ParkScan.cpp)
 target_include_directories(ucr_control PUBLIC include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(ucr_control PUBLIC opencv_core)
 add_subdirectory(tools/auto_drive)

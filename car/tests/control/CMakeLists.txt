@@ -203,3 +203,8 @@ foreach(scenario pre_anchor sequence lane_l noise space_corner space_island imu
     add_test(NAME control_t94_${scenario} COMMAND test_t94_route ${scenario})
     set_tests_properties(control_t94_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
+
+add_executable(test_park_scan test_park_scan.cpp)
+target_link_libraries(test_park_scan PRIVATE ucr_control)
+add_test(NAME control_park_scan COMMAND test_park_scan)
+set_tests_properties(control_park_scan PROPERTIES LABELS "control" TIMEOUT 15)
