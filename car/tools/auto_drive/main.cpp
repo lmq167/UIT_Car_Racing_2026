@@ -3,9 +3,18 @@
 #include "log_writer.h"
 #include "debug_fill.h"
 #include "control/Planner.h"
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+#include "common/TelemetryClient.h"
+#endif
 
 namespace auto_drive { HookState hooks; }
 namespace {
+// Telemetry dashboard BTC (giá trị theo Config.h mẫu BTC; ảnh camera gốc + mã nhãn YOLO, 10 Hz).
+// shortcut: hằng số trong mã, chuyển sang control.yaml nếu BTC đổi IP/port.
+constexpr const char* kTelemetryIp="192.168.1.100";
+constexpr int kTelemetryPort=9999;
+constexpr const char* kTelemetryCarId="HDQT_No1";
+constexpr int kTelemetryPeriodMs=100;
 struct ControlInput {
     ModelResult model;
     int64_t image_ms=-1;
@@ -99,7 +108,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     drive::PreviewHost preview(previewOptions);
     std::unique_ptr<Watchdog> watchdog;
     std::unique_ptr<LogWriter> writer;
-    std::atomic<bool> quit{false},cameraDone{true},modelDone{true},controllerDone{true};
+    std::atomic<bool> quit{false},cameraDone{true},modelDone{true},controllerDone{true},telemetryDone{true};
     std::atomic<bool> controllerFault{false};
     std::atomic<int> cameraError{0};
     std::atomic<int64_t> imageMs{-1};
@@ -110,7 +119,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     std::atomic<int> yoloEvery{params->yolo_every_n};
     Mailbox<ControlInput> inputs;
     Mailbox<CommandStamped> commands;
-    std::thread cameraThread,modelThread,controllerThread;
+    std::thread cameraThread,modelThread,controllerThread,telemetryThread;
     int code=0; std::string error;
     try {
         // Camera chỉ fork, chưa mở thiết bị; preview cũng fork trước mọi luồng điều khiển.
@@ -273,6 +282,49 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             }
             controllerDone=true;
         });
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+        // Chỉ đọc khung mới nhất (chép header cv::Mat), gửi UDP ngoài khóa; lỗi mạng bỏ qua, không đụng điều khiển.
+        telemetryDone=false;
+        telemetryThread=std::thread([&] {
+            try {
+                common::TelemetryClient client(kTelemetryIp,kTelemetryPort,kTelemetryCarId);
+                const bool ready=client.Init();
+                while (ready && !quit) {
+                    const auto next=Clock::now()+std::chrono::milliseconds(kTelemetryPeriodMs);
+                    Frame frame;
+                    if (frames.latest(frame) && !frame.bgr.empty()) {
+                        try {
+                            // Ảnh camera gốc (client BTC tự thu nhỏ, không sửa khung chung) + mã nhãn YOLO.
+                            int state=0;
+                            float bestConfidence=-1.0f;
+                            YoloResult yolo;
+                            if (detections.latest(yolo) && frame.captured_ms-yolo.detections.captured_ms<=500) {
+                                for (const auto& d:yolo.detections.items) {
+                                    // Chọn nhãn BTC từ hộp có độ tin cậy cao nhất; hòa thì giữ hộp đầu.
+                                    if (d.confidence>bestConfidence) {
+                                        bestConfidence=d.confidence;
+                                        state=0;
+                                        if (d.class_name=="green") state=1;
+                                        else if (d.class_name=="red") state=2;
+                                        else if (d.class_name=="work_barrier") state=3;
+                                        else if (d.class_name=="round_barrier") state=5;
+                                        else if (d.class_name=="right") state=7;
+                                        else if (d.class_name=="no_right") state=8;
+                                        else if (d.class_name=="left") state=9;
+                                        else if (d.class_name=="no_left") state=10;
+                                        else if (d.class_name=="parking") state=11;
+                                    }
+                                }
+                            }
+                            client.SendFrameAndTelemetry(frame.bgr,0.0f,0,state);
+                        } catch (...) {}
+                    }
+                    while (!quit && Clock::now()<next) ::poll(nullptr,0,2);
+                }
+            } catch (...) {}
+            telemetryDone=true;
+        });
+#endif
         initMask.restore();
         if (stopping) throw SignalStop{};
         watchdog->heartbeat=nowMs(); watchdog->initialized=true;
@@ -507,15 +559,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     quit=true;
     if (writer) writer->requestStop();
     const auto deadline=nowMs()+kCleanupTimeoutMs;
-    while ((!cameraDone || !modelDone || !controllerDone || (writer && !writer->finished)) && nowMs()<deadline)
+    while ((!cameraDone || !modelDone || !controllerDone || !telemetryDone || (writer && !writer->finished)) && nowMs()<deadline)
         ::poll(nullptr,0,kPollMs);
-    if (!cameraDone || !modelDone || !controllerDone || (writer && !writer->finished)) {
+    if (!cameraDone || !modelDone || !controllerDone || !telemetryDone || (writer && !writer->finished)) {
         // Không hủy bộ nhớ mà luồng bị treo còn dùng; giữ khóa tới sau helper.
         externalStop(paths); warning(); _exit(code ? code : stopping ? 0 : 4);
     }
     if (cameraThread.joinable()) cameraThread.join();
     if (modelThread.joinable()) modelThread.join();
     if (controllerThread.joinable()) controllerThread.join();
+    if (telemetryThread.joinable()) telemetryThread.join();
     preview.shutdown(); camera.reset(); writer.reset(); watchdog.reset();
     terminateMotor=nullptr; terminateServo=nullptr; terminatePaths=nullptr;
     if (!error.empty()) std::cerr<<"Lỗi: "<<error<<'\n';
