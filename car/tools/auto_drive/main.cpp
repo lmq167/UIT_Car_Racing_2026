@@ -2,6 +2,7 @@
 #include "model_worker.h"
 #include "log_writer.h"
 #include "debug_fill.h"
+#include "tui_runtime.h"
 #include "control/Planner.h"
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
 #include "common/TelemetryClient.h"
@@ -116,6 +117,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     drive::PreviewHost preview(previewOptions);
     std::unique_ptr<Watchdog> watchdog;
     std::unique_ptr<LogWriter> writer;
+    TuiRuntime tui;  // P5b: chỉ bật khi stdout/stderr là terminal; dừng SAU stopVehicle
     std::atomic<bool> quit{false},cameraDone{true},modelDone{true},controllerDone{true},telemetryDone{true};
     std::atomic<bool> controllerFault{false};
     std::atomic<int> cameraError{0};
@@ -373,6 +375,14 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         if (options.debugWindows) debugData.reset(new drive::PreviewDebug());
         uint64_t debugFrame=0,debugCommand=0;
         int64_t logT0=-1;  // t_ms dòng đầu control_log.csv: gốc "s=" trên overlay
+        int64_t nextTui=0;
+        {
+            TuiState initial;
+            initial.git=UCR_AUTO_GIT_HASH;
+            const auto slash=options.modelDir.find_last_of('/');
+            initial.model=slash==std::string::npos ? options.modelDir : options.modelDir.substr(slash+1);
+            tui.start(initial);
+        }
         while (!exit && !stopping) {
             const auto safetyStart=Clock::now();
             const double safetyInterval=std::chrono::duration<double,std::milli>(safetyStart-safetyPrevious).count();
@@ -558,6 +568,29 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             ps.cmd_speed=speed; ps.cmd_steer=angle; ps.frame_age_ms=image<0 ? -1 : now-image;
             ps.images=frameCount; ps.recording=every>0 && enabled && writer->imagesEnabled;
             preview.publishState(ps);
+            if (tui.active() && now>=nextTui) {  // <= 10 lần/giây, chỉ chép số dưới khóa; vẽ ở luồng TUI
+                nextTui=now+100;
+                const auto& dbg=command.plan.debug;
+                tui.update([&](TuiState& t) {
+                    t.mode=enabled ? "DANG CHAY" : state=="DUNG" ? "DUNG" : "CHO G";
+                    t.state=state; t.reason=reason;
+                    t.run_s=(now-boot)/1000.0; t.rec_s=logT0>=0 ? (now-logT0)/1000.0 : -1;
+                    t.recording=ps.recording; t.cms=speed; t.deg=angle; t.e=dbg.e;
+                    t.sensor_ok=command.sensor.sensor_ok && std::isfinite(command.sensor.yaw_deg);
+                    t.yaw=std::isfinite(command.sensor.yaw_deg) ? command.sensor.yaw_deg : 0;
+                    t.odo=std::isfinite(command.sensor.odo_cm) ? command.sensor.odo_cm : 0;
+                    t.sensor_age_ms=command.sensor.sensor_ms>=0 ? int(now-command.sensor.sensor_ms) : -1;
+                    t.turning=dbg.turn_active!=0; t.yaw_tgt=dbg.turn_yaw_tgt; t.yaw_err=dbg.turn_yaw_err;
+                    const double span=dbg.turn_yaw_tgt-dbg.turn_yaw0;
+                    t.progress_pct=std::abs(span)>1e-3 ? int(std::lround(100.0*(1.0-dbg.turn_yaw_err/span))) : 0;
+                    t.route_step=dbg.route_step; t.turn_dir=dbg.turn_dir;
+                    t.frame_age_ms=image<0 ? -1 : int(now-image);
+                    t.camera_fps=stats.camera_fps; t.road_ms=model.road_ms; t.loop_p95_ms=stats.loop_p95_ms;
+                    t.tof.clear();
+                    if (!enabled) for (int i=0;i<4;++i)
+                        t.tof+="["+std::to_string(i)+"] "+(lastTof[i].valid ? std::to_string(lastTof[i].mm) : std::string("x"))+" ";
+                });
+            }
             if (debugData) {
                 const bool withRows=command.params && !command.plan.debug.rows.empty();
                 const auto& shown=withRows ? command.model : model;
@@ -586,6 +619,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     if (watchdog) { watchdog->cleanupCode=code; watchdog->cleanupAt=nowMs(); }
     // Dừng trước mọi join, ghi đĩa, đóng preview.
     if (!stopVehicle(motor,servo)) { if (!code) code=1; warning(); }
+    tui.stop();  // sau lệnh dừng: trả terminal, các dòng sau in như cũ
     if (writer) {
         try {
             writer->offerControl(csvRow(CommandStamped{},ModelResult{},*params,nowMs(),imageMs.load(),0,0,

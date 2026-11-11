@@ -59,3 +59,7 @@ foreach(_auto_debug_case D01 D02)
         --case "${_auto_debug_case}" --hooks "${UCR_AUTO_HOOKS_BINARY}" --slack "${_auto_slack}")
     set_tests_properties(acc_auto_debug_${_auto_debug_case} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
 endforeach()
+# P5b: TUI dưới pty giả (khung + thoát sạch) và ống (không mã ANSI).
+add_test(NAME auto_tui_pty
+    COMMAND "${PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/test_tui_pty.py" --hooks "${UCR_AUTO_HOOKS_BINARY}")
+set_tests_properties(auto_tui_pty PROPERTIES LABELS "regression;threads" TIMEOUT 120)
