@@ -192,8 +192,34 @@ void timing() {
 }
 }
 
+// P5: dòng truy vết (s= giây từ dòng đầu log, #ảnh, tuổi khung, IMU, lộ trình, tiến độ rẽ) là hàm thuần.
+void traceLines() {
+    std::unique_ptr<PreviewDebug> d(new PreviewDebug());
+    control::ControlDebug plan = planFixture();
+    plan.route_step = 3; plan.turn_dir = 1; plan.route_note = "C2"; plan.turn_active = 1;
+    plan.turn_yaw0 = 10; plan.turn_yaw_tgt = 100; plan.turn_yaw_err = 45;
+    d->frame_id = 42; d->mask_ms = 13400;
+    auto_drive::fillPreviewTrace(*d, &plan, 37.5, 120.25, true, 13470, 13500, 1000, true);
+    CHECK(d->sensor_ok == 1 && d->sensor_age_ms == 30 && d->recording == 1 && d->route_step == 3);
+    auto lines = drive::debugInfoLines(*d, 13700);
+    CHECK(lines.size() == 5);
+    CHECK(lines[0].text == "s=12.5 #42 DANG GHI" && !lines[0].warn);
+    CHECK(lines[1].text.find("tuoi=100ms") != std::string::npos && lines[1].text.find("moi hon 300ms") != std::string::npos);
+    CHECK(lines[1].warn);  // khung hiển thị mới hơn khung quyết định 300 ms > 150
+    CHECK(lines[2].text.find("yaw=37.5") != std::string::npos && !lines[2].warn);
+    CHECK(lines[3].text.find("k=3") != std::string::npos && lines[3].text.find("TRAI") != std::string::npos);
+    CHECK(lines[4].text.find("tien do=50%") != std::string::npos);
+    for (const auto& l : lines) for (unsigned char c : l.text) CHECK(c >= 32 && c < 127);  // chỉ ASCII (putText)
+    auto_drive::fillPreviewTrace(*d, nullptr, std::nan(""), 0, true, -1, 13500, -1, false);
+    d->mask_ms = 13240; lines = drive::debugInfoLines(*d, 13300);  // tuổi khung quyết định 260 > 250, lệch hiển thị 60
+    CHECK(lines[1].warn);
+    d->mask_ms = 13400; lines = drive::debugInfoLines(*d, 13450);
+    CHECK(d->sensor_ok == 0 && lines[2].warn && lines[0].text.rfind("s=--", 0) == 0 && !lines[1].warn);
+    CHECK(lines[4].text.rfind("RE: -", 0) == 0);
+}
+
 int main() {
-    slotRoundTrip(); maskWindow(); overlay(); fill(); fillBoxes(); boxesOverlay(); timing();
+    slotRoundTrip(); maskWindow(); overlay(); fill(); fillBoxes(); boxesOverlay(); timing(); traceLines();
     if (failures) { std::cerr << failures << " ca hỏng\n"; return 1; }
     std::cout << "test_debug_view OK\n";
     return 0;

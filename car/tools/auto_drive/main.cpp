@@ -372,6 +372,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         std::unique_ptr<drive::PreviewDebug> debugData;
         if (options.debugWindows) debugData.reset(new drive::PreviewDebug());
         uint64_t debugFrame=0,debugCommand=0;
+        int64_t logT0=-1;  // t_ms dòng đầu control_log.csv: gốc "s=" trên overlay
         while (!exit && !stopping) {
             const auto safetyStart=Clock::now();
             const double safetyInterval=std::chrono::duration<double,std::milli>(safetyStart-safetyPrevious).count();
@@ -543,6 +544,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                                                  eventGo,eventStop,maskFile,stats,*writer));
                 } catch (...) { ++writer->csvDropped; }
                 lastRowMs=decisionTime;
+                if (logT0<0) logT0=decisionTime;
                 lastLog=command.id;
             }
             if (now>=nextStats) {
@@ -565,6 +567,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     auto fill=[&](const control::ControlDebug* plan,double offset) {
                         fillPreviewDebug(*debugData,shown.mask,shown.frame.captured_ms,shown.frame.id,plan,offset,info.source,info.crop);
                         fillPreviewBoxes(*debugData,yolo.detections,now,params->det_max_age_ms,!options.noYolo);
+                        fillPreviewTrace(*debugData,plan,command.sensor.yaw_deg,command.sensor.odo_cm,command.sensor.sensor_ok,
+                                         command.sensor.sensor_ms,command.created_ms,logT0,ps.recording);
                         preview.publishDebug(*debugData);
                     };
                     if (withRows) fill(&command.plan.debug,command.params->center_offset_frac);

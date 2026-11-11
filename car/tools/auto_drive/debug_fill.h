@@ -27,6 +27,24 @@ inline void fillPreviewBoxes(drive::PreviewDebug& out, const control::Detections
     }
 }
 
+// Truy vết (P5): IMU, lộ trình, rẽ IMU, mốc quyết định, gốc thời gian log; plan null thì bỏ phần lộ trình/rẽ.
+inline void fillPreviewTrace(drive::PreviewDebug& out, const control::ControlDebug* plan, double yaw_deg, double odo_cm,
+                             bool sensor_ok, int64_t sensor_ms, int64_t decision_ms, int64_t log_t0_ms, bool recording) {
+    out.yaw_deg = std::isfinite(yaw_deg) ? float(yaw_deg) : 0.f;
+    out.odo_cm = std::isfinite(odo_cm) ? float(odo_cm) : 0.f;
+    out.sensor_ok = sensor_ok && std::isfinite(yaw_deg) && std::isfinite(odo_cm) ? 1 : 0;
+    out.sensor_age_ms = sensor_ms >= 0 && decision_ms >= sensor_ms ? int32_t(std::min<int64_t>(decision_ms - sensor_ms, 1000000)) : -1;
+    out.decision_ms = decision_ms; out.log_t0_ms = log_t0_ms; out.recording = recording ? 1 : 0;
+    out.route_step = out.turn_dir = out.turn_active = 0;
+    out.turn_yaw0 = out.turn_yaw_tgt = out.turn_yaw_err = 0;
+    std::memset(out.turn_end, 0, sizeof(out.turn_end)); std::memset(out.route_note, 0, sizeof(out.route_note));
+    if (!plan) return;
+    out.route_step = plan->route_step; out.turn_dir = plan->turn_dir; out.turn_active = plan->turn_active;
+    out.turn_yaw0 = float(plan->turn_yaw0); out.turn_yaw_tgt = float(plan->turn_yaw_tgt); out.turn_yaw_err = float(plan->turn_yaw_err);
+    std::snprintf(out.turn_end, sizeof(out.turn_end), "%s", plan->turn_end.c_str());
+    std::snprintf(out.route_note, sizeof(out.route_note), "%s", plan->route_note.c_str());
+}
+
 // plan có thể null (chưa có hành lang). Mask rỗng/quá sức chứa thì mask_w = mask_h = 0.
 inline void fillPreviewDebug(drive::PreviewDebug& out, const cv::Mat& mask, int64_t mask_ms, uint64_t frame_id,
                              const control::ControlDebug* plan, double center_offset_frac,

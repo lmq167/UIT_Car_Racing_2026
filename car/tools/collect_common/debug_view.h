@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace drive {
 
@@ -44,6 +45,43 @@ inline cv::Mat renderDebugMask(const PreviewDebug& d, int scale = 2) {
     cv::resize(colorizeDebugMask(d), big, cv::Size(d.mask_w * scale, d.mask_h * scale), 0, 0, cv::INTER_NEAREST);
     debugText(big, "0 nen  1/2 mat duong", cv::Point(4, big.rows - 6), cv::Scalar(255, 255, 255));
     return big;
+}
+
+// Truy vết (P5), hàm thuần: các dòng chữ ASCII + cờ cảnh báo (vẽ đỏ). frame_ms = giờ chụp của khung đang hiển thị.
+// Khung hiển thị là khung camera MỚI NHẤT; mask/hành lang/trạng thái thuộc khung bộ điều khiển đã dùng (mask_ms):
+// dòng "hien thi moi hon" cho biết hai khung lệch nhau bao nhiêu ms.
+// Ngưỡng đổi màu (log m4: lệch hiển thị p95 ~130 ms, tuổi khung quyết định p50 ~150, p95 ~210 ms).
+constexpr int64_t kDebugLagWarnMs = 150, kDebugDecisionWarnMs = 250, kDebugSensorWarnMs = 200;
+struct DebugInfoLine { std::string text; bool warn = false; };
+inline std::vector<DebugInfoLine> debugInfoLines(const PreviewDebug& d, int64_t frame_ms) {
+    std::vector<DebugInfoLine> out;
+    char b[128];
+    if (d.log_t0_ms >= 0 && d.decision_ms >= d.log_t0_ms)
+        std::snprintf(b, sizeof(b), "s=%.1f #%llu %s", (d.decision_ms - d.log_t0_ms) / 1000.0,
+                      (unsigned long long)d.frame_id, d.recording ? "DANG GHI" : "khong ghi anh");
+    else std::snprintf(b, sizeof(b), "s=-- #%llu %s", (unsigned long long)d.frame_id, d.recording ? "DANG GHI" : "khong ghi anh");
+    out.push_back({b, false});
+    const long long decided = d.decision_ms >= 0 && d.mask_ms >= 0 ? (long long)(d.decision_ms - d.mask_ms) : -1;
+    const long long lag = d.mask_ms >= 0 && frame_ms >= d.mask_ms ? (long long)(frame_ms - d.mask_ms) : -1;
+    std::snprintf(b, sizeof(b), "khung QD tuoi=%lldms | hien thi moi hon %lldms", decided, lag);
+    out.push_back({b, lag > kDebugLagWarnMs || decided > kDebugDecisionWarnMs});
+    const bool imu_bad = !d.sensor_ok || d.sensor_age_ms < 0 || d.sensor_age_ms > kDebugSensorWarnMs;
+    if (d.sensor_ok) std::snprintf(b, sizeof(b), "IMU yaw=%.1f odo=%.1fcm tuoi=%dms", double(d.yaw_deg), double(d.odo_cm), int(d.sensor_age_ms));
+    else std::snprintf(b, sizeof(b), "IMU/encoder LOI (tuoi=%dms)", int(d.sensor_age_ms));
+    out.push_back({b, imu_bad});
+    char note[sizeof(d.route_note) + 1] = {}, end[sizeof(d.turn_end) + 1] = {};
+    std::memcpy(note, d.route_note, sizeof(d.route_note)); std::memcpy(end, d.turn_end, sizeof(d.turn_end));
+    std::snprintf(b, sizeof(b), "lo trinh k=%d y_dinh=%s %s", int(d.route_step),
+                  d.turn_dir > 0 ? "TRAI" : d.turn_dir < 0 ? "PHAI" : "-", note);
+    out.push_back({b, false});
+    if (d.turn_active) {
+        const double span = double(d.turn_yaw_tgt) - d.turn_yaw0;
+        const int pct = std::abs(span) > 1e-3 ? int(std::lround(100.0 * (1.0 - double(d.turn_yaw_err) / span))) : 0;
+        std::snprintf(b, sizeof(b), "RE yaw0=%.0f dich=%.0f con=%.0f tien do=%d%%", double(d.turn_yaw0),
+                      double(d.turn_yaw_tgt), double(d.turn_yaw_err), pct);
+    } else std::snprintf(b, sizeof(b), "RE: - %s", end);
+    out.push_back({b, false});
+    return out;
 }
 
 // Cửa sổ 2: phủ mask (alpha), hành lang (biên trái/phải, target), lookahead, đích, lệnh, trạng thái và khung YOLO.
@@ -121,6 +159,12 @@ inline void drawDebugOverlay(cv::Mat& display, const PreviewDebug& d, const Prev
     std::snprintf(line, sizeof(line), "hang %d/%d e=%.2f p=%.1f d=%.1f mask_tuoi=%lldms", d.valid_rows, d.nrows,
                   double(d.e), double(d.p), double(d.d), (long long)(d.mask_ms >= 0 ? frame_ms - d.mask_ms : -1));
     debugText(display, line, cv::Point(8, base), cv::Scalar(0, 255, 0));
+    // Góc trên phải: truy vết (không che vùng làn ở nửa dưới).
+    const auto info = debugInfoLines(d, frame_ms);
+    const int x0 = std::max(8, display.cols - 400);
+    for (size_t i = 0; i < info.size(); ++i)
+        debugText(display, info[i].text, cv::Point(x0, 20 + int(i) * 18),
+                  info[i].warn ? cv::Scalar(0, 0, 255) : cv::Scalar(255, 255, 0));
 }
 
 } // namespace drive

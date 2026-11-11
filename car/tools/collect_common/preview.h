@@ -174,6 +174,12 @@ struct PreviewDebug {
     float ref_x = 0, e = 0, p = 0, d = 0, angle_deg = 0, speed_cms = 0;
     float look_x = -1, look_y = -1; // điểm lookahead (pixel mask); < 0: khung không hợp lệ
     char state[24] = {}, reason[64] = {};
+    // Truy vết (P5): IMU/quãng, lộ trình, rẽ IMU, mốc thời gian quyết định và gốc thời gian log.
+    float yaw_deg = 0, odo_cm = 0, turn_yaw0 = 0, turn_yaw_tgt = 0, turn_yaw_err = 0;
+    int32_t sensor_age_ms = -1, route_step = 0, turn_dir = 0, turn_active = 0;
+    uint8_t sensor_ok = 0, recording = 0;
+    char turn_end[24] = {}, route_note[32] = {};
+    int64_t decision_ms = -1, log_t0_ms = -1; // log_t0_ms = t_ms dòng đầu control_log.csv
     PreviewDebugRow rows[kDebugMaxRows];
     PreviewDebugBox boxes[kDebugMaxBoxes];
     uint8_t mask[kDebugMaskBytes];
