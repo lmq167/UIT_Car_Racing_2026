@@ -5,7 +5,7 @@ Hai notebook tự chứa mã, chạy trên Google Colab (Python hiện đại). 
 | Notebook | Chức năng | Biến thể |
 |---|---|---|
 | `road_train_car.ipynb` | U-Net 3 lớp `background`, `track_surface`, `line`; vật cản = "lỗ" trên mặt sa bàn; gán nhãn sơ bộ `car6_seg` | S1 B-minus 96×160, S2 NanoUNet 96×160, S3 B-minus 128×256, S4 MobileNetV3-small + giải mã 128×256 |
-| `yolo_train_car.ipynb` | YOLO 9 lớp `red`, `green`, `off`, `left`, `right`, `no_left`, `no_right`, `round_barrier`, `work_barrier`; gán nhãn sơ bộ `car6_det` | D1 v8n 320, D2 v8n 256×416, D3 v8n 416, D4 v8n 384×640, D5 YOLO11n 320 |
+| `yolo_train_car.ipynb` | YOLO 9 lớp `red`, `green`, `off`, `left`, `right`, `no_left`, `no_right`, `round_barrier`, `work_barrier`; gán nhãn sơ bộ `car6_det` | D1 v8n 320, D2 v8n 256×416, D3 v8n 416, D4 v8n 384×640, D5 YOLO11n 320, D6 v5nu 192×320, D7 v5nu 256×416 |
 | `export_candidates.ipynb` | Bản cũ (28/10): xuất 6 ứng viên ONNX trọng số thử để đo FPS | Không dùng nữa: đọc `INPUT_HW` từ notebook đường cũ nên sẽ dừng với bản mới. ONNX của từng biến thể mới được xuất trong lúc so sánh (seed đầu) |
 
 Cả hai notebook có `MODE`: `"compare"` (train + đánh giá nhiều biến thể × seed, ghi một CSV chung), `"final"` (FINAL_FIT trên toàn bộ ảnh có nhãn, lấy bước/epoch cuối, xuất ONNX), `"prelabel"` (đẩy dự đoán lên Roboflow để người duyệt).
