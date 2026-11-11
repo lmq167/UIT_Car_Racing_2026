@@ -39,6 +39,46 @@ struct Rig {
 };
 void Unit() {
     {
+        // Quyết định 11/11: tiếp cận đỏ dùng tốc độ bám làn, không kẹp approach.
+        Rig r; r.p.max_speed_cms=r.p.cruise_cms=15; r.p.approach_cms=5;
+        r.p.kp=0; r.p.slow_per_deg=0; r.p.vote_min=3; r.p.vote_window=5;
+        r.moving(); const auto lane=r.send({});
+        r.red(1000); r.red(1000); auto plan=r.red(1000);
+        Check(plan.reason=="TIEP_CAN_DEN_DO" && plan.cmd.cms==lane.cmd.cms &&
+              plan.cmd.cms==15 && plan.cmd.cms>r.p.approach_cms,
+              "Cruise 15 tiếp cận đỏ phải bằng bám làn và lớn hơn approach 5");
+        r.now+=r.p.det_max_age_ms+1; plan=r.step();
+        Check(plan.reason=="MAT_YOLO" && plan.cmd.cms>0 && plan.cmd.cms<=r.p.approach_cms,
+              "Sau tiếp cận đỏ, YOLO quá tuổi vẫn kẹp approach");
+    }
+    {
+        // Tích phân lệnh mỗi 20 ms; hộp vượt mép phải ngay sau lô trước (pha chờ 260 ms).
+        Rig r; r.p.max_speed_cms=r.p.cruise_cms=15; r.p.approach_cms=5;
+        r.p.kp=0; r.p.slow_per_deg=0; r.p.vote_min=3; r.p.vote_window=5;
+        r.p.control_period_ms=20; r.moving();
+        auto plan=r.send({});
+        const int64_t crossed=r.now;
+        double distance=0;
+        int64_t stopped=-1;
+        for(int elapsed=20;elapsed<=5*260;elapsed+=20) {
+            distance+=plan.cmd.cms*0.020;
+            r.now=crossed+elapsed;
+            if(elapsed%260==0) {
+                auto d=r.light("red",static_cast<float>(1280*r.p.red_stop_x_frac));
+                d.captured_ms=r.now;
+                r.in.detections={{d},r.now,++r.id};
+            }
+            plan=r.step();
+            if(plan.reason=="DUNG_DEN_DO") { stopped=r.now; break; }
+        }
+        Check(stopped>=0 && plan.cmd.cms==0 && plan.cmd.deg==0,
+              "Đủ phiếu đỏ tại ngưỡng vẫn dừng motor và trả góc 0");
+        std::cout<<"T98: YOLO 260 ms, vote_min=3/vote_window=5, từ vượt mép phải tới dừng: "
+                 <<stopped-crossed<<" ms, tích phân lệnh = "<<distance<<" cm\n";
+        // Không đặt ngưỡng quãng đường: đây là số đo phần mềm, chưa xác nhận trên xe.
+    }
+
+    {
         Rig r; r.p.start_wait_green=0;
         auto plan=r.go();
         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="MAT_YOLO" && plan.debug.reason==plan.reason &&
@@ -78,7 +118,7 @@ void Unit() {
         Check(r.red(1000).reason=="TIEP_CAN_DEN_DO","Đủ phiếu vào tiếp cận");
         const int64_t last=r.now;
         while(r.now+40-last<=r.p.det_max_age_ms)
-            Check(r.send({}).cmd.cms==5,"Lô rỗng tươi, phiếu đỏ tụt nhưng đỏ cuối còn tươi vẫn kẹp");
+            Check(r.send({}).cmd.cms==r.p.cruise_cms,"Lô rỗng tươi, đỏ cuối còn tươi vẫn giữ cruise");
         Check(r.send({}).cmd.cms>5,"Đỏ cuối quá tuổi thì thả");
         r.red(1000); Check(r.red(1000).cmd.cms>5,"Sau khi thả cần đủ phiếu mới vào lại");
         r.in.stop=true; r.step(); r.in.stop=false; r.now+=40; r.go();
@@ -160,9 +200,9 @@ void Unit() {
     {
         Rig r; r.moving();
         Check(r.red(800).cmd.cms>5,"Đỏ 1 phiếu chưa giảm"); r.red(900);
-        auto plan=r.red(1000); Check(plan.reason=="TIEP_CAN_DEN_DO" && plan.cmd.cms==5,"Đỏ giữa ảnh đủ phiếu giảm tốc");
-        Check(r.send({}).cmd.cms==5,"Lô rỗng không xoá phiếu/hộp đỏ còn tươi");
-        Check(r.red(1151).cmd.cms==5,"Ngay dưới 0.90 chưa dừng");
+        auto plan=r.red(1000); Check(plan.reason=="TIEP_CAN_DEN_DO" && plan.cmd.cms==r.p.cruise_cms,"Đỏ giữa ảnh đủ phiếu giữ cruise");
+        Check(r.send({}).cmd.cms==r.p.cruise_cms,"Lô rỗng không xoá phiếu/hộp đỏ còn tươi");
+        Check(r.red(1151).cmd.cms==r.p.cruise_cms,"Ngay dưới 0.90 chưa dừng");
         plan=r.red(1152); Check(plan.cmd.cms==0 && plan.cmd.deg==0 && plan.reason=="DUNG_DEN_DO","Đúng 0.90 dừng ngay");
     }
     {

@@ -139,6 +139,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_seen_odo_=0; l_right_run_=l_open_run_=0;
     park_phase_=ParkPhase::NONE; park_run_=0; park_ms0_=park_prog_ms_=-1;
+    swerve_peak_w_=0;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -834,7 +835,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(plan.reason=="BAM_LAN" && rb_in_pass_ && swerve_==Swerve::NONE && !returning)
         plan.reason=plan.debug.reason=rb_losing_ ? "VX_THOAT" : fallback && rb_entered ? "VX_TIEP_CAN" : "VX_QUANH_DAO";
     if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
-        if(!fresh || reason_=="TIEP_CAN_DEN_DO") plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
+        // Quân 11/11: tiếp cận đèn đỏ bằng tốc độ bám làn (cruise); approach_cms chỉ còn kẹp khi mất YOLO (!fresh).
+        if(!fresh) plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
         if(result.debug.state=="BAM_LAN") {
             plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
         }
