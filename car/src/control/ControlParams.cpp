@@ -42,7 +42,7 @@ const Parameter table[] = {
     {"rb_hold_max_cm",150.0,&ControlParams::rb_hold_max_cm,20,400,"cm","Quãng giữ hướng tối đa mỗi lần qua vòng xuyến"},
     {"turn_max_cm",70.0,&ControlParams::turn_max_cm,10,200,"cm","Quãng rẽ tối đa"},
     {"turn_max_ms",8000,&ControlParams::turn_max_ms,1000,20000,"ms","Thời gian rẽ tối đa"},
-    {"park_enable",0,&ControlParams::park_enable,0,1,"1","TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (0 = tắt)"},
+    {"park_enable",1,&ControlParams::park_enable,0,1,"1","TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (Quân 11/11: mặc định BẬT; 0 = tắt)"},
     {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
     {"park_forward_cm",30.0,&ControlParams::park_forward_cm,0,200,"cm","TẠM, CHƯA ĐO: quãng bám làn từ lúc biển parking đủ phiếu tới lúc dừng để lùi"},
     {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
@@ -140,9 +140,9 @@ void ControlParams::Validate() const {
     Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
     Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
     Require(park_side==-1 || park_side==1,"park_side");
-    // Chỉ ràng buộc khi bật đỗ: đỗ cần cảm biến rẽ (yaw/encoder chỉ đọc khi turn_enable).
-    Require(park_enable==0 || (turn_enable==1 && park_steer_deg<=steer_max_deg && park_rev_cms<=max_speed_cms),
-            "park_enable / turn_enable / park_steer_deg / steer_max_deg / park_rev_cms / max_speed_cms");
+    // park_enable mặc định BẬT (Quân 11/11) nên KHÔNG ràng buộc chéo ở đây: yaml có max_speed_cms/steer_max_deg nhỏ hoặc
+    // turn_enable 0 vẫn phải nạp được. Planner tự kẹp: đỗ chỉ chạy khi turn_enable (yaw/encoder), tốc độ lùi
+    // min(park_rev_cms, max_speed_cms), góc lái min(park_steer_deg, steer_max_deg).
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
 }

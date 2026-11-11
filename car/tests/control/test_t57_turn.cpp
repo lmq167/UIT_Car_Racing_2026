@@ -677,8 +677,8 @@ void Case(const std::string& name) {
                 Check(plan.state!=control::PlannerState::DO_XE && plan.cmd.cms>=0,"Có ý định rẽ thì không được dừng để lùi");
             }
         }
-        { // park_enable 0: biển parking không làm gì.
-            Rig r; r.in.odo_cm=0;
+        { // park_enable 0 (đặt tường minh vì mặc định đã BẬT theo Quân 11/11): biển parking không làm gì.
+            Rig r; r.p.park_enable=0; r.in.odo_cm=0;
             for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
             control::Plan plan;
             for (int i=0;i<100;++i) { r.in.odo_cm+=1; plan=tick(r); Check(plan.cmd.cms>=0,"Tắt đỗ không được lùi"); }
