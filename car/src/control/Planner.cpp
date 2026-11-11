@@ -469,6 +469,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
                 swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0;
             }
+            // Đang dừng vì không có đường né mà YOLO còn thấy vật gần trước mặt: không cho mặt nạ tự nhả
+            // (bộ đếm lỗ bỏ qua lỗ ở nửa trái đường hai làn, đúng chỗ vật này đang đứng).
+            if(state_==PlannerState::DUNG_VAT_CAN && reason_=="KHONG_DUONG_NE" && ahead_close) obstacle_clear_run_=0;
             if(swerve_==Swerve::LEFT) {
                 swerve_peak_w_=std::max(swerve_peak_w_,widest);
                 present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;

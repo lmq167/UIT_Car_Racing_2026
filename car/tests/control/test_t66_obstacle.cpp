@@ -318,12 +318,25 @@ void Unit() {
       Check(close<none-3,"Vật trước mặt gần trong NE_QUA phải kết thúc PASS sớm");
       Check(close>=int(0.85*none)-2,"Kết thúc PASS sớm không được dưới 0,85·obstacle_pass_cm");
       Check(far==none && right==none,"Vật xa hoặc ở làn phải không đổi quãng PASS");
-      // Vật trước mặt rất gần ngay đầu PASS (chưa đủ 0,6·pass): dừng KHONG_DUONG_NE, không lao vào vật.
+      // Vật trước mặt rất gần ngay đầu PASS (chưa đủ 0,85·pass): dừng KHONG_DUONG_NE, không lao vào vật.
       Rig r; r.p.obstacle_pass_cm=85; r.pass(); r.auto_box=false;
       const auto ms=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(576,450,128,200),0.9f,ms}},ms,++r.frame};
       const auto plan=r.step();
       Check(plan.state==PlannerState::DUNG_VAT_CAN && plan.reason=="KHONG_DUONG_NE" && plan.cmd.cms==0,
             "Vật rất gần trước mặt khi chưa đủ quãng PASS phải dừng");
+      // Mặt nạ sạch không được tự nhả khi lô YOLO tươi còn thấy vật gần trước mặt (duyệt an toàn lượt 3, MEDIUM).
+      for(int n=0;n<4*r.p.vote_window;++n) {
+          const auto t=r.now+50; r.in.detections={{{"obstacle",cv::Rect2f(576,450,128,200),0.9f,t}},t,++r.frame};
+          const auto held=r.step();
+          Check(held.state==PlannerState::DUNG_VAT_CAN && held.cmd.cms==0,"Mặt nạ sạch nhả dừng khi YOLO còn vật gần");
+      }
+      // Vật đã khuất khỏi YOLO và mặt nạ sạch: nhả như cũ (không kẹt dừng mãi).
+      bool released=false;
+      for(int n=0;n<4*r.p.vote_window && !released;++n) {
+          const auto t=r.now+50; r.in.detections={{},t,++r.frame};
+          released=r.step().state==PlannerState::BAM_LAN;
+      }
+      Check(released,"Hết vật trước mặt phải nhả KHONG_DUONG_NE");
     }
     { Rig r; r.p.obstacle_pass_cm=10; auto plan=r.pass(); r.auto_box=false;
       bool returned=false;
