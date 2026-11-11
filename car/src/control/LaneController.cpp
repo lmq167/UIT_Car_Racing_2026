@@ -33,7 +33,7 @@ const char *TrajModeName(TrajMode mode) {
         default: return "BAM_LAN";
     }
 }
-Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajMode mode) {
+Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajMode mode, int prior_lanes) {
     CheckMask(mask);
     const bool branch=mode==TrajMode::ROUNDABOUT || mode==TrajMode::TURN_LEFT || mode==TrajMode::TURN_RIGHT;
     const int W=mask.cols, H=mask.rows, n=params.corridor_rows;
@@ -44,6 +44,7 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
     int lower=-1;          // chỉ số hàng hợp lệ gần nhất phía dưới
     Seg lower_raw{0,0};    // đoạn thô của hàng đó (trước khi thay biên)
     bool stopped=false;
+    bool real_one_lane_below=false;  // đã thấy hàng một làn có hai biên thật ở dưới trong khung này
     for(int i=0;i<n;++i) {
         const double frac=params.corridor_bottom_frac+(params.corridor_top_frac-params.corridor_bottom_frac)*i/std::max(1,n-1);
         RowDebug row;
@@ -119,6 +120,11 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
             // nên không áp (safety-reviewer 11/11, MEDIUM-1).
             if(mode==TrajMode::ROUNDABOUT && right_edge_cut && raw.r-raw.l>=params.two_lane_ratio*w && (!below || below->lanes==2))
                 row.right=row.left+std::max(reference,2*w);
+            // Khung trước đã thấy rõ đường hai làn mà biên phải nay chạm mép ảnh (xe lệch sang làn trái khi ra cua phải):
+            // giữ bề rộng hai làn để mục tiêu vẫn ở làn phải, không trượt về làn trái. Không áp khi hàng ngay dưới
+            // CHÍNH LÀ đường một làn quan sát thật (hai biên thật): đó là ngã T/lối mở phải sau đoạn hai làn.
+            else if(mode==TrajMode::LANE && right_edge_cut && prior_lanes==2 && !real_one_lane_below)
+                row.right=row.left+std::max(reference,2*w);
         }
         else if(!left_ok && !right_ok) {
             const double center=below ? (below->left+below->right)/2 : (raw.l+raw.r)/2.0;
@@ -141,12 +147,14 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         const bool odd_width=width<kMinWidthRatio*w || width>params.two_lane_ratio*kMergeFactor*w;
         row.conf=Clamp(1-kConfPenalty*(bad_edges+int(row.hole)+int(odd_width))-(bad_edges==2 ? kNoRealEdgePenalty : 0),0,1);
         row.valid=true;
+        if(row.flag_left==kThat && row.flag_right==kThat && row.lanes==1 && !row.hole) real_one_lane_below=true;
         corridor.rows.push_back(row);
         lower=int(corridor.rows.size())-1; lower_raw=raw;
     }
     return corridor;
 }
-void LaneController::Reset() { *this=LaneController{}; }
+void LaneController::Reset() {
+    *this=LaneController{}; }
 ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
                                    const ControlParams &params, TrajMode mode, bool wide_center) {
     params.Validate();
@@ -165,13 +173,13 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     };
     if(mask_ms<0 || mask_ms>now_ms || now_ms-mask_ms>params.mask_max_age_ms ||
        (last_mask_ms_>=0 && mask_ms<last_mask_ms_)) {
-        regain_=0; derivative_ready_=false; have_look_=false;
+        regain_=0; derivative_ready_=false; have_look_=false; lanes_memory_=0;
         return finish(0,0,"MAT_NAN_CU","MAT_NAN_CU");
     }
     last_mask_ms_=mask_ms;
     bool valid=false;
     if(!mask.empty()) {
-        auto corridor=ExtractCorridor(mask,params,mode);
+        auto corridor=ExtractCorridor(mask,params,mode,lanes_memory_);
         const double W=mask.cols, axis=W/2.0+params.center_offset_frac*W;
         // TẠM CHƯA ĐO: chỉ dùng tâm vùng đường khi hàng gần nhất phủ ít nhất 90%.
         // Giữ cờ/độ tin cậy gốc trong debug; không biến mép ảnh thành cạnh thật.
@@ -235,6 +243,14 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                 } else result.debug.fit.clear();
             }
         }
+        {   // Nhớ số làn chỉ từ các hàng có cả hai biên thật (không lấy từ hàng dựng lại).
+            int two=0, one=0;
+            for(const auto &row:corridor.rows) if(row.valid && !row.hole && row.flag_left==kThat && row.flag_right==kThat) ++(row.lanes==2 ? two : one);
+            // Chỉ học ở LANE; chế độ khác (vòng xuyến, rẽ, né) xóa để vùng đất rộng không thành "hai làn".
+            if(mode!=TrajMode::LANE) lanes_memory_=0;
+            else if(valid && two>=2 && two>one) lanes_memory_=2;
+            else if(valid && one>=2 && one>two) lanes_memory_=1;
+        }
         result.debug.rows=std::move(corridor.rows);
     }
     if(!valid) { have_look_=false; result.debug.look_x=-1; }
@@ -247,6 +263,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     if(lost_) {
         const int64_t age=last_valid_ms_<0 ? params.lost_stop_ms : now_ms-last_valid_ms_;
         if(age>=params.lost_stop_ms) return finish(0,0,"MAT_LAN",valid ? "CHO_HOI_LAN" : "MAT_LAN");
+        if(age>=params.lost_hold_ms) lanes_memory_=0;
         if(age>=params.lost_hold_ms) return finish(0,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_DUNG");
         return finish(params.lost_cms,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_GIU");
     }

@@ -413,6 +413,85 @@ void Empty() {
     Check(thrown,"Sai kiểu mask phải ném runtime_error");
 }
 }
+// Nhớ số làn (mô phỏng vòng kín 11/11): ra cua phải xe lệch trái, biên phải chạm mép ảnh. Có nhớ hai làn thì mục tiêu
+// phải ở làn PHẢI; không nhớ / nhớ một làn giữ như cũ; chế độ khác LANE không đổi; đường một làn không nhớ hai.
+void LaneMemory() {
+    ControlParams p;
+    const cv::Mat cut=Road(p,kW/2.0+50,2.0);  // hai làn, xe lệch trái: biên phải chạm mép ảnh
+    int cut_rows=0;
+    const auto base=ExtractCorridor(cut,p,TrajMode::LANE,0);
+    const auto zero=ExtractCorridor(cut,p,TrajMode::LANE);
+    const auto one=ExtractCorridor(cut,p,TrajMode::LANE,1);
+    const auto two=ExtractCorridor(cut,p,TrajMode::LANE,2);
+    Check(base.rows.size()==two.rows.size(),"Số hàng");
+    for(size_t i=0;i<base.rows.size();++i) {
+        const auto &a=base.rows[i], &z=zero.rows[i], &o=one.rows[i], &t=two.rows[i];
+        Near(a.target,z.target,1e-9,"prior mặc định = 0");
+        Near(a.target,o.target,1e-9,"prior 1 giữ như cũ");
+        if(!t.valid || t.flag_left!="THAT" || t.flag_right!="MEP_ANH") continue;
+        ++cut_rows;
+        Check(t.lanes==2,"prior 2: biên phải bị cắt phải dựng hai làn");
+        Check(t.target>(t.left+t.right)/2,"prior 2: mục tiêu ở làn phải (phải hơn tâm hàng)");
+        Check(t.right-t.left>=2*Lane1(p,t.y)-1e-6,"prior 2: bề rộng >= hai làn");
+    }
+    Check(cut_rows>=2,"Thiếu hàng biên phải bị cắt để kiểm");
+    int changed=0;
+    for(size_t i=0;i<base.rows.size();++i) if(std::abs(base.rows[i].target-two.rows[i].target)>1) ++changed;
+    Check(changed>=1,"prior 2 phải đổi mục tiêu so với prior 0 (kiểm ngược)");
+    // Chế độ khác LANE không đổi theo prior.
+    for(auto mode:{TrajMode::ROUNDABOUT,TrajMode::TURN_LEFT,TrajMode::TURN_RIGHT,TrajMode::AVOID_LEFT}) {
+        const auto m0=ExtractCorridor(cut,p,mode,0), m2=ExtractCorridor(cut,p,mode,2);
+        for(size_t i=0;i<m0.rows.size();++i) {
+            if(mode==TrajMode::ROUNDABOUT) continue;  // ROUNDABOUT có luật riêng (không dùng prior)
+            Near(m0.rows[i].target,m2.rows[i].target,1e-9,"Chế độ khác LANE không đổi theo prior");
+        }
+    }
+    // Hàng ngay dưới là đường MỘT làn quan sát thật (hai biên thật): không dựng hai làn dù prior 2.
+    cv::Mat open=Road(p,160,1.0);
+    const int y_open=std::lround(0.80*kH);
+    for(int y=0;y<y_open;++y) {
+        const int a=std::max(0,int(std::lround(160-Lane1(p,y)/2)));
+        for(int x=a;x<kW;++x) open.at<unsigned char>(y,x)=1;
+    }
+    const auto t_open=ExtractCorridor(open,p,TrajMode::LANE,2);
+    int opened=0;
+    for(const auto &r:t_open.rows) {
+        if(!r.valid || r.y>=y_open || r.flag_left!="THAT" || r.flag_right!="MEP_ANH") continue;
+        ++opened;
+        Check(r.lanes==1,"Ngã T một làn sau đoạn hai làn: không dựng hai làn dù prior 2");
+    }
+    Check(opened>=2,"Thiếu hàng mở phải để kiểm");
+    // LaneController: nhớ qua khung, Reset xóa, đường một làn không nhớ hai.
+    ControlParams q;
+    const cv::Mat full=Road(q,kW/2.0,2.0), narrow=Road(q,kW/2.0,1.0);
+    int64_t now=1000;
+    auto step=[&](LaneController &lc,const cv::Mat &mask) { now+=50; return lc.Step(mask,now,now,q,TrajMode::LANE,false); };
+    LaneController fresh, remembered;
+    for(int i=0;i<3;++i) step(remembered,full);
+    const auto fresh_cut=step(fresh,cut), remembered_cut=step(remembered,cut);
+    Check(remembered_cut.debug.valid_rows>0 && fresh_cut.debug.valid_rows>0,"Cần hàng hợp lệ để so e");
+    Check(remembered_cut.debug.e>fresh_cut.debug.e+0.05,"Nhớ hai làn: e kéo xe sang phải so với bộ mới");
+    remembered.Reset();
+    const auto after_reset=step(remembered,cut);
+    Near(after_reset.debug.e,fresh_cut.debug.e,1e-9,"Reset xóa bộ nhớ số làn");
+    LaneController single;
+    for(int i=0;i<3;++i) step(single,narrow);
+    const cv::Mat clipped=Road(q,kW-20,1.0);
+    const auto single_cut=step(single,clipped);
+    LaneController single_fresh; const auto single_fresh_cut=step(single_fresh,clipped);
+    Check(single_cut.debug.rows.size()==single_fresh_cut.debug.rows.size(),"Số hàng");
+    for(size_t i=0;i<single_cut.debug.rows.size();++i)
+        Near(single_cut.debug.rows[i].target,single_fresh_cut.debug.rows[i].target,1e-9,"Đường một làn không nhớ hai làn");
+    // Mặt nạ cũ xóa bộ nhớ.
+    LaneController stale;
+    for(int i=0;i<3;++i) step(stale,full);
+    const auto stale_res=stale.Step(cut,now-q.mask_max_age_ms-100,now+50,q,TrajMode::LANE,false);
+    Check(stale_res.debug.state=="MAT_NAN_CU","Mặt nạ cũ -> MAT_NAN_CU");
+    now+=100;
+    const auto stale_cut=step(stale,cut);
+    for(size_t i=0;i<stale_cut.debug.rows.size();++i)
+        Near(stale_cut.debug.rows[i].target,fresh_cut.debug.rows[i].target,1e-9,"Mặt nạ cũ xóa bộ nhớ số làn");
+}
 int main(int argc, char **argv) {
     try {
         Check(argc==2 || argc==3,"Cần một tên ca (và thư mục dữ liệu)");
@@ -429,6 +508,7 @@ int main(int argc, char **argv) {
         else if(name=="bottom_unchanged") BottomUnchanged();
         else if(name=="empty") Empty();
         else if(name=="two_lane_right_cut") TwoLaneRightCut();
+        else if(name=="lane_memory") LaneMemory();
         else if(name=="real_roundabout_exit") RealRoundaboutExit(argc==3 ? argv[2] : "fixtures");
         else throw std::runtime_error("Ca lạ: "+name);
         std::cout << "PASS " << name << '\n';

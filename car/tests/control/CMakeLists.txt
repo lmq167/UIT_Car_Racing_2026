@@ -164,6 +164,8 @@ endforeach()
 add_test(NAME control_t79_corridor_two_lane_right_cut COMMAND test_t79_corridor two_lane_right_cut)
 add_test(NAME control_t79_corridor_real_roundabout_exit
          COMMAND test_t79_corridor real_roundabout_exit ${CMAKE_CURRENT_SOURCE_DIR}/fixtures)
+add_test(NAME control_t79_corridor_lane_memory COMMAND test_t79_corridor lane_memory)
+set_tests_properties(control_t79_corridor_lane_memory PROPERTIES LABELS "control" TIMEOUT 60)
 set_tests_properties(control_t79_corridor_two_lane_right_cut control_t79_corridor_real_roundabout_exit
                      PROPERTIES LABELS "control" TIMEOUT 60)
 include(${CMAKE_CURRENT_SOURCE_DIR}/t79_acceptance.cmake)
