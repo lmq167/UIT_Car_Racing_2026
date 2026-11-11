@@ -169,12 +169,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
     bool round_right=false;  // đảo ở mép phải ảnh (cua L sau cầu)
+    bool l_mask_counted=false;  // mặt nạ mới được đếm cho cua L ở bước này
     bool cancelled=false, sensor_cancelled=false, barrier_visible=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
         if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
         if(barrier_turn_) barrier_done_=false;  // rẽ qua rào bị hủy: rào còn gần thì dừng (Q7), hồi lỗi thì rẽ lại
         ClearTurn(); turn_fault_=true; rb_pending_=0;  // không để rẽ vòng xuyến chờ bắn muộn sau khi hồi
+        l_armed_=false;  // cua L đang chờ cũng bỏ (review 11/11 M1)
     };
     // Lỗi cảm biến/rẽ chỉ tạm: cảm biến tươi liên tục >= 1 s thì cho rẽ lại (IMU lỗi lúc khởi động luôn sensor_ok sai nên không hồi).
     if(params.turn_enable && turn_fault_) {
@@ -592,7 +594,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         int open_both=0;
         for(size_t i=0;i<near_rows;++i) open_both+=corridor.rows[i].valid && corridor.rows[i].flag_left=="MEP_ANH" && corridor.rows[i].flag_right=="MEP_ANH";
-        l_open_run_=open_both>=kLOpenRows ? l_open_run_+1 : 0;
+        l_open_run_=open_both>=kLOpenRows ? l_open_run_+1 : 0; l_mask_counted=true;
         if(real_left>=2) left_real_ms_=now_ms;
         if(real_right>=2) right_real_ms_=now_ms;
         const int opened=valid_near-(turn_direction_>0 ? real_left : real_right);
@@ -656,10 +658,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(pre_turn_.empty() || input.odo_cm-pre_turn_.back().first>=0.5) pre_turn_.emplace_back(input.odo_cm,input.yaw_deg);  // đứng yên không thêm mẫu
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
+    if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // review LOW-1: không dùng đếm cũ
     if(l_armed_ && (route_anchored_ || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
     if(params.turn_enable && l_armed_ && !l_done_ && !turning_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
        swerve_==Swerve::NONE && !returning && !rb_holding_ && !sensor_bad && mask_fresh && !input.stop &&
-       std::isfinite(input.yaw_deg) && l_open_run_>=params.vote_min) {
+       !turn_fault_ && l_mask_counted && std::isfinite(input.yaw_deg) && l_open_run_>=params.vote_min) {
         l_armed_=false; l_done_=true; l_turning_=true; turn_direction_=-1; arm_odo_=input.odo_cm;
         turn_start_reason="RE_L_CAU";
         turning_=true; corridor_turn_=false; corridor_clear_=0; turn_steer_scale_=1;

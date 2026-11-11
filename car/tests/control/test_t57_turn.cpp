@@ -576,6 +576,15 @@ void Case(const std::string& name) {
             for (int i=0;i<2*r.p.vote_min;++i) { r.in.odo_cm+=1; again=again || empty(r).state==control::PlannerState::RE_PHAI; }
             Check(!again,"Cua L chỉ rẽ một lần mỗi G");
         }
+        { // Review 11/11 M1: đang chờ cua L mà cảm biến lỗi >= 250 ms rồi hồi < 1 s thì không được rẽ L.
+            Rig r; r.in.yaw_deg=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=2; island(r,0.90,130); }
+            r.in.sensor_ok=false;
+            for (int i=0;i<8;++i) { r.now+=50; r.step(); }
+            r.in.sensor_ok=true; r.mask(0,200); bool any=false;
+            for (int i=0;i<2*r.p.vote_min;++i) { r.in.odo_cm+=1; any=any || empty(r).state==control::PlannerState::RE_PHAI; }
+            Check(!any,"Lỗi cảm biến khi chờ cua L phải bỏ cua L");
+        }
     } else if (name=="obstacle_blocked_in_roundabout") {
         // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
         Rig r; r.p.obstacle_action=2;

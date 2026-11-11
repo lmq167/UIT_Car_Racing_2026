@@ -98,11 +98,11 @@ private:
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
     std::deque<std::pair<double,double>> pre_turn_;  // (odo, yaw) khi bám làn chờ rẽ, trong kPreTurnWindowCm gần nhất
-    double turn_steer_scale_=1;
+    double turn_steer_scale_=1;  // hệ số góc rẽ cố định theo phần yaw đã quay sẵn trước RE_* (lỗi 2)
     // Cua L phải sau cầu trước VX1 (Quân duyệt 11/11): đảo thấy ở mép phải rồi các hàng gần phủ kín ảnh.
     bool l_armed_=false, l_done_=false, l_turning_=false;
     double l_seen_odo_=0;
-    int l_right_run_=0, l_open_run_=0;  // hệ số góc rẽ cố định theo phần yaw đã quay sẵn trước RE_* (lỗi 2)
+    int l_right_run_=0, l_open_run_=0;
     void ClearTurn();
 };
 }
