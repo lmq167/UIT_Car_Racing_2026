@@ -385,7 +385,8 @@ struct DriveTof {
         if (now-lastSampleMs<100) return;
         lastSampleMs=now;
         sensor::TOFReadings r;
-        try { HardwareCall call(2); device.Read(r,std::chrono::milliseconds(500)); }
+        // Hạn đọc < kHardwareTimeoutMs (300 ms): lần đọc chậm không kích watchdog dừng khẩn giữa lượt đỗ.
+        try { HardwareCall call(2); device.Read(r,std::chrono::milliseconds(200)); }
         catch (const std::exception& e) { std::cerr<<"TOF LOI doc: "<<e.what()<<'\n'; return; }
         const auto steady=std::chrono::steady_clock::now();
         for (std::size_t i=0;i<r.size() && i<4;++i) {

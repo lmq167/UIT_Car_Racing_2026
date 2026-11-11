@@ -429,9 +429,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             }
             if (exit || stopping) break;
-            if (!enabled && !eventStop) tof.pollAndPrint();
-            else if (enabled && !eventStop && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&
-                     command.plan.reason=="DO_XE_QUET" && command.plan.cmd.cms==0) tof.sample(lastTof);  // chỉ khi xe đã đứng  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
+            if (!enabled && !eventStop) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;
@@ -494,6 +492,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (!motor.SetSpeedCms(static_cast<float>(speed))) throw Failure(1,"Lỗi gửi motor");
                 if (!servo.SetAngle(angle)) throw Failure(1,"Lỗi gửi servo");
             }
+            // Quét ô đỗ: đọc ToF SAU khi lệnh tốc độ 0 của bước này đã gửi (đọc I2C không được trễ lệnh dừng).
+            if (enabled && !eventStop && speed==0 && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&
+                command.plan.reason=="DO_XE_QUET") tof.sample(lastTof);
             if (state!=lastState) { trace("state",state); lastState=state; }
             if (reason!=lastReason) { trace("reason",reason); lastReason=reason; }
             if (!ready && imageFresh && maskFresh && preview.wasShown() && writer->ready) {
