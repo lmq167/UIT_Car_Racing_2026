@@ -112,7 +112,7 @@ def png_bytes(rows):
 
 def mask_rows(mode):
     rows = []
-    offset = {'straight': 0, 'left': -12, 'right': 12, 'empty': 0}[mode]
+    offset = {'straight': 0, 'left': -12, 'right': 12, 'empty': 0, 'junction': 0}[mode]
     for y in range(96):
         frac = y / 96.0
         width = 160 * max(0.0, 0.57 - (0.95 - frac) * 1.2)  # phối cảnh một làn như mask TwinLiteNetPlus (T79)
@@ -122,6 +122,12 @@ def mask_rows(mode):
             for x in range(max(0, left), min(160, right + 1)):
                 row[x] = 2 if x in (left, right) else 1
         rows.append(row)
+    if mode == 'junction':
+        # M6/T81t: ngã T kết thúc đường ở 0,72H, có đường ngang hai phía.
+        for y in range(int(0.72 * len(rows))):
+            rows[y] = bytearray(len(rows[y]))
+        for y in range(int(0.72 * len(rows)), int(0.79 * len(rows))):
+            rows[y] = bytearray([1] * len(rows[y]))
     return rows
 
 
@@ -136,7 +142,10 @@ def model_files(models, name, info):
 
 
 def fixtures(root, schedule):
-    for mode in ('straight', 'left', 'right', 'empty'):
+    modes = ('straight', 'left', 'right', 'empty')
+    if any(mode == 'junction' for _, mode in schedule):
+        modes += ('junction',)
+    for mode in modes:
         rows = mask_rows(mode)
         need(len(rows) == 96 and all(len(r) == 160 and set(r) <= {0, 1, 2} for r in rows),
              'Fixture sai cỡ/lớp', 'setup')
@@ -804,6 +813,10 @@ T57_OLD_FIELDS = ('t_ms frame_id mask_file cmd_cms cmd_deg mask_ms image_ms go s
                   'sent_steer_deg sent_speed_cms reason road_ms yolo_ms loop_ms dropped csv_dropped '
                   'camera_fps loop_p95_ms rss_mb free_mb command_id command_ms mask_id det_frame_id '
                   'det_captured_ms detections_dropped').split()
+# Hai cột T57 rồi các cột chẩn đoán lộ trình/quỹ đạo (nối cuối, không đổi cột cũ).
+T57_TAIL_FIELDS = ['yaw_deg', 'odo_cm', 'route_step', 'route_note', 'turn_dir', 'traj_mode',
+                   'look_x', 'look_y', 'fit_curv', 'turn_active', 'turn_yaw0', 'turn_yaw_tgt',
+                   'turn_yaw_err', 'turn_end']
 
 
 def t57_log(rows):
@@ -813,10 +826,6 @@ def t57_log(rows):
         need(list(row) == T57_OLD_FIELDS + T57_TAIL_FIELDS,
              'T57 đổi/mất/thừa/đảo cột cũ hoặc không nối cuối', 't57_log')
         need(row['yaw_deg'] == row['odo_cm'] == '', 'Tắt nhưng ghi số cảm biến', 't57_log')
-# Hai cột T57 rồi các cột chẩn đoán lộ trình/quỹ đạo (nối cuối, không đổi cột cũ).
-T57_TAIL_FIELDS = ['yaw_deg', 'odo_cm', 'route_step', 'route_note', 'turn_dir', 'traj_mode',
-                   'look_x', 'look_y', 'fit_curv', 'turn_active', 'turn_yaw0', 'turn_yaw_tgt',
-                   'turn_yaw_err', 'turn_end']
 
 
 def t57_fault_csv(rows, failed, odo=0):
@@ -900,6 +909,14 @@ def t68a_turn(run, mark, since, direction='left'):
                     10, 'Chưa vào rẽ sau đủ phiếu và turn_start_cm')
 
 
+# Lịch riêng cho ca cần rẽ: 45 khung thẳng, 15 khung ngã T.
+# Giả định 30 FPS: lặp 2 s, ngã T 0,5 s; cần đối chiếu nhịp mask trên Ubuntu.
+# Tiêm lỗi/hồi không có mốc khung cố định; 120 chu kỳ rồi trở về thẳng.
+T57_TURN_SCHEDULE = tuple([(1, 'straight')] + [
+    entry for start in range(46, 7200, 60)
+    for entry in ((start, 'junction'), (start + 15, 'straight'))])
+
+
 T57_SENSOR_GLITCH_MS = 250  # Q9: thời gian lỗi liên tục trước khi hủy rẽ.
 
 
@@ -968,6 +985,7 @@ def t57_case(case, cfg, root):
         for action in modes:
             with running(cfg, root / action, values=values,
                          setup=setup, no_yolo=False,
+                         schedule=((1, 'straight'),) if case == 't57_init_ok_order' else T57_TURN_SCHEDULE,
                          yolo_schedule=((1, 'empty'), (120, mode)) if idle else ((1, mode),)) as r:
                 t57_feed(r); r.boot()
                 if case == 't57_init_ok_order':
@@ -1487,6 +1505,7 @@ def t73_case(case, cfg, root):
         env = {'OPEN_FAIL': 'imu' if case == 't73_init_imu_fail' else 'imu_drift'} if init_fail else {}
         try:
             with running(cfg, root / direction, values=current, env=env, setup=setup, no_yolo=False,
+                         schedule=((1, 'straight'),) if init_fail or case == 't73_reload_no_imu' else T57_TURN_SCHEDULE,
                          yolo_schedule=((1, mode),)) as r:
                 if case == 't73_encoder_turning':
                     # Rẽ theo quãng: encoder giữ mốc0 tới khi bắt đầu rẽ rồi mới tiến đều.
@@ -1675,6 +1694,7 @@ def t73_add_case(case, cfg, root):
         try:
             with running(cfg, root / action, values=current, setup=setup, no_yolo=False,
                          env={'OPEN_FAIL': 'imu'} if init else {},
+                         schedule=((1, 'straight'),) if init else T57_TURN_SCHEDULE,
                          yolo_schedule=((1, mode),)) as r:
                 t73_add_feed(r)
                 r.t73_progress = False
@@ -1894,7 +1914,7 @@ def t62_case(case, cfg, root):
                 r.wait(lambda: any(e[2] == 'TIEP_CAN_DEN_DO' for e in r.of('reason', mark)),
                        25, '0,89 không vào tiếp cận')
                 since = external_stamp_ms(); r.frames(10)
-                t62_window(r.events(), r.rows(), since, external_stamp_ms(), 5, 'TIEP_CAN_DEN_DO')
+                t62_window(r.events(), r.rows(), since, external_stamp_ms(), r.values['cruise_cms'], 'TIEP_CAN_DEN_DO')
                 need(not any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)), '0,89 vẫn chốt đỏ')
             else:
                 end = red_stop(r, 120, mark, consumed=case.endswith('090'))
@@ -1923,7 +1943,7 @@ def t62_case(case, cfg, root):
                     need(not any(motor_zero(e) for e in r.events()[batches[0][0]:stop_mark - 1]),
                          'Chốt trước lô 128 đủ ba phiếu', 't62_stop_votes')
                     t62_window(r.events(), r.rows(), float(samples[5]['command_ms']) + 20,
-                               stamp, 5, 'TIEP_CAN_DEN_DO', setup=True)
+                               stamp, r.values['cruise_cms'], 'TIEP_CAN_DEN_DO', setup=True)
                     stopped(r, stamp, 220, mark=stop_mark)
                     r.wait(lambda: any(e[2] == 'DUNG_DEN_DO' for e in r.of('reason', mark)),
                            3, 'Không chốt tại lô đủ phiếu')
@@ -1955,7 +1975,7 @@ def t62_case(case, cfg, root):
                 since = external_stamp_ms()
                 r.wait(lambda: last_detection_frame(r.events()) >= 306, 25, 'Thiếu ba xanh')
                 greens = phase_batches(r, 300, 309, 3)
-                t62_window(r.events(), r.rows(), since + 20, greens[2][3], 5, 'TIEP_CAN_DEN_DO')
+                t62_window(r.events(), r.rows(), since + 20, greens[2][3], r.values['cruise_cms'], 'TIEP_CAN_DEN_DO')
                 r.wait(lambda: any(e[2] == 15 and not e[3] for e in r.of('motor_speed', greens[2][0] + 1)),
                        3, 'Đủ xanh không thả approach')
             speed_is(r, 15); r.finish()
@@ -1981,7 +2001,7 @@ def t62_case(case, cfg, root):
         recent = detection_batches(r.events())[-5:]
         need(until - last[2] < 500 and sum(0 <= until - b[2] <= 500 for b in recent) < 3,
              'Chưa tạo được thiếu phiếu khi đỏ còn tươi', 'setup')
-        t62_window(r.events(), r.rows(), since, until, 5, 'TIEP_CAN_DEN_DO')
+        t62_window(r.events(), r.rows(), since, until, r.values['cruise_cms'], 'TIEP_CAN_DEN_DO')
         if case.startswith('t62_reset_'):
             # Space/G: không có lô mới và chưa hết tuổi đỏ, tránh việc tự xác nhận lại.
             if case.endswith('space'):
@@ -1999,10 +2019,10 @@ def t62_case(case, cfg, root):
                 r.wait(lambda: last_detection_frame(r.events()) >= 600, 3, 'Thiếu lô rỗng tươi')
             mark = len(r.events())
             if case.endswith('go'):
-                # G khi xe đang chạy không có tác dụng trong ucr_auto (G chỉ chạy từ dừng): kẹp tiếp cận giữ nguyên.
+                # G khi xe đang chạy không có tác dụng: tiếp cận vẫn giữ cruise.
                 r.go(); r.frames(2)
                 sent = [e[2] for e in r.of('motor_speed', mark) if not e[3]]
-                need(sent and all(v == 5 for v in sent), 'G khi đang chạy đổi kẹp tiếp cận: ' + repr(sent), 't62_window')
+                need(sent and all(v == r.values['cruise_cms'] for v in sent), 'G khi đang chạy đổi cruise tiếp cận: ' + repr(sent), 't62_window')
                 r.finish(); return
             r.go()
             r.wait(lambda: len([e for e in r.of('motor_speed', mark) if e[2] == 15 and not e[3]]) >= 2,
@@ -2020,8 +2040,8 @@ def t62_case(case, cfg, root):
         r.wait(lambda: any(float(row['t_ms']) > last[2] + 500 and row['reason'] == 'BAM_LAN'
                            and float(row['sent_speed_cms']) == 15 for row in r.rows()),
                5, 'Đỏ cuối quá500ms không thả về15')
-        t62_window(r.events(), r.rows(), since, last[2] + 500, 5, 'TIEP_CAN_DEN_DO')
-        need(any(last[2] + 400 <= e[0] < last[2] + 500 and e[1] == 'motor_speed' and e[2] == 5
+        t62_window(r.events(), r.rows(), since, last[2] + 500, r.values['cruise_cms'], 'TIEP_CAN_DEN_DO')
+        need(any(last[2] + 400 <= e[0] < last[2] + 500 and e[1] == 'motor_speed' and e[2] == r.values['cruise_cms']
                  for e in r.events()), 'Thiếu mẫu sát hạn đỏ cuối', 't62_window')
         speed_is(r, 15); r.finish()
 
@@ -2903,7 +2923,7 @@ def test_case(case, cfg, root):
                 green_release(r, 156, mark)
                 r.finish()
         return
-    # A41 — P2/L1: đỏ giữa ảnh đủ phiếu chỉ giảm tốc, không lấy motor0 làm PASS.
+    # A41 — Quyết định 11/11: đỏ giữa ảnh đủ phiếu giữ cruise.
     if case == 'A41':
         with yolo_running(cfg, root, values={'start_wait_green': 0, 'kp': 0}, schedule=((1, 'straight'),),
                           yolo_schedule=((1, 'empty'), (120, 'red_mid'))) as r:
@@ -2917,14 +2937,14 @@ def test_case(case, cfg, root):
             mark = len(r.events())
             ev = r.wait(lambda: next((e for e in r.of('reason', mark) if e[2] == 'TIEP_CAN_DEN_DO'), None),
                         25, 'Không tiếp cận đèn đỏ')
-            r.wait(lambda: any(e[1] == 'motor_speed' and 0 < e[2] <= 5 and not e[3]
-                               and e[0] >= ev[0] for e in r.events()), message='Không giảm về approach')
+            r.wait(lambda: any(e[1] == 'motor_speed' and e[2] == r.values['cruise_cms'] and not e[3]
+                               and e[0] >= ev[0] for e in r.events()), message='Không giữ cruise khi tiếp cận đỏ')
             events = r.events()
             sent_mark = next(i for i in range(mark, len(events)) if events[i][0] >= ev[0]
-                             and events[i][1] == 'motor_speed' and 0 < events[i][2] <= 5 and not events[i][3])
+                             and events[i][1] == 'motor_speed' and events[i][2] == r.values['cruise_cms'] and not events[i][3])
             def approaching():
                 speeds = [e[2] for e in r.of('motor_speed', sent_mark) if not e[3]]
-                need(speeds and all(0 < v <= 5 for v in speeds), 'Đỏ giữa ảnh không giữ tốc độ (0,approach]')
+                need(speeds and all(v == r.values['cruise_cms'] for v in speeds), 'Đỏ giữa ảnh không giữ cruise')
             r.frames(12, approaching)
             space(r); r.finish()
         return
@@ -3233,6 +3253,12 @@ def selftest():
     import ast
     from types import SimpleNamespace
     from unittest.mock import MagicMock, patch
+    junction = mask_rows('junction')
+    start, end = int(0.72 * len(junction)), int(0.79 * len(junction))
+    assert all(not any(row) for row in junction[:start])
+    assert all(set(row) == {1} for row in junction[start:end])
+    assert junction[end:] == mask_rows('straight')[end:]
+    assert read_png(png_bytes(junction)) == b''.join(bytes(row) for row in junction)
     with tempfile.TemporaryDirectory(prefix='ucr-t47-ignore-selftest-') as tmp:
         here = Path(tmp) / 'tools' / 'auto_drive'
         with patch.dict(globals(), HERE=here), patch.object(shutil, 'which', return_value=None):
@@ -3977,7 +4003,8 @@ def selftest():
                     self.armed_odo = self.t57_odo
             early = self.bad == 'early' and self.clock >= 100 and self.t57_odo >= 30
             old = self.bad == 'old_votes' and self.clock >= 1000
-            ready = self.armed_odo is not None and self.t57_odo >= self.armed_odo + 30 and self.clock >= 1000 and self.yolo
+            ready = (self.armed_odo is not None and self.t57_odo >= self.armed_odo + 30
+                     and self.clock >= 1000 and self.yolo)
             if ready and self.bad == 'stop':
                 self.es.append((self.clock, 'motor_speed', 0, False))
             if early or old or (ready and self.bad != 'permanent'):
