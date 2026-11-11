@@ -139,7 +139,7 @@ public:
     int fd() const { return fd_; }
     ~VehicleLock() { if (fd_ >= 0) ::close(fd_); }
 };
-struct Paths { std::string root, stop; };
+struct Paths { std::string root; };
 Paths executablePaths() {
     std::array<char, 4096> buf{};
     const auto n = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
@@ -157,58 +157,8 @@ Paths executablePaths() {
         if (parent == root) throw Failure(1, "Không tìm thấy config.yaml");
         root = parent;
     }
-    const auto stop = dir + "/ucr_stop";
-    if (!regularFile(stop) || access(stop.c_str(), X_OK) != 0)
-        throw Failure(1, "Thiếu ucr_stop cạnh tệp chạy");
-    return {root, stop};
+    return {root};
 }
-// posix_spawn dùng được sau khi preview/ghi ảnh đã có luồng; không chạy shell.
-bool externalStop(const Paths& paths) noexcept {
-    try {
-        const auto binary = paths.stop, config = paths.root + "/config.yaml";
-        char* args[] = {const_cast<char*>(binary.c_str()), const_cast<char*>("--config"),
-                        const_cast<char*>(config.c_str()), nullptr};
-        posix_spawnattr_t attr;
-        if (posix_spawnattr_init(&attr) != 0) return false;
-        sigset_t empty, defaults;
-        sigemptyset(&empty); sigemptyset(&defaults);
-        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGPIPE}) sigaddset(&defaults, s);
-        int error = posix_spawnattr_setsigmask(&attr, &empty);
-        if (!error) error = posix_spawnattr_setsigdefault(&attr, &defaults);
-        if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
-        if (!error) error = posix_spawnattr_setflags(&attr,
-            POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
-        pid_t child = -1;
-        if (!error) error = posix_spawn(&child, binary.c_str(), nullptr, &attr, args, environ);
-        posix_spawnattr_destroy(&attr);
-        if (error) return false;
-        const auto deadline = nowMs() + kStopTimeoutMs;
-        int status = 0;
-        while (nowMs() < deadline) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-            if (result < 0 && errno != EINTR) return false;
-            ::poll(nullptr, 0, kPollMs);
-        }
-        ::kill(-child, SIGTERM);
-        const auto killAt = nowMs() + kStopKillMs;
-        while (nowMs() < killAt) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child || (result < 0 && errno != EINTR)) return false;
-            ::poll(nullptr, 0, kPollMs);
-        }
-        ::kill(-child, SIGKILL);
-        // Không chờ vô hạn một tiến trình bị kẹt trong nhân hệ điều hành.
-        const auto reapAt = nowMs() + kStopKillMs;
-        while (nowMs() < reapAt) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child || (result < 0 && errno != EINTR)) break;
-            ::poll(nullptr, 0, kPollMs);
-        }
-    } catch (...) {}
-    return false;
-}
-
 std::atomic<int64_t> hardwareSince{0};
 std::atomic<int> hardwareKind{0}; // 1 UART, 2 I2C, 3 Init nguyên bản BTC.
 std::atomic<bool> hardwareFault{false};
@@ -453,10 +403,9 @@ struct DriveServo {
         return rawAngle(a);
     }
 };
-// Đường dự phòng khi terminate: dừng motor trước servo/helper, giữ khóa tới khi thoát.
+// Đường dự phòng khi terminate: dừng motor trước servo, giữ khóa tới khi thoát.
 DriveMotor* terminateMotor = nullptr;
 DriveServo* terminateServo = nullptr;
-const Paths* terminatePaths = nullptr;
 void emergencyTerminate() noexcept {
     hardwareFault = true;
     try {
@@ -470,14 +419,12 @@ void emergencyTerminate() noexcept {
         for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); terminateMotor->EmergencyStop(); }
     }
     if (terminateServo && hardwareKind != 2) { try { terminateServo->rawAngle(0); } catch (...) {} }
-    if (terminatePaths) externalStop(*terminatePaths);
     warning();
     std::abort();
 }
 class Watchdog {
     DriveMotor& motor_;
     DriveServo& servo_;
-    const Paths& paths_;
     std::atomic<bool> done_{false};
     std::thread worker_;
     void fail(int kind, int code) noexcept {
@@ -494,15 +441,14 @@ class Watchdog {
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }
         warning();
-        externalStop(paths_);
         _exit(code);
     }
 public:
     std::atomic<int64_t> heartbeat{0}, cleanupAt{0};
     std::atomic<int> cleanupCode{4};
     std::atomic<bool> initialized{false};
-    Watchdog(DriveMotor& motor, DriveServo& servo, const Paths& paths)
-        : motor_(motor), servo_(servo), paths_(paths) {
+    Watchdog(DriveMotor& motor, DriveServo& servo)
+        : motor_(motor), servo_(servo) {
         heartbeat = nowMs();
         worker_ = std::thread([this] {
             while (!done_) {

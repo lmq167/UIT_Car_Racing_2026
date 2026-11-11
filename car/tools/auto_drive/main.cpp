@@ -109,7 +109,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     DriveMotor motor(kReverseMotor); DriveServo servo;
     DriveImu imu;
     DriveTof tof;
-    terminateMotor=&motor; terminateServo=&servo; terminatePaths=&paths;
+    terminateMotor=&motor; terminateServo=&servo;
     std::unique_ptr<Camera> camera;
     drive::PreviewOptions previewOptions;
     previewOptions.debug_windows=options.debugWindows;
@@ -145,7 +145,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
 #endif
         if (stopping) throw SignalStop{};
         InitSignalMask initMask;
-        watchdog.reset(new Watchdog(motor,servo,paths));
+        watchdog.reset(new Watchdog(motor,servo));
         if (params->turn_enable) {
             try { imu.init(paths); }
             catch (const std::exception& e) {
@@ -576,7 +576,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
 
     if (stopping) code=0;
     if (watchdog) { watchdog->cleanupCode=code; watchdog->cleanupAt=nowMs(); }
-    // Dừng trước mọi join, ghi đĩa, đóng preview và helper cuối.
+    // Dừng trước mọi join, ghi đĩa, đóng preview.
     if (!stopVehicle(motor,servo)) { if (!code) code=1; warning(); }
     if (writer) {
         try {
@@ -590,15 +590,15 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     while ((!cameraDone || !modelDone || !controllerDone || !telemetryDone || (writer && !writer->finished)) && nowMs()<deadline)
         ::poll(nullptr,0,kPollMs);
     if (!cameraDone || !modelDone || !controllerDone || !telemetryDone || (writer && !writer->finished)) {
-        // Không hủy bộ nhớ mà luồng bị treo còn dùng; giữ khóa tới sau helper.
-        externalStop(paths); warning(); _exit(code ? code : stopping ? 0 : 4);
+        // Không hủy bộ nhớ mà luồng bị treo còn dùng; giữ khóa tới khi thoát.
+        warning(); _exit(code ? code : stopping ? 0 : 4);
     }
     if (cameraThread.joinable()) cameraThread.join();
     if (modelThread.joinable()) modelThread.join();
     if (controllerThread.joinable()) controllerThread.join();
     if (telemetryThread.joinable()) telemetryThread.join();
     preview.shutdown(); camera.reset(); writer.reset(); watchdog.reset();
-    terminateMotor=nullptr; terminateServo=nullptr; terminatePaths=nullptr;
+    terminateMotor=nullptr; terminateServo=nullptr;
     if (!error.empty()) std::cerr<<"Lỗi: "<<error<<'\n';
     return code;
 }
@@ -673,10 +673,8 @@ int main(int argc,char** argv) {
 #endif
         VehicleLock lock;
         std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=20 cm/s, người giám sát đứng sát xe\n"<<std::flush;
-        if (!externalStop(paths)) { warning(); return 1; }
         int code=0;
         if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine,yoloInfo.get(),yoloEngine);
-        if (!externalStop(paths)) { warning(); if (!code) code=1; }
         return code;
     } catch (const Failure& e) { std::cerr<<e.what()<<'\n'; return e.code; }
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }

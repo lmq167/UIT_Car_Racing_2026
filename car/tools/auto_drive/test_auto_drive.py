@@ -227,11 +227,6 @@ class Run(td.Run):
             self.models = home / 'ucr_models'
         if setup:
             setup(self)
-        helper = bindir / 'ucr_stop'
-        helper.write_text('#!' + sys.executable + '\nimport os,time\n'
-                          'with open(os.environ["UCR_AUTO_FAKE_TRACE"],"a") as f:\n'
-                          ' f.write("%d test_ucr_stop\\n" % int(time.monotonic()*1000))\n', encoding='utf-8')
-        helper.chmod(0o755)
         child_env = {k: v for k, v in os.environ.items()
                      if not k.startswith(('UCR_AUTO_FAKE_', 'UCR_DRIVE_FAKE_', 'UCR_CAM_TEST_'))
                      and k not in ('DISPLAY', 'WAYLAND_DISPLAY', 'UCR_AUTO_MODEL_LOAD_FAIL')}
@@ -278,9 +273,6 @@ class Run(td.Run):
         need(len(self.of('ready')) == 1, 'ready không đúng một lần')
         need(self.of('frame') and self.of('mask') and self.session_files(), 'ready trước ảnh/mask/log')
         td.stop_pair(events, 'startup_stop')
-        helper = next((i for i, e in enumerate(events) if e[1] == 'test_ucr_stop'), None)
-        init = next((i for i, e in enumerate(events) if e[1] == 'motor_init'), None)
-        need(helper is not None and init is not None and helper < init, 'Helper đầu phải trước motor_init')
         need(any(str(e[2]) == 'CHO_SAN_SANG' for e in self.of('state')), 'Thiếu trạng thái chờ')
 
     def session_files(self):
@@ -344,12 +336,10 @@ class Run(td.Run):
         self.wait(lambda: self.process.poll() is not None, 12, 'Không thoát hữu hạn', alive=False)
         need(self.process.returncode == code, 'Sai exit {} != {}: {}'.format(self.process.returncode, code, self.text()), 'exit_code')
         events = self.events()
-        helpers = self.of('test_ucr_stop')
-        need(len(helpers) >= 2 and td.last_commands(events) == (0, 0), 'Thiếu helper cuối/dừng cuối')
-        last_helper = max(i for i, e in enumerate(events) if e[1] == 'test_ucr_stop')
         last_motor = max(i for i, e in enumerate(events) if motor_zero(e))
         last_servo = max(i for i, e in enumerate(events) if e[1] == 'servo_angle' and e[2] == 0 and not e[3])
-        need(last_motor < last_servo < last_helper, 'Thứ tự cuối phải motor0/servo0/helper')
+        need(td.last_commands(events) == (0, 0), 'Motor/servo cuoi phai bang 0')
+        need(last_motor < last_servo, 'Motor 0 phai truoc servo 0')
 
 
 @contextmanager
@@ -460,9 +450,9 @@ def reject(run, code=None, before_init=True):
 
 
 def reject_model(run):
-    """T47l mục 1–3: lỗi model phải trước cả helper và lệnh dừng phần cứng."""
+    """T47l mục 1–3: lỗi model phải trước lệnh dừng phần cứng."""
     reject(run)
-    need(not any(e[1] in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'test_ucr_stop')
+    need(not any(e[1] in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle')
                  for e in run.events()), 'Lỗi model vẫn tác động phần cứng', 'model_preflight')
 
 
@@ -2585,7 +2575,7 @@ def test_case(case, cfg, root):
                     need(any(e[1] == 'servo_angle' and not e[3] and abs(e[2] - float(row['sent_steer_deg'])) < 1e-6
                              and abs(e[0] - float(row['t_ms'])) <= 50 for e in r.events()), 'CSV góc không có lệnh gửi tương ứng')
         return
-    # A22 — N2: chủ khoá không bị helper/motor của tiến trình thứ hai tác động.
+    # A22 — N2: chủ khoá không bị motor của tiến trình thứ hai tác động.
     if case == 'A22':
         import fcntl
         root.mkdir(parents=True)
@@ -2593,7 +2583,7 @@ def test_case(case, cfg, root):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with running(cfg, root / 'contender', lock=root / 'vehicle.lock') as r:
                 reject(r, 6)
-                need(not any(e[1] in ('test_ucr_stop', 'motor_speed', 'motor_emergency', 'servo_angle') for e in r.events()),
+                need(not any(e[1] in ('motor_speed', 'motor_emergency', 'servo_angle') for e in r.events()),
                      'Tiến trình tranh khoá tác động phần cứng')
         return
     # A23/A25 — L5/L7: tín hiệu thật 1000+S ms, byte Ctrl+C 150+S ms.
@@ -2614,7 +2604,7 @@ def test_case(case, cfg, root):
                 stopped(r, stamp, limit)
                 r.exited()
         return
-    # A24 — H3/L5: Esc/E dừng trước helper rồi thoát.
+    # A24 — H3/L5: Esc/E dừng motor rồi servo và thoát.
     if case == 'A24':
         for key in ('E', '\x1b'):
             with running(cfg, root / str(ord(key))) as r:
@@ -3628,7 +3618,7 @@ def selftest():
         probe.text.return_value = 'Lỗi model'
         probe.events.return_value = []
         reject_model(probe)
-        for kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle', 'test_ucr_stop'):
+        for kind in ('motor_init', 'motor_speed', 'motor_emergency', 'servo_angle'):
             for failed in (False, True):
                 probe.events.return_value = [(0, kind, 0, failed)]
                 fails(lambda: reject_model(probe), 'model_preflight')
