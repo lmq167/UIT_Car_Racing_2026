@@ -889,6 +889,34 @@ void Case(const std::string& name) {
         };
         Check(run(false),"Lần qua bình thường mất làn vẫn phải giữ hướng (không đổi hành vi cũ)");
         Check(!run(true),"Lần qua mở ngay sau G-sau-Space không được giữ hướng theo yaw giữa đảo");
+    } else if (name=="roundabout_after_space_aligned") {
+        // Log xe 11/11 (m4): 5/5 lần qua mở sau G-sau-Space không giữ hướng nên mất làn ở lối ra rồi dừng.
+        // Lộ trình đã neo (lần qua đầu) và xe đặt lại theo trục lộ trình (yaw lệch <= 40°) thì lần qua sau vẫn giữ hướng;
+        // yaw lệch xa trục (giữa đảo, log 10/11 289 s) thì KHÔNG giữ.
+        auto run=[](double yaw_second) {
+            Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
+            auto rb=[&](bool seen) {
+                r.now+=40; r.in.odo_cm+=0.5;
+                std::vector<control::Detection> items;
+                if (seen) items.push_back({"round_barrier",cv::Rect2f(490,300,300,80),0.9f,r.now});
+                r.in.detections={items,r.now,++r.frame};
+                return r.step();
+            };
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_min;++i) plan=rb(true);          // lần qua 1 mở, neo lộ trình tại yaw 10
+            for (int i=0;i<12;++i) plan=rb(true);
+            for (int i=0;i<200;++i) { r.in.odo_cm+=1; plan=rb(false); }  // hết lần qua 1
+            r.in.stop=true; r.now+=40; r.step(); r.in.stop=false;
+            r.in.go=true; r.now+=40; r.step(); r.in.go=false;
+            r.in.yaw_deg=yaw_second;
+            for (int i=0;i<r.p.vote_min;++i) plan=rb(true);          // lần qua 2 mở ngay sau G-sau-Space
+            r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0));
+            bool held=false;
+            for (int i=0;i<10;++i) { plan=rb(true); held=held || plan.state==control::PlannerState::GIU_HUONG; }
+            return held;
+        };
+        Check(run(25),"Đặt lại theo trục lộ trình (lệch 15°): lần qua sau phải giữ hướng");
+        Check(!run(10+44),"Yaw lệch 44° (> 40°): không giữ hướng");
     } else if (name=="roundabout_stall") {
         // Giữ hướng mà bánh không tiến (kẹt đảo/rào) thì hết GIU_HUONG sau 1500 ms, về dừng mất làn như cũ.
         Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;

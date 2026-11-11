@@ -43,6 +43,7 @@ constexpr double kRightTurnYawFactor=0.92;
 // c0 trước VX1, c1 Đông, c2 Bắc (T trái), c3 Tây (T trái), c4 Nam (VX2), c5 Tây, c6 Bắc, c7 Đông = hết ý định.
 constexpr int kRouteSteps=8;
 constexpr int kRouteHeading[kRouteSteps]={0,-1,0,1,2,1,0,-1};
+constexpr double kRbHoldAlignDeg=40;   // TẠM, CHƯA ĐO: lần qua mở sau G-sau-Space vẫn giữ hướng nếu yaw lệch trục lộ trình không quá từng này
 constexpr double kRouteAxisDeg=30;     // TẠM, CHƯA ĐO: cách trục <= 30° mới coi là đang theo trục đó
 constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục liên tục từng này mới tính hướng ổn định
 constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
@@ -335,6 +336,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     // Đảo phía trước sau G: hướng Bắc chỉ có thể là đầu cả chặng (R5), hướng Nam là c4.
                     const int q=int(std::lround((input.yaw_deg-route_yaw_ref_)/90.0));
                     if(Mod4(q)==0 || Mod4(q)==2) {
+                        // Log xe 11/11 (m4): 5/5 lần qua mở sau G-sau-Space không giữ hướng nên mất làn ở lối ra rồi dừng;
+                        // lần qua đầu sau G thường (có giữ hướng) thoát bình thường. Nếu xe đang chỉnh theo trục lộ trình
+                        // (không giữa đảo với yaw tùy ý như log 10/11 289 s) thì vẫn giữ hướng.
+                        if(rb_hold_spent_ && std::abs(WrapDeg(input.yaw_deg-route_yaw_ref_-90.0*q))<=kRbHoldAlignDeg) rb_hold_spent_=false;
                         route_sync_=route_ambig_=route_check_rb_=false;
                         if(rb_turn_ && !turning_) ClearTurn();
                         if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=input.yaw_deg; rb_passes_=0; route_note_="SYNC_R5"; }
