@@ -490,6 +490,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             if (stopping) break;
             // Kẹp độc lập YAML, ngay tại tầng gửi; motor luôn trước servo trên đường dừng.
             speed=clampAutoSpeed(static_cast<float>(speed)); angle=clampAutoSteer(angle,parkSteer);
+            if (speed<0 && !parkSteer) speed=0;  // chỉ pha đỗ (DO_XE) được lùi
             if (speed==0 && angle==0) {
                 if (!stopVehicle(motor,servo)) throw Failure(1,"Không xác nhận được dừng");
             } else {
@@ -676,6 +677,11 @@ int main(int argc,char** argv) {
         engine.reset(new FakeRoadEngine(absolutePath(list),info));
 #endif
         VehicleLock lock;
+#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+        // Thay lời gọi dừng ngoài lúc khởi động (đã bỏ ucr_stop): lần chạy trước bị kill khi xe đang chạy thì
+        // gửi motor 0 ngay (chỉ "N1 v0", không lệnh cấu hình); servo 0 gửi sau Init như cũ.
+        { const Motor boot; if (!boot.EmergencyStop()) std::cerr<<"CANH BAO: khong gui duoc motor 0 luc khoi dong\n"; }
+#endif
         std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=20 cm/s, người giám sát đứng sát xe\n"<<std::flush;
         int code=0;
         if (!stopping) code=driveAuto(options,paths,lock.fd(),params,yaml,info,engine,yoloInfo.get(),yoloEngine);

@@ -362,7 +362,7 @@ struct DriveTof {
         lastPrintMs=now;
         sensor::TOFReadings r;
         bool ok;
-        try { HardwareCall call(2); ok=device.Read(r,std::chrono::milliseconds(500)); }
+        try { HardwareCall call(2); ok=device.Read(r,std::chrono::milliseconds(200)); }  // < kHardwareTimeoutMs 300
         catch (const std::exception& e) { std::cerr<<"TOF LOI doc: "<<e.what()<<'\n'; return; }
         std::cout<<"TOF mm(rangeStatus):";
         for (std::size_t i=0;i<r.size();++i) {
