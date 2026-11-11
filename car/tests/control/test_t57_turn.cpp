@@ -1125,6 +1125,12 @@ void Case(const std::string& name) {
             Check(last>20.5,"Chậm tiến độ yaw: góc lái phải tăng trên góc cơ bản");
             Check(last<=r.p.steer_max_deg+1e-9,"Góc lái không vượt steer_max_deg");
         }
+        {   // Đúng tiến độ danh định (yaw tiến theo d·tan(lái)/31) thì không tăng góc: giữ góc cơ bản.
+            Rig r; r.p.turn_steer_deg=20; r.p.turn_max_cm=90; r.in.yaw_deg=10; r.in.odo_cm=0;
+            auto plan=r.turn(); double last=0;
+            for (int i=0;i<40;++i) { r.in.odo_cm+=1; r.in.yaw_deg=10+(i+1)*std::tan(20*3.14159265358979323846/180)/31*180/3.14159265358979323846; plan=r.advance(0.0); last=std::abs(plan.cmd.deg); }
+            Check(last<=20.3,"Đúng tiến độ yaw: giữ góc cơ bản, không tăng");
+        }
         {   Rig r; r.in.yaw_deg=170; r.in.odo_cm=0; r.turn();
             r.in.yaw_deg=-170+360*0; // 170 -> -170 = +20° qua mốc ±180 (rẽ trái = yaw tăng)
             auto plan=r.advance(1);

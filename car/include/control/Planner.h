@@ -42,7 +42,7 @@ public:
     int TurnDirection() const { return turn_direction_; }
     // Thông tin cua IMU để ghi log (chỉ đọc).
     struct TurnInfo { int active=0; double yaw0=0, target=0, err=0; std::string end; };
-    TurnInfo Turn() const { return {turning_ ? 1 : 0,yaw0_,turn_target_deg_,turn_err_deg_,turn_end_note_}; }
+    TurnInfo Turn() const { return {turning_ ? 1 : 0,yaw0_,turning_ ? turn_target_deg_ : 0.0,turning_ ? turn_err_deg_ : 0.0,turn_end_note_}; }
     // Ghi chú quét ô ToF gần nhất (để ghi log); rỗng nếu chưa quét.
     const std::string &ParkNote() const { return park_note_; }
 private:

@@ -27,11 +27,11 @@ constexpr double kRoadEndFrac=0.69;
 constexpr double kSideRoadEdgeFrac=0.10;  // đường ngang ở ngã T chạm vùng 10 % mép ảnh phía rẽ
 constexpr int64_t kRealSideMs=2000;
 // Lượt rẽ IMU (log 09/11 chiều tối): 4 cm/s x 8 s chỉ quay 18-32° rồi hết hạn → bám làn nhận khi mới quay một phần.
-// Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi đã quay >= 45° VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
+// Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi IMU đã quay >= (đích - 10°) VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
 constexpr double kTurnCms=8.0, kHandoverTolDeg=10.0, kExitOffsetFrac=0.15;
 // Quân 11/11: IMU là phản hồi chính của cua. Mặt nạ chỉ giao lại khi yaw đã tới (đích - kHandoverTolDeg); trong cua, góc lái được
 // tăng khi chậm tiến độ yaw so với quãng còn lại (mô hình xe: dyaw = d·tan(lái)/L_eff, L_eff 31 cm đo từ log m4), không vượt steer_max_deg.
-constexpr double kTurnLeffCm=31.0, kTurnPaceMargin=0.85;
+constexpr double kTurnLeffCm=31.0, kTurnPaceMargin=0.85, kTurnLagFrac=0.10;
 constexpr double kSwerveCms=8.0;  // Quân 10/11: tốc độ pha né (NE_TRAI/NE_QUA/VE_PHAI), trước đó dùng approach_cms 5; vẫn bị chặn bởi max_speed_cms và tốc độ bám làn.
 constexpr int kExitRealRows=3;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
@@ -874,10 +874,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         turn_err_deg_=turn_target_deg_-done;
         double need=0;
         if(turn_err_deg_>0 && !sensor_hold_) {
-            const double rem_cm=std::max(5.0,kTurnPaceMargin*(params.turn_max_cm-std::abs(input.odo_cm-turn_odo_)));
-            // turn_steer_scale_ < 1: xe đã quay sẵn về phía rẽ (lỗi 2), phần còn lại nhỏ hơn đích đầy đủ.
-            const double remaining=std::max(0.0,turn_err_deg_-(1.0-turn_steer_scale_)*turn_target_deg_);
-            need=std::atan(kTurnLeffCm*(remaining*3.14159265358979323846/180.0)/rem_cm)*180.0/3.14159265358979323846;
+            const double traveled=std::abs(input.odo_cm-turn_odo_);
+            // Chỉ tăng góc khi yaw thật chậm hơn tiến độ danh định của góc cơ bản (dyaw = d·tan(lái)/L_eff) quá kTurnLagFrac,
+            // để không đè các góc cơ bản đã chủ ý giảm (rào rộng 0,8x, quay sẵn).
+            const double nominal=traveled*std::tan(base*3.14159265358979323846/180.0)/kTurnLeffCm*180.0/3.14159265358979323846;
+            if(done<(1.0-kTurnLagFrac)*nominal) {
+                const double rem_cm=std::max(5.0,kTurnPaceMargin*(params.turn_max_cm-traveled));
+                need=std::atan(kTurnLeffCm*(turn_err_deg_*3.14159265358979323846/180.0)/rem_cm)*180.0/3.14159265358979323846;
+            }
         }
         const double target=turn_direction_*std::min(params.steer_max_deg,std::max(base,need));
         sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
