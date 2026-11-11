@@ -56,6 +56,8 @@ constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, 
 constexpr double kPassStopY2=0.85;
 // Lỗi 3 (log 11/11 m3, 2 phiên): vật 1 ở làn phải đã qua nhưng vật 2 (trước mặt, làn trái) vẫn giữ NE_TRAI tới sát vật 2.
 // Khi đã thấy vật ở nửa phải (tâm >= 0,60), pha trái chỉ giữ bởi hộp ở nửa phải; hộp trước mặt/bên trái không giữ (Quân 11/11).
+// TẠM, CHƯA ĐO trên sa bàn (cùng obstacle_near_w_frac): ngưỡng tâm 0,60; giữ pha trái khi hộp phải >= 0,5·near_w (kSwervePresentFrac),
+// quay lại pha trái từ PASS khi hộp phải >= 1,0·near_w (trễ có chủ ý để tránh dao động); vật trước mặt sát (ahead_stop) luôn ưu tiên dừng.
 constexpr double kHoldRightCx=0.60;
 // Lỗi 2 (log 10/11 lan2/lan3, 6 lượt rẽ phải): bám làn đã quay sẵn 9-20° theo miệng ngã trong 60 cm trước RE_*,
 // rồi cung lái cố định cắt góc. Quân chọn C (11/11): giảm góc rẽ cố định theo phần đã quay sẵn. TẠM, CHƯA ĐO trên sa bàn:
@@ -511,7 +513,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Vật trước mặt đã gần trong PASS: về làn phải ngay khi đã đi đủ phần tối thiểu của quãng pass.
             if(swerve_==Swerve::PASS && ahead_close && pass_cm_>=kPassMinFrac*params.obstacle_pass_cm)
                 pass_cm_=params.obstacle_pass_cm;
-            else if(swerve_==Swerve::PASS && swerve_right_seen_ && widest_right>=params.obstacle_near_w_frac) {
+            else if(swerve_==Swerve::PASS && swerve_right_seen_ && widest_right>=params.obstacle_near_w_frac && !ahead_stop) {
                 // Lại có vật ở nửa phải khi đang qua/về: làn phải chưa trống, quay lại pha trái (không chuyển vào làn bị chiếm).
                 swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
             }
@@ -525,7 +527,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(swerve_==Swerve::LEFT) {
                 swerve_peak_w_=std::max(swerve_peak_w_,widest);
                 present_left=widest>0 && widest>=kSwervePresentFrac*swerve_peak_w_;
-                const bool right_present=widest_right>=0.5*params.obstacle_near_w_frac;
+                const bool right_present=widest_right>=kSwervePresentFrac*params.obstacle_near_w_frac;
                 if(right_present) swerve_right_seen_=true;
                 if(swerve_right_seen_) present_left=right_present;  // đã thấy vật ở làn phải: chỉ nó giữ pha trái
             }
