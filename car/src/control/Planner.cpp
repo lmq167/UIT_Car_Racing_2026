@@ -227,7 +227,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         ClearTurn(); state_=PlannerState::DUNG; reason_="HUY_RE_CAM_BIEN"; lane_.Reset();
     }
     if(params.turn_enable && !turn_fault_ && !fallback && !corridor_turn_) {
-        if(sensor_bad) {
+        // Test P4 12/11: hạn lượt rẽ kiểm cả khi mẫu IMU đang hỏng thoáng qua (trước đây giữ thêm tới 250 ms): giờ luôn kiểm,
+        // quãng chỉ kiểm khi encoder còn tươi.
+        if(turning_ && !person_stop_ && now_ms-turn_ms_>params.turn_max_ms) fault("HUY_QUA_GIO");
+        else if(turning_ && !person_stop_ && encoder_good && std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm) fault("HUY_QUA_QUANG");
+        else if(sensor_bad) {
             // Mẫu hỏng thoáng qua: giữ nguyên lượt rẽ nhưng xe dừng (không biết chuyển động); hỏng từ kSensorGlitchMs thì hủy.
             if(now_ms-sensor_bad_since_<kSensorGlitchMs) sensor_hold_=true; else fault();
         } else if(turning_) {
@@ -854,6 +858,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=cms;
             return plan;
         }
+    }
+    // MEDIUM M1 (review lượt 2, 12/11): nhả DUNG_VAT_CAN hoặc bước quét đỗ về BAM_LAN trong khi đèn đỏ còn chốt thì
+    // dừng đèn đỏ ngay ở bước này (không xuất một chu kỳ tốc độ bám làn rồi mới chuyển DUNG_DEN_DO ở bước sau).
+    if(red_latched_ && state_==PlannerState::BAM_LAN && !input.stop) {
+        if(turning_) { ClearTurn(); lane_.Reset(); }
+        state_=PlannerState::DUNG_DEN_DO; reason_="DUNG_DEN_DO";
     }
     plan.state=state_;
     if(params.turn_enable && corridor_turn_ && turning_ && (state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI)) {
