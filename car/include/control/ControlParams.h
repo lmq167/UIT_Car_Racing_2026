@@ -28,6 +28,9 @@ struct ControlParams {
     int imu_fallback;
     double turn_yaw_deg, turn_steer_deg, turn_arm_cm, turn_max_cm, turn_start_cm;
     double rb_lost_cm, rb_turn1_cm, rb_turn2_cm, rb_yaw_kp, rb_hold_max_cm;
+    // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11): mặc định tắt.
+    int park_enable, park_side;
+    double park_forward_cm, park_arc_deg, park_rev_cms, park_steer_deg;
 
     static ControlParams Load(const std::string &path, std::ostream &report);
     void Validate() const;

@@ -65,6 +65,12 @@ constexpr double kPreTurnWindowCm=60, kPreTurnRefDeg=90, kPreTurnMinScale=0.75;
 //   bám làn mất thông tin và kéo sang làn trái) ở vote_min mặt nạ liên tiếp -> rẽ phải cung cố định (như RE_PHAI), một lần mỗi G.
 constexpr double kLBarrierCx=0.80, kLArmCm=150;
 constexpr int kLOpenRows=3;
+// Đỗ xe lùi song song (park_design_1011.md; Quân duyệt viết với số tạm 11/11). TẠM, CHƯA ĐO trên xe:
+// biển parking rộng >= 0,05 ảnh ở vote_min lô tươi -> bám làn park_forward_cm -> dừng 600 ms -> lùi cung 1 lái về phía ô
+// tới khi quay park_arc_deg -> lùi cung 2 lái ngược tới khi về hướng ban đầu ± 3° -> đứng yên (DO_XE_XONG).
+// Mỗi cung lùi: tối đa 80 cm, 15 s; không nhích >= 1 cm trong 2 s thì dừng; cảm biến lỗi thì dừng.
+constexpr double kParkSignMinW=0.05, kParkYawDoneDeg=3, kParkPhaseMaxCm=80;
+constexpr int64_t kParkWaitMs=600, kParkPhaseMaxMs=15000, kParkStallMs=2000;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -85,6 +91,8 @@ const char *StateName(PlannerState state) {
         case PlannerState::RE_TRAI: return "RE_TRAI";
         case PlannerState::RE_PHAI: return "RE_PHAI";
         case PlannerState::GIU_HUONG: return "GIU_HUONG";
+        case PlannerState::DO_XE: return "DO_XE";
+        case PlannerState::DO_XE_XONG: return "DO_XE_XONG";
     }
     return "DUNG";
 }
@@ -130,6 +138,7 @@ void Planner::Reset(bool preserve_lights) {
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_seen_odo_=0; l_right_run_=l_open_run_=0;
+    park_phase_=ParkPhase::NONE; park_run_=0; park_ms0_=park_prog_ms_=-1;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -149,10 +158,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
-        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0;
+        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
-        state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0;
+        state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE;
     } else if(input.go && (state_==PlannerState::CHO_SAN_SANG || state_==PlannerState::DUNG)) {
         if(!image_fresh || !mask_fresh) {
             if(params.turn_enable && sensor_bad) { ClearTurn(); turn_fault_=true; rb_pending_=0; sensor_good_ms_=-1; }
@@ -170,6 +179,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
     bool round_right=false;  // đảo ở mép phải ảnh (cua L sau cầu)
     bool l_mask_counted=false;  // mặt nạ mới được đếm cho cua L ở bước này
+    bool parking=false;  // biển parking đủ lớn trong lô này
     bool cancelled=false, sensor_cancelled=false, barrier_visible=false;
     auto fault=[&]() {
         sensor_cancelled=turning_;
@@ -226,6 +236,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             const bool signRight=d.class_name=="right" || d.class_name=="no_left";
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
+            const bool parking_sign=params.park_enable && d.class_name=="parking";
             const bool person=d.class_name=="people" || d.class_name=="person";
             // Mọi hộp người đều giữ chốt, kể cả tin cậy thấp hoặc hộp nhỏ.
             person_present=person_present || person;
@@ -233,7 +244,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
-            else if(barrier || roundabout) conf=kBarrierConfMin;
+            else if(barrier || roundabout || parking_sign) conf=kBarrierConfMin;
             else if(person) conf=kPersonConfMin;
             else if(!(params.turn_enable && !turning_ && (!turn_fault_ || fallback) && (signLeft || signRight))) continue;
             const auto &b=d.box;
@@ -260,6 +271,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 barrier_near=barrier_near || near_wide || near_narrow;
                 barrier_wide=barrier_wide || near_wide;
             }
+            else if(parking_sign) parking=parking || b.width>=kParkSignMinW*1280;
             else { left=left || signLeft; right=right || signRight; }
         }
         if(!fresh || red || off || !green) green_run_=0;
@@ -269,6 +281,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
                 votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big});
                 l_right_run_=round_right ? l_right_run_+1 : 0;
+                park_run_=parking ? park_run_+1 : 0;
                 if(l_right_run_>=params.vote_min && !route_anchored_ && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
@@ -702,6 +715,60 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
+        }
+    }
+    // Đỗ xe lùi song song (chặng 8). Cần turn_enable (yaw/encoder chỉ được đọc khi bật rẽ).
+    if(!params.park_enable || !params.turn_enable) {
+        if(park_phase_==ParkPhase::TIEN) park_phase_=ParkPhase::NONE;
+    } else {
+        if(park_phase_==ParkPhase::NONE && state_==PlannerState::BAM_LAN && !turning_ && !turn_direction_ &&
+           swerve_==Swerve::NONE && !returning && !sensor_bad && park_run_>=params.vote_min) {
+            park_phase_=ParkPhase::TIEN; park_odo0_=input.odo_cm;
+        }
+        if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || sensor_bad)) park_phase_=ParkPhase::NONE;
+        if(park_phase_==ParkPhase::TIEN && std::abs(input.odo_cm-park_odo0_)>=params.park_forward_cm) {
+            park_phase_=ParkPhase::CHO; park_ms0_=now_ms; state_=PlannerState::DO_XE; reason_="DO_XE_CHO";
+        }
+    }
+    if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
+        auto stop_park=[&](const char *why) { park_phase_=ParkPhase::NONE; state_=PlannerState::DUNG; reason_=why; };
+        auto start_phase=[&](ParkPhase phase, const char *why) {
+            park_phase_=phase; park_odo0_=park_prog_odo_=input.odo_cm; park_ms0_=park_prog_ms_=now_ms; reason_=why;
+        };
+        const bool reversing=park_phase_==ParkPhase::LUI1 || park_phase_==ParkPhase::LUI2;
+        if(sensor_bad && park_phase_!=ParkPhase::XONG) stop_park("DO_XE_CAM_BIEN");
+        else if(park_phase_==ParkPhase::CHO) {
+            if(now_ms-park_ms0_>=kParkWaitMs) { park_yaw0_=input.yaw_deg; start_phase(ParkPhase::LUI1,"DO_XE_LUI_1"); }
+        } else if(reversing) {
+            // Lùi + lái về phía ô: đuôi vào ô; quay đo theo chiều đó (lùi + lái phải -> yaw tăng).
+            const double turned=-params.park_side*WrapDeg(input.yaw_deg-park_yaw0_);
+            if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) {  // đứng vì người không tính vào hạn
+                park_ms0_+=now_ms-command_ms_; park_prog_ms_=now_ms;
+            }
+            if(std::abs(input.odo_cm-park_prog_odo_)>=1) { park_prog_odo_=input.odo_cm; park_prog_ms_=now_ms; }
+            if(std::abs(input.odo_cm-park_odo0_)>kParkPhaseMaxCm || now_ms-park_ms0_>kParkPhaseMaxMs) stop_park("DO_XE_HET_HAN");
+            else if(!person_stop_ && now_ms-park_prog_ms_>=kParkStallMs) stop_park("DO_XE_KET");
+            else if(park_phase_==ParkPhase::LUI1 && turned>=params.park_arc_deg) start_phase(ParkPhase::LUI2,"DO_XE_LUI_2");
+            else if(park_phase_==ParkPhase::LUI2 && turned<=kParkYawDoneDeg) {
+                park_phase_=ParkPhase::XONG; state_=PlannerState::DO_XE_XONG; reason_="DO_XE_XONG";
+            }
+        }
+        if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
+            double cms=0, target=0;
+            if(park_phase_==ParkPhase::LUI1 || park_phase_==ParkPhase::LUI2) {
+                cms=-std::min(params.park_rev_cms,params.max_speed_cms);
+                target=(park_phase_==ParkPhase::LUI1 ? 1 : -1)*params.park_side*std::min(params.park_steer_deg,params.steer_max_deg);
+            }
+            if(person_stop_) { cms=0; target=sent_angle_; }
+            const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+            sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
+                std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
+            command_ms_=now_ms;
+            plan.state=state_; plan.cmd={cms,sent_angle_};
+            plan.reason=person_stop_ ? "NGUOI_DI_BO" : reason_;
+            plan.debug.state=StateName(state_); plan.debug.reason=plan.reason;
+            plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=cms;
+            return plan;
         }
     }
     plan.state=state_;

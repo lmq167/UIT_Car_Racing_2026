@@ -42,6 +42,12 @@ const Parameter table[] = {
     {"rb_hold_max_cm",150.0,&ControlParams::rb_hold_max_cm,20,400,"cm","Quãng giữ hướng tối đa mỗi lần qua vòng xuyến"},
     {"turn_max_cm",70.0,&ControlParams::turn_max_cm,10,200,"cm","Quãng rẽ tối đa"},
     {"turn_max_ms",8000,&ControlParams::turn_max_ms,1000,20000,"ms","Thời gian rẽ tối đa"},
+    {"park_enable",0,&ControlParams::park_enable,0,1,"1","TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (0 = tắt)"},
+    {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
+    {"park_forward_cm",30.0,&ControlParams::park_forward_cm,0,200,"cm","TẠM, CHƯA ĐO: quãng bám làn từ lúc biển parking đủ phiếu tới lúc dừng để lùi"},
+    {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
+    {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,10,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi"},
+    {"park_steer_deg",30.0,&ControlParams::park_steer_deg,5,40,"độ","TẠM, CHƯA ĐO: góc lái khi lùi, không vượt steer_max_deg"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
     {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},
@@ -133,6 +139,10 @@ void ControlParams::Validate() const {
     // Chỉ ràng buộc khi bật rẽ: yaml cũ có steer_max_deg nhỏ vẫn nạp được lúc rẽ tắt.
     Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
     Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
+    Require(park_side==-1 || park_side==1,"park_side");
+    // Chỉ ràng buộc khi bật đỗ: đỗ cần cảm biến rẽ (yaw/encoder chỉ đọc khi turn_enable).
+    Require(park_enable==0 || (turn_enable==1 && park_steer_deg<=steer_max_deg && park_rev_cms<=max_speed_cms),
+            "park_enable / turn_enable / park_steer_deg / steer_max_deg / park_rev_cms / max_speed_cms");
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
 }

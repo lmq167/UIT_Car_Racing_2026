@@ -585,6 +585,72 @@ void Case(const std::string& name) {
             for (int i=0;i<2*r.p.vote_min;++i) { r.in.odo_cm+=1; any=any || empty(r).state==control::PlannerState::RE_PHAI; }
             Check(!any,"Lỗi cảm biến khi chờ cua L phải bỏ cua L");
         }
+    } else if (name=="park_reverse") {
+        // Đỗ xe lùi song song (Quân duyệt viết với số tạm 11/11): biển parking -> tiến park_forward_cm -> chờ -> lùi 2 cung -> đứng.
+        auto sign=[](Rig& r) {
+            r.now+=40; r.in.detections={{{"parking",cv::Rect2f(576,200,128,128),0.9f,r.now}},r.now,++r.frame};
+            return r.step();
+        };
+        auto tick=[](Rig& r, int ms=40) { r.now+=ms; r.in.detections={{},r.now,++r.frame}; return r.step(); };
+        // Đưa tới đầu pha lùi 1; trả về Rig đang ở DO_XE_LUI_1.
+        auto to_reverse=[&](Rig& r, int side) {
+            r.p.park_enable=1; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            control::Plan plan;
+            for (int i=0;i<200 && plan.reason!="DO_XE_CHO";++i) { r.in.odo_cm+=1; plan=tick(r); }
+            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_CHO" && plan.cmd.cms==0,"Đủ park_forward_cm phải dừng chờ lùi");
+            Check(r.in.odo_cm>=r.p.park_forward_cm,"Không được dừng trước park_forward_cm");
+            for (int i=0;i<20 && plan.reason=="DO_XE_CHO";++i) plan=tick(r,50);
+            Check(plan.reason=="DO_XE_LUI_1","Chờ xong phải lùi cung 1");
+            return plan;
+        };
+        { // Ô bên phải: lùi, lái phải (âm) tới khi yaw tăng park_arc_deg, rồi lái trái tới khi về hướng đầu.
+            Rig r; auto plan=to_reverse(r,-1);
+            for (int i=0;i<10;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
+            Check(plan.cmd.cms<0 && plan.cmd.cms>=-r.p.park_rev_cms && plan.cmd.deg<0 &&
+                  plan.cmd.deg>=-std::min(r.p.park_steer_deg,r.p.steer_max_deg),"Lùi cung 1 ô phải: tốc độ âm, lái phải");
+            r.in.yaw_deg=r.p.park_arc_deg; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.reason=="DO_XE_LUI_2","Quay đủ park_arc_deg phải sang cung 2");
+            for (int i=0;i<20;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
+            Check(plan.cmd.cms<0 && plan.cmd.deg>0,"Lùi cung 2 ô phải: lái trái");
+            r.in.yaw_deg=2; r.in.odo_cm-=0.3; plan=tick(r);
+            Check(plan.state==control::PlannerState::DO_XE_XONG && plan.cmd.cms==0,"Về hướng đầu phải đứng yên");
+            for (int i=0;i<20;++i) Check(tick(r).cmd.cms==0,"Đã đỗ phải đứng yên");
+        }
+        { // Ô bên trái: lái trái ở cung 1, quay theo chiều yaw giảm.
+            Rig r; auto plan=to_reverse(r,1);
+            for (int i=0;i<10;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
+            Check(plan.cmd.cms<0 && plan.cmd.deg>0,"Lùi cung 1 ô trái: lái trái");
+            r.in.yaw_deg=-r.p.park_arc_deg; r.in.odo_cm-=0.3;
+            Check(tick(r).reason=="DO_XE_LUI_2","Ô trái quay đủ phải sang cung 2");
+        }
+        { // Cảm biến lỗi khi lùi: dừng.
+            Rig r; to_reverse(r,-1); r.in.odo_cm-=0.3; tick(r);
+            r.in.sensor_ok=false; auto plan=tick(r);
+            Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0,"Cảm biến lỗi khi lùi phải dừng");
+        }
+        { // Không nhích trong 2 s: dừng DO_XE_KET.
+            Rig r; to_reverse(r,-1); control::Plan plan;
+            for (int i=0;i<60 && plan.state!=control::PlannerState::DUNG;++i) plan=tick(r,50);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KET" && plan.cmd.cms==0,"Kẹt khi lùi phải dừng");
+        }
+        { // Lùi quá 80 cm mà chưa quay đủ: dừng DO_XE_HET_HAN.
+            Rig r; to_reverse(r,-1); control::Plan plan;
+            for (int i=0;i<200 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm-=1; plan=tick(r); }
+            Check(plan.reason=="DO_XE_HET_HAN" && plan.cmd.cms==0,"Lùi quá quãng tối đa phải dừng");
+        }
+        { // Space khi lùi: dừng.
+            Rig r; to_reverse(r,-1); r.in.odo_cm-=0.3; tick(r);
+            r.in.stop=true; auto plan=tick(r); r.in.stop=false;
+            Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0,"Space khi lùi phải dừng");
+        }
+        { // park_enable 0: biển parking không làm gì.
+            Rig r; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            control::Plan plan;
+            for (int i=0;i<100;++i) { r.in.odo_cm+=1; plan=tick(r); Check(plan.cmd.cms>=0,"Tắt đỗ không được lùi"); }
+            Check(plan.state==control::PlannerState::BAM_LAN,"Tắt đỗ phải bám làn");
+        }
     } else if (name=="obstacle_blocked_in_roundabout") {
         // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
         Rig r; r.p.obstacle_action=2;

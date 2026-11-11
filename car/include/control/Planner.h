@@ -6,7 +6,8 @@
 namespace control {
 constexpr int kStaleImageMs = 500;
 constexpr const char* kMissingImageReason = "MAT_ANH";
-enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN, RE_TRAI, RE_PHAI, GIU_HUONG };
+enum class PlannerState { CHO_SAN_SANG, BAM_LAN, DUNG, CHO_DEN_XUAT_PHAT, DUNG_DEN_DO, DUNG_VAT_CAN, RE_TRAI, RE_PHAI, GIU_HUONG,
+                          DO_XE, DO_XE_XONG };  // DO_XE: chờ/lùi vào ô (chặng 8); DO_XE_XONG: đã đỗ, đứng yên
 const char *StateName(PlannerState state);
 struct PlannerInput {
     cv::Mat mask;
@@ -103,6 +104,12 @@ private:
     bool l_armed_=false, l_done_=false, l_turning_=false;
     double l_seen_odo_=0;
     int l_right_run_=0, l_open_run_=0;
+    // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11).
+    enum class ParkPhase { NONE, TIEN, CHO, LUI1, LUI2, XONG };
+    ParkPhase park_phase_=ParkPhase::NONE;
+    double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
+    int64_t park_ms0_=-1, park_prog_ms_=-1;
+    int park_run_=0;  // số lô YOLO tươi liên tiếp có biển parking
     void ClearTurn();
 };
 }
