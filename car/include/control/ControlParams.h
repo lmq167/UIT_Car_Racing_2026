@@ -11,6 +11,8 @@ struct ControlParams {
     double steer_max_deg, steer_rate_dps, kp, kd;
     // Hành lang (T79): hàng quét, bề rộng một làn kỳ vọng [gần, xa], ngưỡng hai làn/nhảy/tin cậy, lookahead.
     int corridor_rows;
+    int lane_backup;
+    double lane_backup_right_frac; // TẠM, CHƯA ĐO
     double corridor_bottom_frac, corridor_top_frac;
     std::vector<double> lane1_width_frac;
     double two_lane_ratio, max_jump_frac, conf_min, lookahead_frac, avoid_min_width_ratio;

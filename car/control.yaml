@@ -13,6 +13,8 @@ steer_max_deg: 40 # Trần góc lái, độ; dương là trái
 steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
 kp: 35 # Hệ số tỉ lệ, độ
 kd: 2 # Hệ số vi phân, độ.s
+lane_backup: 0
+lane_backup_right_frac: 0.5 # TẠM, CHƯA ĐO
 corridor_rows: 8 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: số hàng hành lang (2–20)
 corridor_bottom_frac: 0.95 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng gần nhất theo chiều cao mặt nạ
 corridor_top_frac: 0.62 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng xa nhất theo chiều cao mặt nạ (0 < top < bottom)

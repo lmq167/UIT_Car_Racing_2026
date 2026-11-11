@@ -223,3 +223,8 @@ add_executable(test_p3_low test_p3_low.cpp)
 target_link_libraries(test_p3_low PRIVATE ucr_control)
 add_test(NAME control_p3_low COMMAND test_p3_low)
 set_tests_properties(control_p3_low PROPERTIES LABELS "control" TIMEOUT 15)
+
+add_executable(test_lane_backup test_lane_backup.cpp)
+target_link_libraries(test_lane_backup PRIVATE ucr_control)
+add_test(NAME control_lane_backup COMMAND test_lane_backup ${CMAKE_CURRENT_BINARY_DIR}/lane_backup_params.yaml)
+set_tests_properties(control_lane_backup PROPERTIES LABELS "control" TIMEOUT 60)

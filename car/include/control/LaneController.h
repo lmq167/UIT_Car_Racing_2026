@@ -38,6 +38,8 @@ struct ControlResult { Command cmd; ControlDebug debug; };
 // Hàm thuần, không trạng thái: hành lang theo hàng từ mask 0/1 (2 cũng là đường).
 // prior_lanes: số làn đã thấy rõ ở khung trước (0 chưa biết, 1, 2); chỉ dùng khi biên phải chạm mép ảnh ở chế độ LANE.
 Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajMode mode, int prior_lanes=0);
+// Hàm thuần: điểm nhìn trước từ biên phải của đoạn đường nối với hàng dưới.
+bool BackupLookahead(const cv::Mat &mask, const ControlParams &params, double &look_x, int &rows_used);
 class LaneController {
 public:
     ControlResult Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,

@@ -154,6 +154,56 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
     }
     return corridor;
 }
+bool BackupLookahead(const cv::Mat &mask, const ControlParams &params, double &look_x, int &rows_used) {
+    look_x=-1; rows_used=0;
+    if(mask.empty()) return false;
+    CheckMask(mask);
+    const int W=mask.cols, H=mask.rows;
+    const double axis=W/2.0+params.center_offset_frac*W;
+    const double near=std::lround(params.corridor_bottom_frac*H), far=std::lround(params.corridor_top_frac*H);
+    Seg lower{0,0};
+    std::vector<double> ys, targets;
+    for(int i=0;i<params.corridor_rows;++i) {
+        const double frac=params.corridor_bottom_frac+(params.corridor_top_frac-params.corridor_bottom_frac)*i/std::max(1,params.corridor_rows-1);
+        const int y=int(Clamp(std::lround(frac*H),0,H-1));
+        const double t=near>far ? Clamp((near-y)/(near-far),0,1) : 0;
+        const double w=W*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
+        const auto *pixels=mask.ptr<unsigned char>(y);
+        Seg pick{0,-1}; int best=-1;
+        for(int x=0;x<W;) {
+            if(!pixels[x]) { ++x; continue; }
+            const int l=x; while(x<W && pixels[x]) ++x;
+            const Seg s{l,x-1};
+            if(x-l<kNoiseFrac*w) continue;
+            if(ys.empty()) {
+                if(s.l<=axis && axis<=s.r) { pick=s; break; }
+            } else {
+                const int overlap=std::min(s.r,lower.r)-std::max(s.l,lower.l);
+                if(overlap>=0 && overlap>best) { best=overlap; pick=s; }
+            }
+        }
+        if(pick.r<pick.l) break;
+        ys.push_back(y);
+        targets.push_back((pick.l==0 && pick.r==W-1) || pick.r-pick.l<w ?
+            (pick.l+pick.r)/2.0 : pick.r-params.lane_backup_right_frac*w);
+        lower=pick;
+    }
+    rows_used=int(ys.size());
+    if(rows_used<std::max(2,params.min_valid_rows)) return false;
+    const int degree=rows_used>=3 ? 2 : 1;
+    double c=0; for(double y:ys) c+=y; c/=rows_used;
+    cv::Mat a(rows_used,degree+1,CV_64F), b(rows_used,1,CV_64F), k;
+    for(int i=0;i<rows_used;++i) {
+        for(int j=0;j<=degree;++j) a.at<double>(i,j)=std::pow(ys[i]-c,j);
+        b.at<double>(i)=targets[i];
+    }
+    if(!cv::solve(a,b,k,cv::DECOMP_SVD)) return false;
+    const double u=params.lookahead_frac*H-c;
+    const double x=k.at<double>(0)+k.at<double>(1)*u+(degree==2 ? k.at<double>(2)*u*u : 0);
+    if(!std::isfinite(x)) return false;
+    look_x=std::round(x*1e6)/1e6;
+    return true;
+}
 void LaneController::Reset() {
     *this=LaneController{}; }
 ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t now_ms,
@@ -213,6 +263,8 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         const bool real_edge=std::any_of(usable.begin(),usable.end(),[](const RowDebug *row) {
             return row->flag_left==kThat || row->flag_right==kThat;
         });
+        double x=-1;
+        const double y_l=params.lookahead_frac*mask.rows;
         if((mode==TrajMode::ROUNDABOUT || real_edge) && int(usable.size())>=std::max(2,params.min_valid_rows)) {
             // Bình phương tối thiểu trọng số conf, biến y dịch tâm c cho ổn định số rồi đổi về y pixel.
             const int degree=usable.size()>=3 ? 2 : 1;
@@ -228,12 +280,20 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
             if(cv::solve(a,b,k,cv::DECOMP_SVD)) {
                 const double k0=k.at<double>(0), k1=k.at<double>(1), k2=degree==2 ? k.at<double>(2) : 0;
                 result.debug.fit={k0-k1*c+k2*c*c,k1-2*k2*c,k2};
-                const double y_l=params.lookahead_frac*mask.rows, u=y_l-c;
+                const double u=y_l-c;
                 // Làm tròn 1e-6 px: bỏ nhiễu số của SVD để đường thẳng giữa trục cho e đúng 0.
-                double x=std::round((k0+k1*u+k2*u*u)*1e6)/1e6;
+                x=std::round((k0+k1*u+k2*u*u)*1e6)/1e6;
                 const RowDebug *nearest=usable.front();
                 for(const auto *row:usable) if(std::abs(row->y-y_l)<std::abs(nearest->y-y_l)) nearest=row;
                 x=Clamp(x,nearest->left,nearest->right);
+                valid=std::isfinite(x);
+            }
+        }
+        if(params.lane_backup && mode==TrajMode::LANE) {
+            valid=BackupLookahead(mask,params,x,result.debug.valid_rows);
+            result.debug.fit.clear();
+        }
+        if(valid) {
                 if(have_look_ && look_mode_==mode)
                     x=Clamp(x,look_x_-params.max_jump_frac*W,look_x_+params.max_jump_frac*W);
                 if(std::isfinite(x)) {
@@ -242,7 +302,6 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
                     result.debug.e=Clamp((x-axis)/(W/2.0),-1,1);
                     valid=true;
                 } else result.debug.fit.clear();
-            }
         }
         {   // Nhớ số làn chỉ từ các hàng có cả hai biên thật (không lấy từ hàng dựng lại).
             int two=0, one=0;

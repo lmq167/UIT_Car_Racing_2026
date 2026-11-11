@@ -76,6 +76,8 @@ const Parameter table[] = {
     {"steer_rate_dps",200.0,&ControlParams::steer_rate_dps,10,1000,"độ/s","Tốc độ đổi góc tối đa"},
     {"kp",35.0,&ControlParams::kp,0,200,"độ","Hệ số tỉ lệ"},
     {"kd",2.0,&ControlParams::kd,0,50,"độ.s","Hệ số vi phân"},
+    {"lane_backup",0,&ControlParams::lane_backup,0,1,"1","Bật bộ bám làn dự phòng, mặc định tắt"},
+    {"lane_backup_right_frac",0.5,&ControlParams::lane_backup_right_frac,0.35,0.65,"w(y)","TẠM, CHƯA ĐO: khoảng lùi từ biên phải"},
     {"corridor_rows",8,&ControlParams::corridor_rows,2,20,"hàng","Số hàng hành lang, đều từ hàng gần tới hàng xa"},
     {"corridor_bottom_frac",0.95,&ControlParams::corridor_bottom_frac,0,1,"H","Hàng hành lang gần nhất theo chiều cao"},
     {"corridor_top_frac",0.62,&ControlParams::corridor_top_frac,0,1,"H","Hàng hành lang xa nhất theo chiều cao"},
