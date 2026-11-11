@@ -644,6 +644,39 @@ void Case(const std::string& name) {
             r.in.stop=true; auto plan=tick(r); r.in.stop=false;
             Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0,"Space khi lùi phải dừng");
         }
+        { // Đèn đỏ rồi xanh khi đang lùi / đã đỗ: không được chạy tiến (review MEDIUM-1).
+            Rig r; to_reverse(r,-1); r.in.odo_cm-=0.3; tick(r);
+            auto light=[&](const char *cls) {
+                r.now+=40; r.in.odo_cm-=0.3; r.in.detections={{{cls,cv::Rect2f(1200,100,60,60),0.9f,r.now}},r.now,++r.frame};
+                return r.step();
+            };
+            control::Plan plan;
+            for (int i=0;i<r.p.vote_window+2;++i) { plan=light("red"); Check(plan.cmd.cms<=0,"Đèn đỏ khi lùi không được tiến"); }
+            Check(plan.state==control::PlannerState::DO_XE,"Đèn đỏ không kéo xe ra khỏi DO_XE");
+            for (int i=0;i<r.p.green_frames+r.p.vote_window+5;++i) { plan=light("green"); Check(plan.cmd.cms<=0,"Đèn xanh khi lùi không được tiến"); }
+            Check(plan.state==control::PlannerState::DO_XE,"Đèn xanh không đưa xe sang BAM_LAN khi đang đỗ");
+        }
+        { // Biển rẽ khi đang lùi + mặt nạ cũ một nhịp: không chuyển sang bám làn tiến (review MEDIUM-2).
+            Rig r; to_reverse(r,-1); r.in.odo_cm-=0.3; tick(r);
+            for (int i=0;i<r.p.vote_window+2;++i) {
+                r.now+=40; r.in.odo_cm-=0.3; r.in.detections={{{"left",cv::Rect2f(900,200,128,128),0.9f,r.now}},r.now,++r.frame};
+                Check(r.step().cmd.cms<=0,"Biển rẽ khi lùi không được tiến");
+            }
+            r.now+=40; r.in.odo_cm-=0.3; r.in.detections={{},r.now,++r.frame}; auto plan=r.step(false);
+            for (int i=0;i<10;++i) { r.in.odo_cm-=0.3; plan=tick(r); Check(plan.cmd.cms<=0,"Sau mặt nạ cũ không được tiến"); }
+            Check(plan.state==control::PlannerState::DO_XE || plan.state==control::PlannerState::DUNG,"Mặt nạ cũ không đưa xe sang bám làn");
+        }
+        { // Biển rẽ trong lúc tiến tới chỗ lùi: bỏ đỗ, không vào DO_XE mang theo ý định rẽ (review MEDIUM-2).
+            Rig r; r.p.park_enable=1; r.p.park_side=-1; r.in.yaw_deg=0; r.in.odo_cm=0;
+            for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }
+            for (int i=0;i<r.p.vote_min;++i) {
+                r.now+=40; r.in.odo_cm+=1; r.in.detections={{{"left",cv::Rect2f(900,200,128,128),0.9f,r.now}},r.now,++r.frame}; r.step();
+            }
+            for (int i=0;i<100;++i) {
+                r.in.odo_cm+=1; const auto plan=tick(r);
+                Check(plan.state!=control::PlannerState::DO_XE && plan.cmd.cms>=0,"Có ý định rẽ thì không được dừng để lùi");
+            }
+        }
         { // park_enable 0: biển parking không làm gì.
             Rig r; r.in.odo_cm=0;
             for (int i=0;i<r.p.vote_min;++i) { r.in.odo_cm+=1; sign(r); }

@@ -158,7 +158,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
-        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE;
+        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
         state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE;
@@ -430,7 +430,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(!red_latched_) { green_run_=0; wait_since_ms_=now_ms; }
             red_latched_=true;
         }
-        if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG) {
+        // Đang đỗ (lùi/đã đỗ): đèn không kéo xe sang DUNG_DEN_DO rồi BAM_LAN tiến khi xanh (review đỗ xe MEDIUM-1).
+        if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG &&
+           state_!=PlannerState::DO_XE && state_!=PlannerState::DO_XE_XONG) {
             if(red_latched_) {
                 if(turning_) { ClearTurn(); lane_.Reset(); }
                 state_=PlannerState::DUNG_DEN_DO; reason_="DUNG_DEN_DO";
@@ -683,7 +685,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         state_=PlannerState::RE_PHAI;
     }
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
-       state_!=PlannerState::DUNG_VAT_CAN) {
+       state_!=PlannerState::DUNG_VAT_CAN && state_!=PlannerState::DO_XE && state_!=PlannerState::DO_XE_XONG) {
         if(corridor_turn_ && (std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm || now_ms-turn_ms_>params.turn_max_ms)) {
             ClearTurn(); cancelled=true; state_=PlannerState::DUNG; reason_="RE_HANH_LANG_HET_HAN"; lane_.Reset();
         } else if(corridor_turn_ && corridor_clear_>=params.vote_min) {
@@ -722,12 +724,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(park_phase_==ParkPhase::TIEN) park_phase_=ParkPhase::NONE;
     } else {
         if(park_phase_==ParkPhase::NONE && state_==PlannerState::BAM_LAN && !turning_ && !turn_direction_ &&
-           swerve_==Swerve::NONE && !returning && !sensor_bad && park_run_>=params.vote_min) {
+           swerve_==Swerve::NONE && !returning && !rb_in_pass_ && !rb_holding_ && !sensor_bad && park_run_>=params.vote_min) {
             park_phase_=ParkPhase::TIEN; park_odo0_=input.odo_cm;
         }
-        if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || sensor_bad)) park_phase_=ParkPhase::NONE;
+        // Có ý định rẽ trong lúc tiến (biển/lộ trình): bỏ đỗ, để rẽ chạy như thường (review MEDIUM-2).
+        if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || turn_direction_ || sensor_bad ||
+                                            rb_in_pass_ || rb_holding_)) park_phase_=ParkPhase::NONE;
         if(park_phase_==ParkPhase::TIEN && std::abs(input.odo_cm-park_odo0_)>=params.park_forward_cm) {
-            park_phase_=ParkPhase::CHO; park_ms0_=now_ms; state_=PlannerState::DO_XE; reason_="DO_XE_CHO";
+            ClearTurn(); park_phase_=ParkPhase::CHO; park_ms0_=now_ms; state_=PlannerState::DO_XE; reason_="DO_XE_CHO";
         }
     }
     if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
