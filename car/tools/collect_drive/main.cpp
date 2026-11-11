@@ -164,7 +164,7 @@ public:
     int fd() const { return fd_; }
     ~VehicleLock() { if (fd_ >= 0) ::close(fd_); }
 };
-struct Paths { fs::path root, stop; };
+struct Paths { fs::path root; };
 Paths executablePaths() {
     std::array<char, 4096> buf{};
     const auto n = readlink("/proc/self/exe", buf.data(), buf.size() - 1);
@@ -178,56 +178,7 @@ Paths executablePaths() {
             throw Failure(1, "Không tìm thấy config.yaml khi đi lên từ tệp chạy");
         root = parent;
     }
-    const auto stop = executable.parent_path() / "ucr_stop";
-    if (!fs::is_regular_file(stop) || access(stop.c_str(), X_OK) != 0)
-        throw Failure(1, "Thiếu ucr_stop thực thi được cạnh tệp chạy");
-    return {root, stop};
-}
-// posix_spawn dùng được sau khi preview/ghi ảnh đã có luồng; không chạy shell.
-bool externalStop(const Paths& paths) noexcept {
-    try {
-        const auto binary = paths.stop.string(), config = (paths.root / "config.yaml").string();
-        char* args[] = {const_cast<char*>(binary.c_str()), const_cast<char*>("--config"),
-                        const_cast<char*>(config.c_str()), nullptr};
-        posix_spawnattr_t attr;
-        if (posix_spawnattr_init(&attr) != 0) return false;
-        sigset_t empty, defaults;
-        sigemptyset(&empty); sigemptyset(&defaults);
-        for (int s : {SIGINT, SIGTERM, SIGHUP, SIGPIPE}) sigaddset(&defaults, s);
-        int error = posix_spawnattr_setsigmask(&attr, &empty);
-        if (!error) error = posix_spawnattr_setsigdefault(&attr, &defaults);
-        if (!error) error = posix_spawnattr_setpgroup(&attr, 0);
-        if (!error) error = posix_spawnattr_setflags(&attr,
-            POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETPGROUP);
-        pid_t child = -1;
-        if (!error) error = posix_spawn(&child, binary.c_str(), nullptr, &attr, args, environ);
-        posix_spawnattr_destroy(&attr);
-        if (error) return false;
-        const auto deadline = nowMs() + kStopTimeoutMs;
-        int status = 0;
-        while (nowMs() < deadline) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child) return WIFEXITED(status) && WEXITSTATUS(status) == 0;
-            if (result < 0 && errno != EINTR) return false;
-            ::poll(nullptr, 0, kPollMs);
-        }
-        ::kill(-child, SIGTERM);
-        const auto killAt = nowMs() + kStopKillMs;
-        while (nowMs() < killAt) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child || (result < 0 && errno != EINTR)) return false;
-            ::poll(nullptr, 0, kPollMs);
-        }
-        ::kill(-child, SIGKILL);
-        // Không chờ vô hạn một tiến trình bị kẹt trong nhân hệ điều hành.
-        const auto reapAt = nowMs() + kStopKillMs;
-        while (nowMs() < reapAt) {
-            const auto result = waitpid(child, &status, WNOHANG);
-            if (result == child || (result < 0 && errno != EINTR)) break;
-            ::poll(nullptr, 0, kPollMs);
-        }
-    } catch (...) {}
-    return false;
+    return {root};
 }
 
 std::atomic<int64_t> hardwareSince{0};
@@ -328,7 +279,6 @@ void emergencyTerminate() noexcept {
 class Watchdog {
     DriveMotor& motor_;
     DriveServo& servo_;
-    const Paths& paths_;
     std::atomic<bool> done_{false};
     std::thread worker_;
     void fail(int kind, int code) noexcept {
@@ -345,15 +295,14 @@ class Watchdog {
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }
         warning();
-        externalStop(paths_);
         _exit(code);
     }
 public:
     std::atomic<int64_t> heartbeat{0}, cleanupAt{0};
     std::atomic<int> cleanupCode{4};
     std::atomic<bool> initialized{false};
-    Watchdog(DriveMotor& motor, DriveServo& servo, const Paths& paths)
-        : motor_(motor), servo_(servo), paths_(paths) {
+    Watchdog(DriveMotor& motor, DriveServo& servo)
+        : motor_(motor), servo_(servo) {
         heartbeat = nowMs();
         worker_ = std::thread([this] {
             while (!done_) {
@@ -704,7 +653,7 @@ public:
     ~Writer() { if (worker_.joinable()) worker_.join(); }
 };
 
-int collect(const Options& o, const Paths& paths, int lockFd, const std::string& host, int argc, char** argv) {
+int collect(const Options& o, const Paths&, int lockFd, const std::string& host, int argc, char** argv) {
     DriveMotor motor(o.reverseMotor);
     terminateMotor = &motor;
     DriveServo servo;
@@ -721,7 +670,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         if (preview.start() != drive::PreviewStartResult::Started)
             throw Failure(1, "Không chạy được cửa sổ ảnh: " + preview.diagnostic());
         InitSignalMask initMask;
-        watchdog.reset(new Watchdog(motor, servo, paths));
+        watchdog.reset(new Watchdog(motor, servo));
         trace("state", "DUNG");
         motorAttempted = true;
         if (!motor.init()) throw Failure(1, "Motor::Init thất bại");
@@ -804,7 +753,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
     if (motorAttempted) stopped = control.stop();
     else {
         // Chưa Init/mở servo nên chưa có lệnh nào; vẫn thử motor 0 rồi servo 0, chỉ tính kết quả motor
-        // (servo chưa mở luôn báo lỗi, tránh cảnh báo KIEM TRA XE sai; ucr_stop chạy sau vẫn đặt servo).
+        // (servo chưa mở luôn báo lỗi, tránh cảnh báo KIEM TRA XE sai).
         stopped = motor.EmergencyStop();
         try { servo.SetAngle(0); } catch (...) {}
     }
@@ -818,7 +767,7 @@ int collect(const Options& o, const Paths& paths, int lockFd, const std::string&
         while (!writer->finished && nowMs() < deadline) ::poll(nullptr, 0, kPollMs);
         if (!writer->finished) {
             // Giữ khóa và đối tượng sống tới _exit; không huỷ bộ nhớ của luồng đang kẹt.
-            externalStop(paths); warning(); _exit(hungCode());
+            warning(); _exit(hungCode());
         }
         if (writer->failure) { code = 5; error = writer->error; }
         writer.reset();
@@ -857,7 +806,6 @@ int main(int argc, char** argv) {
         std::cout << "============================================================\n"
                   << "KHÔNG CÓ PHANH CHỐNG VẬT CẢN; người giám sát đứng sát xe; Space/X dừng\n"
                   << "============================================================\n";
-        if (!externalStop(paths)) { warning(); return 1; }
         int code = 0;
         try {
             if (!stopping) {
@@ -873,7 +821,7 @@ int main(int argc, char** argv) {
                           << "; nhịp ghi=" << o.interval << " ms; mất ảnh=" << kStaleFrameMs << " ms\n"
                           << "Giới hạn ms: poll=" << kPollMs << " UART=" << kUartPollMs << " phần cứng=" << kHardwareTimeoutMs
                           << " Init=" << kInitTimeoutMs << " camera=" << kFrameTimeoutMs << " I/O=" << kIoTimeoutMs
-                          << " dọn=" << kCleanupTimeoutMs << " ucr_stop=" << kStopTimeoutMs << '+' << kStopKillMs
+                          << " dọn=" << kCleanupTimeoutMs << "
                           << "; kiểm đĩa=" << kDiskCheckMs << " dự phòng=" << kMinFreeMb << " MiB; JPEG=" << kJpegQuality
                           << " PWM=" << kServoPwmHz << " Hz; bộ đệm ảnh tối đa=" << kMaxFrameBytes << " byte\n" << std::flush;
                 code = collect(o, paths, lock.fd(), hostname.data(), argc, argv);
@@ -881,7 +829,6 @@ int main(int argc, char** argv) {
         } catch (const Failure& e) { code = e.code; std::cerr << e.what() << '\n'; }
         catch (const std::exception& e) { code = 1; std::cerr << e.what() << '\n'; }
         catch (...) { code = 1; }
-        if (!externalStop(paths)) { warning(); if (!code) code = 1; }
         return code;
     } catch (const Failure& e) { std::cerr << e.what() << '\n'; return e.code; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

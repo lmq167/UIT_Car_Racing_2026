@@ -169,7 +169,7 @@ class Run:
         bindir.mkdir(parents=True)
         if config:
             (self.project / 'config.yaml').write_text('{}\n', encoding='utf-8')
-        # Chỉ sao binary hooks; helper cạnh binary là giả, không chạm thiết bị.
+        # Chỉ sao binary hooks; chỉ dùng phần cứng giả.
         self.binary = bindir / 'ucr_collect_drive_hooks'
         shutil.copy2(cfg.hooks, str(self.binary))
         self.path = root / 'trace'
@@ -177,13 +177,6 @@ class Run:
         self.ctrl = root / 'control'
         self.keys.touch()
         self.ctrl.touch()
-        helper = bindir / 'ucr_stop'
-        helper.write_text('#!' + sys.executable + '\n'
-                          'import os,time\n'
-                          'with open(os.environ["UCR_DRIVE_FAKE_TRACE"],"a") as f:\n'
-                          ' f.write("%d test_ucr_stop\\n" % int(time.monotonic()*1000))\n',
-                          encoding='utf-8')
-        helper.chmod(0o755)
         self.out = self.project / 'data_raw' if default else root / 'out'
         child_env = {k: v for k, v in os.environ.items()
                      if not k.startswith(('UCR_DRIVE_FAKE_', 'UCR_CAM_TEST_'))
@@ -457,15 +450,6 @@ def no_forward(events, tag):
         stop_pair(events, tag)
 
 
-def ucr_stop_order(events):
-    """Phiếu/HĐ §1: ucr_stop (giả cạnh binary) trước khi dùng motor và sau servo 0 cuối."""
-    helpers = [i for i, e in enumerate(events) if e[1] == 'test_ucr_stop']
-    motors = [i for i, e in enumerate(events) if e[1].startswith('motor_')]
-    servos = [i for i, e in enumerate(events) if e[1] == 'servo_angle']
-    need(len(helpers) == 2 and motors and servos and helpers[0] < motors[0] and helpers[1] > servos[-1],
-         'Thiếu ucr_stop trước/sau hoặc sai thứ tự', 'stop_helper')
-
-
 def hw_probe(cfg, root, kind):
     """M2/M2s: với trần phím đã nới lên 100, W/A ×13 chỉ được chạm đúng 60, không vượt (kẹp phần cứng)."""
     key, index = ('W', 0) if kind == 'speed' else ('A', 1)
@@ -570,7 +554,7 @@ def test_case(case, cfg, root):
                 run.finish()
         return
     if case in ('E01', 'E02'):
-        # E01 gộp ca ucr_stop trước/sau (E08 cũ) vì cùng kịch bản thoát bằng phím.
+        # E01: kiểm dừng khi thoát bằng phím.
         triggers = ['E', '3'] if case == 'E01' else [signal.SIGINT, signal.SIGTERM, signal.SIGHUP]
         for trigger in triggers:
             with running(cfg, root / str(trigger), args=['--reverse-motor']) as run:
@@ -581,8 +565,6 @@ def test_case(case, cfg, root):
                 else:
                     run.send(trigger)
                 events = run.finish(mark=mark, tag='exit_stop')
-                if case == 'E01':
-                    ucr_stop_order(events)
         return
     if case == 'E02b':
         # SIGTERM khi ghi JPEG đang treo (hook jpeg_hang của mẫu drive): dừng ≤ 1 s, thoát 0.
@@ -679,8 +661,8 @@ def test_case(case, cfg, root):
             with running(cfg, root / 'busy', lock=lock) as run:
                 run.wait(lambda: run.process.poll() is not None, alive=False)
                 need(run.process.returncode == 6, 'Bận khóa không trả 6', 'lock_busy')
-                need(not any(e[1].startswith('motor_') or e[1] == 'test_ucr_stop' for e in run.events()),
-                     'Bận khóa vẫn chạm motor/helper', 'lock_busy')
+                need(not any(e[1].startswith('motor_') for e in run.events()),
+                     'Bận khóa vẫn chạm motor', 'lock_busy')
         with running(cfg, root / 'released', lock=lock) as run:
             moving(run)
             run.finish()
@@ -694,8 +676,8 @@ def test_case(case, cfg, root):
             with running(cfg, root / 'B', lock=lock) as second:
                 second.wait(lambda: second.process.poll() is not None, 12, 'B không thoát', alive=False)
                 need(second.process.returncode == 6, 'B cần mã 6: ' + second.text(), 'lock_busy')
-                need(not any(e[1].startswith('motor_') or e[1].startswith('servo_') or e[1] == 'test_ucr_stop'
-                             for e in second.events()), 'B chạm motor/servo/ucr_stop', 'lock_busy')
+                need(not any(e[1].startswith('motor_') or e[1].startswith('servo_')
+                             for e in second.events()), 'B chạm motor/servo', 'lock_busy')
             first.observe(0.5, lambda: need(last_commands(first.events()) == (5, 5), 'A bị B làm đổi lệnh',
                                             'lock_busy'))
             first.finish()
@@ -1177,18 +1159,11 @@ def self_check():
             expect_failure('mutation_setup', patch_mutant, case, empty)
         for constant in ('kMaxSpeedCms', 'kMaxSteerDeg'):
             expect_failure('mutation_setup', widen_limit, empty, constant)
-        # Bộ kiểm motor lỗi / ucr_stop / khung cảnh báo.
+        # Bộ kiểm motor lỗi / khung cảnh báo.
         failed_motor_stop([(1, 'motor_speed', 0.0, True), (2, 'motor_emergency', '', True),
                            (3, 'servo_angle', 0.0, False)])
         expect_failure('motor_fail', failed_motor_stop, [(1, 'servo_angle', 0.0, False)])
         expect_failure('motor_fail', failed_motor_stop, [(1, 'motor_speed', 5.0, True)])
-        ucr_stop_order([(0, 'test_ucr_stop', '', False), (1, 'motor_init', '', False),
-                        (2, 'motor_speed', 0.0, False), (3, 'servo_angle', 0.0, False),
-                        (4, 'test_ucr_stop', '', False)])
-        expect_failure('stop_helper', ucr_stop_order, [(1, 'motor_speed', 0.0, False),
-                                                       (2, 'test_ucr_stop', '', False),
-                                                       (3, 'servo_angle', 0.0, False),
-                                                       (4, 'test_ucr_stop', '', False)])
         banner('KHÔNG CÓ PHANH CHỐNG VẬT CẢN; người giám sát đứng sát xe; Space/X dừng\n'
                'host {} git abc1234 out /o bước 5 cm/s tối đa 40 phần cứng 60 mất ảnh 0,5 s nhịp 1000 ms '
                'đảo chiều: không'.format(socket.gethostname()), argparse.Namespace(revision='abc1234'), '/o')
@@ -1196,7 +1171,7 @@ def self_check():
     cmake = Path(__file__).with_name('tests.cmake').read_text(encoding='utf-8')
     registered = re.search(r'set\(_collect_cases\s+([^)]*)\)', cmake).group(1).split()
     need(registered == [c for c in CASES if c != 'SC'], 'Danh sách ca CMake lệch CASES', 'self_check')
-    print('ĐẠT tự kiểm: vết, cặp dừng, trần ±40, +0.0, bộ vá M1/M1b/M2/M2s/M3/M4/M5 + nới trần, motor lỗi, ucr_stop, khung cảnh báo, đăng ký ca; chưa chạy binary')
+    print('ĐẠT tự kiểm: vết, cặp dừng, trần ±40, +0.0, bộ vá M1/M1b/M2/M2s/M3/M4/M5 + nới trần, motor lỗi, khung cảnh báo, đăng ký ca; chưa chạy binary')
 
 
 def main():
