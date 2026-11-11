@@ -44,7 +44,7 @@ const Parameter table[] = {
     {"turn_max_ms",8000,&ControlParams::turn_max_ms,1000,20000,"ms","Thời gian rẽ tối đa"},
     {"park_enable",1,&ControlParams::park_enable,0,1,"1","TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (Quân 11/11: mặc định BẬT; 0 = tắt)"},
     {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
-    {"park_forward_cm",30.0,&ControlParams::park_forward_cm,0,200,"cm","TẠM, CHƯA ĐO: quãng bám làn từ lúc biển parking đủ phiếu tới lúc dừng để lùi"},
+    {"park_forward_cm",10.0,&ControlParams::park_forward_cm,0,200,"cm","Quân 11/11: đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ"},
     {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
     {"park_rev_cms",5.0,&ControlParams::park_rev_cms,2,5,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi (Quân 11/11: tối đa 5 cm/s)"},
     {"park_steer_deg",30.0,&ControlParams::park_steer_deg,5,40,"độ","TẠM, CHƯA ĐO: góc lái khi lùi, không vượt steer_max_deg"},
