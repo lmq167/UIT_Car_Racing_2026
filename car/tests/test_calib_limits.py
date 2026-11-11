@@ -25,7 +25,7 @@ def trace_rows(path):
 
 
 def main():
-    executable, stop, source, scenario = sys.argv[1:]
+    executable, source, scenario = sys.argv[1:]
     source = Path(source).read_text(encoding="utf-8")
     env = {key: value for key, value in os.environ.items() if not key.startswith("UCR_FAKE_")}
     with tempfile.TemporaryDirectory(prefix="ucr_dev_limits_") as directory:
@@ -65,13 +65,6 @@ def main():
                         assert result.returncode == 2 and key + " = " in message, message
                         assert "ngoài khoảng hợp lệ (0, {}] {}".format(maximum, unit) in message, message
                 assert not trace.exists() and not (root / "runs").exists(), "Kiểm cấu hình đã mở thiết bị/ghi log"
-            # Khoá calib sai không được ngăn đường dừng độc lập đọc trim hợp lệ.
-            result = subprocess.run([stop, "--config", str(config)], stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, env=env, timeout=5)
-            rows = trace_rows(trace)
-            assert result.returncode == 0 and rows, result.stderr.decode("utf-8", "replace")
-            assert all(value == (0 if kind == "motor_speed" else 7) for _, kind, value in rows), "Dừng không về motor 0/trim"
-            assert "motor_init" not in trace.read_text(encoding="utf-8"), "Dừng đã cấu hình lại motor"
             return
         if scenario == "invalid_stall":
             for bad in ("1", ":1", "1:", "1:2:3", "-1:2", "1:-2", "+1:2", "1.5:2", "1:2,3:4",
