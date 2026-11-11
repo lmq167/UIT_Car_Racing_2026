@@ -48,9 +48,9 @@ def plan_rev(start, obs, r, fwd_budget, max_nodes=150000):
 t0 = time.time()
 print("bien_the | R | tien_toi_da_cm | m | ket_qua | x0 | doi_chieu | chi_phi")
 for variant, oe in (("vao_kin", False), ("vao_mo", True)):
-    for r in (51.0, 60.0):
-        for fb in (0, 15, 40):
-            for m in (0.0, 1.0, 2.0, 3.0):
+    for r in (51.0,):
+        for fb in (40, 60):
+            for m in (0.0, 1.0, 2.0):
                 obs = P.make_world(oe, margin=m)
                 best = None
                 for x0 in (40, 50, 60, 75, 90):
