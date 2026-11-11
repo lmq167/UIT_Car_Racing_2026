@@ -493,6 +493,36 @@ void Case(const std::string& name) {
         for (int i=0;i<10;++i) { left.now+=40; pl=left.step(); right.now+=40; pr=right.step(); }
         Check(std::abs(pl.cmd.deg-left.p.turn_steer_deg)<1e-9,"Rẽ trái theo biển giữ turn_steer_deg");
         Check(std::abs(pr.cmd.deg+std::min(right.p.steer_max_deg,1.12*right.p.turn_steer_deg))<1e-9,"Rẽ phải lái 1,12 lần");
+    } else if (name=="pre_turn_steer_scale") {
+        // Lỗi 2 (Quân chọn C 11/11): bám làn đã quay sẵn về phía rẽ trong 60 cm trước RE_* thì giảm góc rẽ cố định
+        // theo hệ số 1 - quay_sẵn/90°, kẹp [0,75; 1]. Quay ngược chiều hoặc quay trước 60 cm không tính.
+        auto run=[](bool left, const std::vector<std::pair<double,double>>& path) {
+            Rig r; r.arm(left?"left":"right");
+            for (const auto& s:path) { r.in.odo_cm=s.first; r.in.yaw_deg=s.second; r.now+=40; r.step(); }
+            const auto start=r.junction();
+            Check(control::StateName(start.state)==std::string(left?"RE_TRAI":"RE_PHAI"),"Thiết lập phải đang rẽ");
+            control::Plan plan;
+            for (int i=0;i<10;++i) { r.now+=40; plan=r.step(); }
+            return std::make_pair(plan.cmd.deg,r.p);
+        };
+        const auto full=[](const control::ControlParams& p,bool left) {
+            return left ? std::min(p.steer_max_deg,p.turn_steer_deg) : -std::min(p.steer_max_deg,1.12*p.turn_steer_deg);
+        };
+        // Phải: quay -20° trong 60 cm cuối -> 1-20/90.
+        auto a=run(false,{{0,0},{20,-5},{40,-12},{60,-20}});
+        Check(std::abs(a.first-full(a.second,false)*(1-20.0/90))<1e-6,"Quay sẵn 20° phải giảm góc rẽ phải");
+        // Quay sẵn rất nhiều: kẹp 0,75.
+        auto b=run(false,{{0,0},{30,-25},{60,-45}});
+        Check(std::abs(b.first-full(b.second,false)*0.75)<1e-6,"Hệ số góc rẽ phải kẹp 0,75");
+        // Không quay sẵn: giữ nguyên.
+        auto c=run(false,{{0,0},{30,0},{60,0}});
+        Check(std::abs(c.first-full(c.second,false))<1e-6,"Không quay sẵn giữ góc rẽ");
+        // Quay ngược chiều rẽ: không tăng góc.
+        auto d=run(true,{{0,0},{30,-5},{60,-10}});
+        Check(std::abs(d.first-full(d.second,true))<1e-6,"Quay ngược chiều không đổi góc rẽ");
+        // Phần quay xảy ra trước cửa sổ 60 cm không tính: quay -30° ở 0-10 cm rồi thẳng 100 cm.
+        auto e=run(false,{{0,0},{10,-30},{40,-30},{80,-30},{110,-30}});
+        Check(std::abs(e.first-full(e.second,false))<1e-6,"Quay trước 60 cm cuối không được tính");
     } else if (name=="obstacle_blocked_in_roundabout") {
         // Lòng vòng xuyến là hố trong mặt nạ: đủ phiếu round_barrier thì không né, ngoài vòng xuyến thì né.
         Rig r; r.p.obstacle_action=2;

@@ -54,6 +54,10 @@ constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
 constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.85;
 // Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
 constexpr double kPassStopY2=0.85;
+// Lỗi 2 (log 10/11 lan2/lan3, 6 lượt rẽ phải): bám làn đã quay sẵn 9-20° theo miệng ngã trong 60 cm trước RE_*,
+// rồi cung lái cố định cắt góc. Quân chọn C (11/11): giảm góc rẽ cố định theo phần đã quay sẵn. TẠM, CHƯA ĐO trên sa bàn:
+// hệ số = 1 - quay_sẵn/90°, kẹp [0,75; 1] (quay sẵn 20° -> 0,78; 25° x 1,12 = 28° -> 21,8°).
+constexpr double kPreTurnWindowCm=60, kPreTurnRefDeg=90, kPreTurnMinScale=0.75;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -110,6 +114,7 @@ void Planner::ClearTurn() {
     corridor_turn_=false; corridor_clear_=0;
     turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
+    pre_turn_.clear(); turn_steer_scale_=1;
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
 void Planner::Reset(bool preserve_lights) {
@@ -628,6 +633,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const bool junction_seen=!rb_in_pass_ && std::count(junction_votes_.begin(),junction_votes_.end(),true)>=params.vote_min;
     const char *turn_start_reason=nullptr;
     const bool returning=return_cm_>=0;
+    // Lịch sử yaw theo quãng khi đang bám làn có ý định rẽ (chưa rẽ): dùng đo phần đã quay sẵn lúc bắt đầu RE_*.
+    if(turn_direction_ && !turning_ && state_==PlannerState::BAM_LAN && !sensor_bad &&
+       std::isfinite(input.odo_cm) && std::isfinite(input.yaw_deg)) {
+        if(!pre_turn_.empty() && input.odo_cm<pre_turn_.back().first) pre_turn_.clear();
+        pre_turn_.emplace_back(input.odo_cm,input.yaw_deg);
+        while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
+    } else if(!turning_) pre_turn_.clear();
     if(params.turn_enable && turn_direction_ && state_!=PlannerState::DUNG && state_!=PlannerState::DUNG_DEN_DO &&
        state_!=PlannerState::DUNG_VAT_CAN) {
         if(corridor_turn_ && (std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm || now_ms-turn_ms_>params.turn_max_ms)) {
@@ -653,6 +665,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 turning_=true; corridor_turn_=fallback; corridor_clear_=0;
                 if(corridor_turn_ && barrier_turn_) barrier_done_=true;
                 yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm;
+                const double pre=pre_turn_.empty() || !std::isfinite(input.yaw_deg) ? 0 :
+                    std::max(0.0,turn_direction_*WrapDeg(input.yaw_deg-pre_turn_.front().second));
+                turn_steer_scale_=std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg));
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
@@ -674,7 +689,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(params.turn_enable && turning_ && (state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI)) {
         const double step=sensor_hold_ ? 0 : params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);  // giữ nguyên góc khi mẫu hỏng
-        const double target=turn_direction_*TurnSteer(params,turn_direction_,barrier_turn_,barrier_wide_turn_);
+        const double target=turn_direction_*TurnSteer(params,turn_direction_,barrier_turn_,barrier_wide_turn_)*turn_steer_scale_;
         sent_angle_=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
             std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
         command_ms_=now_ms;

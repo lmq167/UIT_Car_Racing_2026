@@ -97,6 +97,8 @@ private:
     bool sensor_hold_=false; // Mẫu cảm biến hỏng thoáng qua: dừng giữ góc, chưa hủy rẽ.
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
+    std::deque<std::pair<double,double>> pre_turn_;  // (odo, yaw) khi bám làn chờ rẽ, trong kPreTurnWindowCm gần nhất
+    double turn_steer_scale_=1;  // hệ số góc rẽ cố định theo phần yaw đã quay sẵn trước RE_* (lỗi 2)
     void ClearTurn();
 };
 }
