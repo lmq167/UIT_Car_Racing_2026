@@ -30,7 +30,7 @@ int main(int argc, char **argv) {
               defaults.obstacle_action==2,"Mặc định thi phải là 15/40/20/2");
         Check(std::abs(defaults.slow_per_deg-1.0/6)<1e-9,"Mặc định giảm tốc phải cho khoảng 10 cm/s ở góc 30 độ, cruise 15");
         Check(defaults.imu_fallback==0,"Dự phòng IMU phải mặc định tắt");
-        Check(defaults.record_every_n==5,"Mặc định ghi ảnh vẫn là mỗi 5 khung");
+        Check(defaults.record_every_n==0,"Mặc định tắt ghi ảnh (Quân 11/11: lỗi thì tự đặt 3)");
         std::ostringstream a,b; sample.PrintTable(a); defaults.PrintTable(b);
         Check(a.str()==b.str(),"control.yaml mẫu phải đúng toàn bộ mặc định L2");
         Check(report.str().find("(mặc định)")==std::string::npos,"Mẫu đủ khóa, không dùng mặc định ngầm");

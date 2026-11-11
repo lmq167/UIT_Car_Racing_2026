@@ -27,7 +27,7 @@ min_valid_rows: 1 # Số hàng hợp lệ tối thiểu
 lost_hold_ms: 300 # Hạn giữ tốc độ khi mất làn, ms
 lost_stop_ms: 800 # Hạn trả góc về không khi mất làn, ms
 regain_frames: 3 # Số mặt nạ hợp lệ liên tiếp để phục hồi
-record_every_n: 5 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi ảnh
+record_every_n: 0 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi ảnh
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
 work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
 work_barrier_y2_frac: 0.55 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn

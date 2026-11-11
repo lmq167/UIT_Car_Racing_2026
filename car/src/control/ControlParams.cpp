@@ -88,7 +88,7 @@ const Parameter table[] = {
     {"lost_hold_ms",300,&ControlParams::lost_hold_ms,0,2000,"ms","Hạn giữ tốc độ khi mất làn"},
     {"lost_stop_ms",800,&ControlParams::lost_stop_ms,0,3000,"ms","Hạn trả góc về không"},
     {"regain_frames",3,&ControlParams::regain_frames,1,20,"khung","Số khung liên tiếp để phục hồi"},
-    {"record_every_n",5,&ControlParams::record_every_n,0,40,"khung","Nhịp ghi ảnh và mặt nạ (0 = tắt ghi ảnh)"},
+    {"record_every_n",0,&ControlParams::record_every_n,0,40,"khung","Nhịp ghi ảnh và mặt nạ (0 = tắt ghi ảnh)"},
     {"yolo_every_n",3,&ControlParams::yolo_every_n,1,10,"khung","Nhịp YOLO (P2)"}
 };
 void Require(bool ok, const std::string &key) {
