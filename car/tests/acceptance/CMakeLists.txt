@@ -64,6 +64,17 @@ if(UCR_FAKE_HW)
         set_tests_properties(acc_hw_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 120)
     endforeach()
     set_tests_properties(acc_hw_tof_boundary PROPERTIES LABELS "regression;threads")
+    set(ACC_TRACE_SCENARIOS
+        main_manual_TERM main_odometry main_tof_min main_tof_max
+        calib_missing calib_zero calib_high calib_word calib_servo
+        reject_control_range reject_control_type reject_speed_type reject_trim_type
+        reject_tof_zero reject_tof_high reject_tof_large reject_tof_neg main_badargs
+        fault_terminate fault_actuator fault_sensor)
+    foreach(scenario ${ACC_TRACE_SCENARIOS})
+        add_test(NAME acc_trace_${scenario} COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/acc_hwtrace.sh
+            $<TARGET_FILE:acc_recovery_main> $<TARGET_FILE:acc_sigrun> ${scenario})
+        set_tests_properties(acc_trace_${scenario} PROPERTIES LABELS "acceptance;threads" TIMEOUT 60)
+    endforeach()
     find_package(PythonInterp 3.6 REQUIRED)
     set(ACC_VEHICLE_CLI ${CMAKE_CURRENT_SOURCE_DIR}/acc_vehicle_cli.py)
     # Python 3.6 trong container có thể dùng locale ASCII.
