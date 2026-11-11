@@ -39,6 +39,7 @@ constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
 // Rào work 1 (vào đường 1 làn) lệch giữa (tâm hộp 0,43-0,54), work 2 (vào đường 2 làn) lệch phải (0,70-0,71): đo ở hai phiên 07/11.
 constexpr double kWideBarrierCx=0.55, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
+constexpr double kFracEps=1e-9;  // so ngưỡng tỉ lệ ảnh có trừ: 0,55-0,10 = 0,45000000000000007 > 0,45
 constexpr double kBarrierBlockMinCx=0.25, kBarrierBlockMaxCx=0.75;  // dải tâm hộp rào còn chắn trước (chặn tiếp quản)
 // Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
 constexpr double kRightTurnYawFactor=0.92;
@@ -299,9 +300,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 barrier_visible=barrier_visible || (center>=kBarrierBlockMinCx && center<=kBarrierBlockMaxCx);
                 // Work 2 (hộp lệch phải) vào đường 2 làn: dải tâm tới 0,82; work 1 (hộp giữa) kích hoạt sớm hơn 0,05 theo đáy hộp.
                 const bool wide=center>=kWideBarrierCx;
-                barrier_seen=barrier_seen || (bottom>=params.work_barrier_y2_frac-0.10 && b.width>=(wide ? kWideBarrierSlowW : kNarrowBarrierSlowW));
+                barrier_seen=barrier_seen || (bottom+kFracEps>=params.work_barrier_y2_frac-0.10 && b.width>=(wide ? kWideBarrierSlowW : kNarrowBarrierSlowW));
                 const bool near_wide=wide && bottom>=params.work_barrier_y2_frac && center<=kWideBarrierMaxCx && b.width>=kWideBarrierMinW;
-                const bool near_narrow=!wide && center>=0.25 && bottom>=params.work_barrier_y2_frac-kNarrowBarrierEarly && b.width>=kNarrowBarrierMinW;
+                const bool near_narrow=!wide && center>=0.25 && bottom+kFracEps>=params.work_barrier_y2_frac-kNarrowBarrierEarly && b.width>=kNarrowBarrierMinW;
                 barrier_near=barrier_near || near_wide || near_narrow;
                 barrier_wide=barrier_wide || near_wide;
             }
