@@ -821,7 +821,7 @@ int main(int argc, char** argv) {
                           << "; nhịp ghi=" << o.interval << " ms; mất ảnh=" << kStaleFrameMs << " ms\n"
                           << "Giới hạn ms: poll=" << kPollMs << " UART=" << kUartPollMs << " phần cứng=" << kHardwareTimeoutMs
                           << " Init=" << kInitTimeoutMs << " camera=" << kFrameTimeoutMs << " I/O=" << kIoTimeoutMs
-                          << " dọn=" << kCleanupTimeoutMs << "
+                          << " dọn=" << kCleanupTimeoutMs
                           << "; kiểm đĩa=" << kDiskCheckMs << " dự phòng=" << kMinFreeMb << " MiB; JPEG=" << kJpegQuality
                           << " PWM=" << kServoPwmHz << " Hz; bộ đệm ảnh tối đa=" << kMaxFrameBytes << " byte\n" << std::flush;
                 code = collect(o, paths, lock.fd(), hostname.data(), argc, argv);
