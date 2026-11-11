@@ -11,7 +11,9 @@
 #include "hardware/Motor.h"
 #include "hardware/Servo.h"
 #include "sensor/BNO055.h"
+#if (!defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS) && !defined(UCR_AUTO_NO_TOF)
 #include "sensor/TOF.h"
+#endif
 #include "common/ConfigValue.h"
 #endif
 #include <algorithm>
@@ -347,19 +349,25 @@ struct DriveImu {
 };
 // ToF 4 cảm biến hai bên (Quân duyệt 11/11): CHỈ ĐỌC và in khi xe đứng (trước G / sau Space) để xác nhận ánh xạ khe -> bánh.
 // Không đọc khi xe đang chạy nên không ảnh hưởng điều khiển; mọi lỗi ToF chỉ in cảnh báo, không dừng chương trình.
+#if (!defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS) && !defined(UCR_AUTO_NO_TOF)
+#define UCR_AUTO_TOF_REAL 1
+#else
+#define UCR_AUTO_TOF_REAL 0
+#endif
 struct DriveTof {
     bool initialized=false;
-#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+#if UCR_AUTO_TOF_REAL
     sensor::TOF device;
     int64_t lastPrintMs=0;
 #endif
     void init(const DriveImu& imu) {
-#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+#if UCR_AUTO_TOF_REAL
         // ToF cấp địa chỉ qua 0x29: IMU ở 0x29 sẽ xung đột (BTC cấm), nên bỏ ToF.
         if (imu.initialized && imu.device && imu.device->address()==0x29) {
             std::cerr<<"TOF BO QUA: IMU o 0x29 trung dia chi khoi tao ToF\n"; return;
         }
         // Init mất vài giây tới chục giây và ghi I2C/GPIO của chính các ToF (mã BTC); xe đang đứng, chưa có G.
+        std::cout<<"TOF: dang khoi tao (mat vai giay den chuc giay, Ctrl-C bi hoan)..."<<std::endl;
         if (!device.Init("/dev/i2c-1")) { std::cerr<<"TOF LOI: "<<device.LastError()<<'\n'; return; }
         initialized=true;
         std::cout<<"TOF: khoi tao OK (doc va in khi xe dung)\n"<<std::flush;
@@ -368,7 +376,7 @@ struct DriveTof {
 #endif
     }
     void pollAndPrint() {
-#if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
+#if UCR_AUTO_TOF_REAL
         if (!initialized || hardwareFault) return;
         const int64_t now=nowMs();
         if (now-lastPrintMs<500) return;

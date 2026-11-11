@@ -408,7 +408,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             }
             if (exit || stopping) break;
-            if (!enabled) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
+            if (!enabled && !eventStop) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;

@@ -24,7 +24,7 @@ endfunction()
 if(UCR_WITH_TRT)
     add_executable(ucr_auto ${_auto_sources}
         "${_auto_root}/src/hardware/Motor.cpp" "${_auto_root}/src/hardware/Servo.cpp"
-        "${_auto_root}/src/sensor/BNO055.cpp" "${_auto_root}/src/sensor/TOF.cpp"
+        "${_auto_root}/src/sensor/BNO055.cpp"
         "${_auto_root}/src/common/Logger.cpp" "${_auto_root}/src/common/TelemetryClient.cpp")
     configure_auto(ucr_auto)
     target_link_libraries(ucr_auto PRIVATE perception_trt "${TENSORRT_LIBRARY}")
@@ -33,9 +33,11 @@ if(UCR_WITH_TRT)
         target_compile_definitions(ucr_auto PRIVATE UCR_DRIVE_HAVE_HIGHGUI=1)
     endif()
     if(UCR_FAKE_HW)
+        target_compile_definitions(ucr_auto PRIVATE UCR_AUTO_NO_TOF=1)  # build giả: không có tof_backend
         target_include_directories(ucr_auto BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../collect_common/stub_i2c")
         target_sources(ucr_auto PRIVATE ../collect_common/stub_i2c/smbus.cpp)
     else()
+        target_sources(ucr_auto PRIVATE "${_auto_root}/src/sensor/TOF.cpp")
         target_link_libraries(ucr_auto PRIVATE tof_backend i2c)
     endif()
 else()
