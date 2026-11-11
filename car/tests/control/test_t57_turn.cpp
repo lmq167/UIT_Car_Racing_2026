@@ -165,14 +165,14 @@ void RecoveredSensor(Rig& r, int64_t fresh_ms=-1) {
 // T57_design:3,17: sáu mặc định, hai biên hợp lệ, ngoài miền và quan hệ góc.
 void Params(const std::string& path) {
     control::ControlParams p;
-    Check(p.turn_enable==1 && p.turn_yaw_deg==80 && p.turn_steer_deg==25 &&
+    Check(p.turn_enable==1 && p.turn_yaw_deg==80 && p.turn_steer_deg==36 &&
           p.turn_arm_cm==80 && p.turn_max_cm==70 && p.turn_max_ms==8000,"Sai sáu mặc định");
     const char* names[]={"turn_enable","turn_yaw_deg","turn_steer_deg","turn_arm_cm","turn_max_cm","turn_max_ms"};
-    const double low[]={0,30,5,10,10,1000}, high[]={1,120,30,300,200,20000};
+    const double low[]={0,30,5,10,10,1000}, high[]={1,120,40,300,200,20000};
     for (int i=0;i<6;++i) {
         for (double value:{low[i],high[i],low[i]-1,high[i]+1}) {
             { std::ofstream out(path); Check(bool(out),"Không mở được YAML tạm");
-              out<<"steer_max_deg: 30\n"<<names[i]<<": "<<value<<'\n';
+              out<<"steer_max_deg: 40\n"<<names[i]<<": "<<value<<'\n';
               if (i==3) out<<"turn_start_cm: 0\n";
               if (i==2) out<<"turn_enable: 1\n"; }
             bool rejected=false;
@@ -193,14 +193,14 @@ void Params(const std::string& path) {
 // T68a Chỉ làm 3,5: kiểm cả loader lẫn Validate, không thay khóa sản phẩm.
 void T68Params(const std::string& path) {
     control::ControlParams defaults;
-    Check(defaults.turn_start_cm==30,"Mặc định turn_start_cm phải là30");
+    Check(defaults.turn_start_cm==45,"Mặc định turn_start_cm phải là45");
     auto load=[&](const std::string& body) {
         { std::ofstream out(path); Check(bool(out),"Không mở được YAML tạm");
-          out<<"steer_max_deg: 30\n"<<body; }
+          out<<"steer_max_deg: 30\nturn_steer_deg: 25\n"<<body; }
         std::ostringstream report;
         return control::ControlParams::Load(path,report);
     };
-    Check(load("").turn_start_cm==30,"Thiếu khóa phải dùng mặc định30");
+    Check(load("").turn_start_cm==45,"Thiếu khóa phải dùng mặc định45");
     for (double value:{0.0,30.0,150.0}) {
         const auto p=load("turn_start_cm: "+std::to_string(value)+"\nturn_arm_cm: 151\n");
         Check(p.turn_start_cm==value,"Loader phải nhận đúng turn_start_cm");

@@ -38,7 +38,7 @@ struct Rig {
     Rig(bool sensor_ok=true) {
         p.turn_enable=1; p.start_wait_green=0; p.kd=0;
         p.lane1_width_frac={0.4,0.4};
-        p.steer_max_deg=30; p.steer_rate_dps=1000;
+        p.steer_max_deg=30; p.turn_steer_deg=25; p.steer_rate_dps=1000;
         p.cruise_cms=p.max_speed_cms=15; p.approach_cms=5; p.min_cms=4;
         p.rb_lost_cm=30; p.rb_turn1_cm=p.rb_turn2_cm=60;
         in.yolo_enabled=true; in.sensor_ok=sensor_ok;
@@ -786,8 +786,8 @@ void Params(const std::string& group, const std::string& path) {
     struct Field { const char* name; double control::ControlParams::*member; double low,high,value; };
     std::vector<Field> fields;
     if (group=="t74") {
-        Check(defaults.work_barrier_action==1 && Near(defaults.work_barrier_y2_frac,.65),"Sai mặc định rào 1/0,65");
-        fields={{"work_barrier_y2_frac",&control::ControlParams::work_barrier_y2_frac,.30,.95,.65}};
+        Check(defaults.work_barrier_action==1 && Near(defaults.work_barrier_y2_frac,.55),"Sai mặc định rào 1/0,55");
+        fields={{"work_barrier_y2_frac",&control::ControlParams::work_barrier_y2_frac,.30,.95,.55}};
         for (int value:{-1,0,1,2}) {
             auto p=defaults; p.work_barrier_action=value;
             bool rejected=false; try { p.Validate(); } catch (const std::exception&) { rejected=true; }

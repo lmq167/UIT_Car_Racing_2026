@@ -1035,7 +1035,8 @@ def t57_case(case, cfg, root):
                     def unchanged():
                         need(not any(e[2] != 'RE_TRAI' for e in r.of('state', mark)),
                              'R đổi trạng thái đang rẽ', 't57_reload')
-                        need(all(e[3] or e[2] == 4 for e in r.of('motor_speed', mark)),
+                        need(all(e[3] or e[2] == min(r.values.get('max_speed_cms', 20), max(r.values.get('min_cms', 4), 8))
+                                 for e in r.of('motor_speed', mark)),
                              'R áp dụng YAML khi đang rẽ', 't57_reload')
                     r.frames(4, unchanged); unchanged(); space(r); r.t57_imu = r.t57_encoder = False; r.finish(); continue
                 if case == 't57_space_during_turn':
@@ -1267,7 +1268,7 @@ def t71_case(case, cfg, root):
     if case == 't71_defaults':
         with running(cfg, root) as r:
             t57_feed(r); r.boot(); r.finish()
-            for key, value in (('cruise_cms', 15), ('max_speed_cms', 15),
+            for key, value in (('cruise_cms', 15), ('max_speed_cms', 20),
                                ('steer_max_deg', 40), ('obstacle_action', 2)):
                 default_value(r.text(), key, value); repo_value(key, value)
         return
@@ -1417,10 +1418,18 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
     run.t57_odo = getattr(run, 't57_odo', 0) + step
     def lane_only():
         t73_add_lane(run, mark, lane_mark)
-    def enough(since, first):
-        lane_only()
+    def enough(since, first, allow_turn=False):
+        turns = [e for e in run.of('state', first) if e[2] in ('RE_TRAI', 'RE_PHAI')]
+        observed = turns[0][0] if allow_turn and turns else td.now_ms()
         batches = [b for b in detection_batches(run.events()) if b[0] >= first and
-                   b[2] > since and td.now_ms() - b[2] <= run.values.get('det_max_age_ms', 500)]
+                   b[2] > since and 0 <= observed - b[2] <= run.values.get('det_max_age_ms', 500)]
+        if allow_turn and turns:
+            # M6: giao lộ đủ phiếu có thể rẽ ngay sau hồi, không cần thêm bước encoder.
+            need(turns[0][0] >= fresh_since + 1000 and
+                 sum(b[2] <= turns[0][0] for b in batches) >= run.values.get('vote_min', 3),
+                 'Rẽ lại trước mốc hồi hoặc trước đủ phiếu mới', 't73_recover')
+        else:
+            lane_only()
         return batches if len(batches) >= run.values.get('vote_min', 3) else None
     if early_votes:
         first = len(run.events())
@@ -1444,11 +1453,10 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
     if not early_votes:
         # Fixture idle chỉ có biển từ frame120; lô rỗng trước đó không phải phiếu biển.
         def idle_sign():
-            lane_only()
+            enough(resumed[0], first, allow_turn=True)
             return last_detection_frame(run.events()) >= 126
         run.wait(idle_sign, 10, 'Chưa có biển mới frame126 sau lỗi khi idle')
-    run.wait(lambda: enough(resumed[0], first), 10, 'Thiếu biển mới đủ phiếu sau hồi cảm biến')
-    run.frames(3, lane_only)
+    run.wait(lambda: enough(resumed[0], first, allow_turn=True), 10, 'Thiếu biển mới đủ phiếu sau hồi cảm biến')
     attempts, next_step = 0, td.now_ms()
     def turning():
         nonlocal attempts, next_step
@@ -2395,7 +2403,9 @@ def test_case(case, cfg, root):
                 r.boot(); r.frames(3); r.finish(); inspect_session(r)
                 if not values:
                     for key, (default, _, _, unit) in BOUNDS.items():
-                        default = dict(cruise_cms=15, max_speed_cms=15, steer_max_deg=40).get(key, default)
+                        default = dict(cruise_cms=15, max_speed_cms=20, steer_max_deg=40,
+                                       mask_max_age_ms=400, det_max_age_ms=1000, kp=35,
+                                       record_every_n=0).get(key, default)
                         lines = [l for l in r.text().splitlines() if re.search(r'\b' + key + r'\b', l)]
                         need(any('(mặc định)' in l and (key == 'slow_per_deg' or
                                  re.search(r'\b' + key + r'\b\s*[:=|]?\s*' + re.escape(str(default)) + r'(?![\d.])', l))
@@ -4005,6 +4015,9 @@ def selftest():
             old = self.bad == 'old_votes' and self.clock >= 1000
             ready = (self.armed_odo is not None and self.t57_odo >= self.armed_odo + 30
                      and self.clock >= 1000 and self.yolo)
+            if self.bad == 'junction':
+                ready = self.yolo and sum(e[1] == 'detections' and e[0] >= 1000
+                                          for e in self.es) >= 3
             if ready and self.bad == 'stop':
                 self.es.append((self.clock, 'motor_speed', 0, False))
             if early or old or (ready and self.bad != 'permanent'):
@@ -4030,6 +4043,12 @@ def selftest():
                 with patch.object(td, 'now_ms', side_effect=lambda: probe.clock):
                     assert t73_recover(probe, 0, direction=direction, fresh_since=fresh_since,
                                        early_votes=early_votes)[0] >= 1000
+            # Giao lộ M6 đủ phiếu sau hồi có thể rẽ trước bước encoder kế tiếp.
+            probe = RecoveryRun(direction, 'junction')
+            probe.late_mode = not early_votes
+            with patch.object(td, 'now_ms', side_effect=lambda: probe.clock):
+                assert t73_recover(probe, 0, direction=direction,
+                                   early_votes=early_votes)[0] >= 1000
         # Planner chỉ nhận biển sau bước 1/2: phải tăng thêm bước, vẫn chung hạn 3 s.
         for delayed in (1, 2, 3):
             probe = RecoveryRun(direction, planner_after_step=delayed)
