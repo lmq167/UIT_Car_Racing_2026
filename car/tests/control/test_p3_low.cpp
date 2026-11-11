@@ -75,6 +75,31 @@ void RedAfterClear() {
     Expect(r.votes({"green"},r.p.vote_window+r.p.green_frames+4),PlannerState::BAM_LAN,true,
            "Vật hết và đủ xanh");
 }
+// M1: từ khi đỏ chốt, mọi bước đều dừng, kể cả bước vừa nhả vật.
+void RedAfterClearEveryStep() {
+    Rig r; r.block();
+    for(int i=0;i<r.p.vote_window+4;++i)
+        Expect(r.tick({"obstacle","red"}),PlannerState::DUNG_VAT_CAN,false,
+               "M1: đỏ khi vật còn, bước "+std::to_string(i));
+    r.mask();
+    for(int i=0;i<2*r.p.vote_window+10;++i) {
+        const auto a=r.tick({"red"});
+        Check(a.cmd.cms==0,"M1: đỏ còn chốt sau nhả vật, bước "+std::to_string(i)+
+              " cms="+std::to_string(a.cmd.cms));
+    }
+    // Chưa đủ phiếu xanh thì tuyệt đối không được nhả đỏ.
+    for(int i=0;i<r.p.vote_min-1;++i) {
+        const auto a=r.tick({"green"});
+        Check(a.cmd.cms==0,"M1: xanh chưa đủ phiếu, bước "+std::to_string(i)+
+              " cms="+std::to_string(a.cmd.cms));
+    }
+    for(int i=0;i<r.p.vote_window+r.p.green_frames+4;++i) {
+        const auto a=r.tick({"green"});
+        Check(a.cmd.cms==0 || a.state==PlannerState::BAM_LAN,
+              "M1: còn dừng đỏ phải có cms=0, bước "+std::to_string(i));
+    }
+    Expect(r.tick({"green"}),PlannerState::BAM_LAN,true,"M1: đủ xanh mới cho chạy");
+}
 // P3 §2: G-sau-Space chỉ miễn giữ hướng cho lần mở đảo đầu tiên, dù chưa đồng bộ chặng.
 void SecondIslandHold() {
     Rig r;
@@ -104,6 +129,7 @@ int main() {
     int failed=0;
     const std::pair<const char*,void(*)()> cases[]={
         {"red_green_blocked",RedGreenBlocked}, {"red_after_clear",RedAfterClear},
+        {"red_after_clear_every_step",RedAfterClearEveryStep},
         {"second_island_hold",SecondIslandHold}};
     for(const auto& c:cases) {
         try { c.second(); std::cout<<c.first<<" PASS\n"; }
