@@ -994,7 +994,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(park_phase_==ParkPhase::LUI1 || park_phase_==ParkPhase::LUI2) {
                 cms=-std::min(params.park_rev_cms,params.max_speed_cms);
                 target=(park_phase_==ParkPhase::LUI1 ? 1 : -1)*params.park_side*std::min(params.park_steer_deg,lim);
-            } else if(park_phase_==ParkPhase::TIEN_GIUA) cms=std::min(kParkCenterCms,params.max_speed_cms);
+            // Hết cung 2 bánh còn đang bẻ hết cỡ: tiến ngay trong lúc trả lái làm xe quay tiếp ~1° và hỏng kiểm cuối (<= 3°) -> DO_XE_LECH_HUONG thay vì DO_XE_XONG.
+            // Đứng yên tới khi góc lái đã về gần 0 (thời gian đứng vẫn tính vào hạn pha và hạn kẹt) rồi mới tiến căn giữa.
+            } else if(park_phase_==ParkPhase::TIEN_GIUA) cms=std::abs(sent_angle_)>1.0 ? 0.0 : std::min(kParkCenterCms,params.max_speed_cms);
             if(person_stop_ || park_glitch) { cms=0; target=sent_angle_; }
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             sent_angle_=std::max(-lim,std::min(lim,std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
