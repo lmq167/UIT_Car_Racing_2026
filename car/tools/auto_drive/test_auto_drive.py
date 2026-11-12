@@ -1431,7 +1431,8 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
         snapshot = run.events()
         turns = [e for e in snapshot[first:] if e[1] == 'state' and e[2] in ('RE_TRAI', 'RE_PHAI')]
         observed = turns[0][0] if allow_turn and turns else td.now_ms()
-        batches = [b for b in detection_batches(snapshot) if b[0] >= first and
+        # Lô YOLO đọc từ vết MỚI (sau snapshot): lô chụp trước lượt rẽ có thể được ghi vết sau nó.
+        batches = [b for b in detection_batches(run.events()) if b[0] >= first and
                    b[2] > since and 0 <= observed - b[2] <= run.values.get('det_max_age_ms', 500)]
         if allow_turn and turns:
             # M6: giao lộ đủ phiếu có thể rẽ ngay sau hồi, không cần thêm bước encoder.
