@@ -28,7 +28,7 @@ struct ControlParams {
     double approach_cms, red_stop_x_frac;
     int turn_enable, turn_max_ms;
     int imu_fallback;
-    double turn_yaw_deg, turn_steer_deg, turn_arm_cm, turn_max_cm, turn_start_cm;
+    double turn_yaw_deg, turn_steer_deg, turn_arm_cm, turn_max_cm, turn_start_cm, turn_left_delay_cm;
     double rb_lost_cm, rb_turn1_cm, rb_turn2_cm, rb_yaw_kp, rb_hold_max_cm;
     // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11): mặc định tắt.
     int park_enable, park_side, park_tof_map;

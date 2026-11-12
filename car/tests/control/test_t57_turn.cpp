@@ -235,6 +235,25 @@ void Case(const std::string& name) {
                   plan.reason=="RE_GIAO_LO" && plan.debug.state==control::StateName(plan.state) &&
                   plan.debug.reason==plan.reason,"Sai hướng/lý do/debug biển");
         }
+        // turn_left_delay_cm (Quân 12/11): chỉ rẽ TRÁI theo biển chờ thêm quãng kể từ lần đầu mặt nạ xác nhận ngã rẽ.
+        {   // (1) delay=0: như cũ, rẽ trái ngay khi mặt nạ xác nhận
+            Rig r; r.p.turn_left_delay_cm=0; r.arm("left");
+            const auto plan=r.junction();
+            Check(plan.state==control::PlannerState::RE_TRAI && plan.reason=="RE_GIAO_LO","delay=0: rẽ trái ngay như cũ");
+        }
+        {   // (2) delay=20: chưa đủ 20 cm vẫn bám làn, đủ 20 cm thì RE_TRAI
+            Rig r; r.p.turn_left_delay_cm=20; r.arm("left");
+            Check(r.junction().state==control::PlannerState::BAM_LAN,"delay=20: vừa xác nhận ngã rẽ chưa được rẽ trái");
+            for (int cm=1;cm<20;++cm)
+                Check(r.advance(1).state==control::PlannerState::BAM_LAN,"delay=20: chưa đủ 20 cm từ lúc xác nhận ngã rẽ vẫn bám làn");
+            const auto plan=r.advance(1);
+            Check(plan.state==control::PlannerState::RE_TRAI && plan.reason=="RE_GIAO_LO","delay=20: đủ 20 cm phải vào RE_TRAI");
+        }
+        {   // (3) delay=20 nhưng rẽ PHẢI theo biển: không bị trễ
+            Rig r; r.p.turn_left_delay_cm=20; r.arm("right");
+            const auto plan=r.junction();
+            Check(plan.state==control::PlannerState::RE_PHAI && plan.reason=="RE_GIAO_LO","delay=20: rẽ phải không bị trễ");
+        }
     } else if (name=="t68_no_sign") {
         Rig r;
         for (bool open:{false,true}) {
@@ -554,6 +573,13 @@ void Case(const std::string& name) {
             reason=plan.reason; deg=plan.cmd.deg;
             return r.p;
         };
+        { // Log l25 12/11: đảo LỚN thấy sớm khi cua L còn chờ mở lần qua: KHÔNG được lái cung phải lối ra (xe chưa tới vòng xuyến).
+            Rig r; r.in.yaw_deg=0; r.p.steer_rate_dps=1000;
+            control::Plan plan; double most_right=0;
+            for (int i=0;i<r.p.vote_min+6;++i) { r.in.odo_cm+=2; plan=island(r,0.82,360); most_right=std::min(most_right,plan.cmd.deg); }
+            Check(plan.reason=="VX_QUANH_DAO" || plan.mode==control::TrajMode::ROUNDABOUT,"Thiết lập: đảo lớn mở lần qua");
+            Check(most_right>-15.0+1e-9,"Lần qua mở lúc cua L còn chờ: không được ép cung phải -15 độ");
+        }
         bool turned; std::string reason; double deg;
         auto p=run(0.90,60,turned,reason,deg);
         Check(turned && reason=="RE_L_CAU","Đảo bên phải rồi hàng gần phủ kín ảnh phải rẽ L phải");
@@ -647,6 +673,19 @@ void Case(const std::string& name) {
             r.in.sensor_ok=false; r.was_bad=true;
             for (int i=0;i<12 && plan.reason!="DO_XE_CAM_BIEN";++i) plan=tick(r,40);
             Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_CAM_BIEN" && plan.cmd.cms==0,"Mẫu hỏng dài phải hủy đỗ và dừng");
+        }
+        { // Log l25 12/11: một mẫu hỏng ngắn lúc đang LÙI chỉ dừng tạm (không hủy đỗ), rồi tiếp tục lùi; hỏng dài thì hủy.
+            Rig r; auto plan=to_reverse(r,-1);
+            Check(plan.reason=="DO_XE_LUI_1" && plan.cmd.cms<0,"Thiết lập đang lùi cung 1");
+            r.was_bad=true; r.in.sensor_ok=false;
+            plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DO_XE && plan.cmd.cms==0 && plan.reason=="DO_XE_LUI_1",std::string("Mẫu hỏng ngắn lúc lùi: dừng tạm, giữ pha; reason=")+plan.reason+" cms="+std::to_string(plan.cmd.cms));
+            r.in.sensor_ok=true; r.was_bad=false;
+            plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_LUI_1" && plan.cmd.cms<0,"Hết mẫu hỏng thì tiếp tục lùi");
+            r.in.sensor_ok=false; r.was_bad=true;
+            for (int i=0;i<12 && plan.reason!="DO_XE_CAM_BIEN";++i) plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_CAM_BIEN" && plan.cmd.cms==0,"Mẫu hỏng dài lúc lùi phải hủy đỗ và dừng");
         }
         { // Ô bên phải: lùi, lái phải (âm) tới khi yaw tăng park_arc_deg, rồi lái trái tới khi về hướng đầu.
             Rig r; auto plan=to_reverse(r,-1);
@@ -1003,7 +1042,9 @@ void Case(const std::string& name) {
         for (auto& d:r.in.detections.items) d.captured_ms=r.now;
         plan=r.step();
         Check(plan.state==control::PlannerState::GIU_HUONG,"Đang giữ hướng thì rào không bắt đầu rẽ");
-        r.in.yaw_deg=10+360; plan=rb(true); Check(std::abs(plan.cmd.deg)<=std::abs(r.p.rb_yaw_kp*15)+1,"Gói góc 360");
+        // Hướng giữ là hướng RA (yaw vào - 40°, cung phải): yaw 10+360 phải cho lệnh như yaw 10 (gói ±180), cả hai ở trần lái phải.
+        r.in.yaw_deg=10; plan=rb(true); const double wrapped_ref=plan.cmd.deg;
+        r.in.yaw_deg=10+360; plan=rb(true); Check(plan.cmd.deg<0 && std::abs(plan.cmd.deg-wrapped_ref)<=1.0,"Gói góc 360");
         r.in.yaw_deg=10; r.mask(60,140);
         for (int i=0;i<6;++i) plan=rb(true);
         Check(plan.state==control::PlannerState::BAM_LAN,"Bắt lại làn thì bám làn");

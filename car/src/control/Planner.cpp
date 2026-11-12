@@ -97,7 +97,8 @@ constexpr int kLWideRows=3;  // Quân 12/11 (log l21): 2 hàng kích hoạt khi 
 constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
 // Vòng xuyến, lối ra bên phải (Quân 12/11, log l19-l21): bám làn trong vòng xuyến để xe lái trái / quay phải chỉ 8-19° trong 44-77 cm rồi đâm đảo (l20, l21), trong khi
 // các lần thoát tốt quay phải 31-48° với lái -12..-17°. Trong lần qua (VX_QUANH_DAO, đã có yaw lúc vào) lái phải tối thiểu kRbArcSteerDeg cho tới khi đã quay phải
-// kRbArcDeg hoặc đi kRbArcMaxCm kể từ lúc vào; sau đó bám làn như cũ. TẠM, CHƯA ĐO.
+// kRbArcDeg hoặc đi kRbArcMaxCm kể từ lúc vào; sau đó bám làn như cũ. Mất làn trong lần qua thì GIU_HUONG giữ hướng RA (yaw vào - kRbArcDeg), không kéo
+// xe về hướng vào (log l19 123 s, l25 95 s: GIU_HUONG bẻ trái +26° hủy cung phải). TẠM, CHƯA ĐO.
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
 // Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
@@ -113,7 +114,7 @@ constexpr int64_t kParkWaitMs=600, kParkPhaseMaxMs=15000, kParkStallMs=2000;
 // Quét ô ToF khi xe đứng (Quân duyệt 11/11). TẠM, CHƯA ĐO: bước, ngưỡng vật, thời gian chờ mẫu.
 // Quân 12/11 (đã đo ToF trên xe): <= 250 mm có vật (ô có xe); > 500 mm hoặc phép đo invalid (cảm biến chạy, không thấy vật) = ô trống;
 // 250..500 mm mơ hồ. Cảm biến chưa khởi tạo, không mẫu, lỗi API hoặc mẫu cũ vẫn là KHÔNG RÕ (xe dừng, không lùi).
-constexpr double kParkCreepCm=10, kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
+constexpr double kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
 constexpr double kParkStepCms=8, kParkCreepCms=5;
 constexpr int64_t kParkSettleMs=500, kParkScanMaxMs=3000;
 constexpr int kParkTofAgeMs=300;
@@ -186,7 +187,7 @@ void Planner::RouteStable(int q) {
 }
 void Planner::ClearTurn() {
     junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0; last_exit_mask_ms_=-1;
-    corridor_turn_=false; corridor_clear_=0;
+    corridor_turn_=false; corridor_clear_=0; junction_odo_set_=false;
     turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     pre_turn_.clear(); turn_steer_scale_=1; l_turning_=false;
@@ -379,7 +380,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Mở lần qua cần hộp đảo lớn (đảo gần); đang qua thì hộp cỡ nào cũng tính, kể cả khi đảo trôi ra mép khung (log 09/11 152 s).
         const bool rb_present=rb_in_pass_ ? rounds>=params.vote_min : rounds_big>=params.vote_min;
         if(rb_present) {
-            if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;  // đang dừng (Space) không mở lần qua mới
+            if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;
+                // Log l25 12/11 (89 s): đảo lớn thấy sớm ~50 cm trước góc cua L (cua L còn chờ) mở lần qua; cung phải ở lối ra vòng xuyến bẻ xe phải
+                // lao ra ngoài đường trước góc. Lần qua mở lúc cua L còn chờ thì KHÔNG dùng cung phải (xe chưa tới vòng xuyến).
+                rb_arc_off_=l_armed_ && !l_done_;  // đang dừng (Space) không mở lần qua mới
                 // Lần qua mở ngay sau G-sau-Space (route_check_rb_): xe có thể đang giữa đảo nên yaw lúc này
                 // không phải hướng lúc vào; không giữ hướng theo nó (log 18:01 10/11 289 s lái trái ở lối ra phải).
                 rb_yaw0_=l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg; rb_hold_odo_=input.odo_cm;
@@ -804,7 +808,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Chỉ bắt đầu rẽ khi mặt nạ xác nhận giao lộ (không rẽ theo quãng ước lượng); đang né/về làn thì chờ bám làn thường.
             else if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && !returning && !rb_holding_ && (!sensor_bad || fallback) &&
                     !(rb_in_pass_ && !rb_losing_) &&  // còn đủ phiếu vòng xuyến thì chưa rẽ (đảo phía trước)
-                    junction_seen) {
+                    junction_seen && [&]() {
+                        // turn_left_delay_cm: rẽ TRÁI theo biển (không rào/vòng xuyến) chờ thêm quãng này kể từ lần đầu mặt nạ xác nhận ngã rẽ.
+                        if(turn_direction_!=1 || barrier_turn_ || rb_turn_ || params.turn_left_delay_cm<=0 || !std::isfinite(input.odo_cm)) return true;
+                        if(!junction_odo_set_) { junction_odo_set_=true; junction_odo0_=input.odo_cm; }
+                        return std::abs(input.odo_cm-junction_odo0_)>=params.turn_left_delay_cm;
+                    }()) {
                 turn_start_reason="RE_GIAO_LO";
                 turning_=true; corridor_turn_=fallback; corridor_clear_=0;
                 if(corridor_turn_ && barrier_turn_) barrier_done_=true;
@@ -873,9 +882,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const bool moving=park_phase_==ParkPhase::LUI_THANG || park_phase_==ParkPhase::LUI1 ||
                           park_phase_==ParkPhase::LUI2 || park_phase_==ParkPhase::TIEN_GIUA;
         // Log 12/11 (l19, 484 s): một mẫu IMU/encoder hỏng đúng lúc bắt đầu quét ToF (vòng lặp 120-133 ms) hủy cả đợt đỗ. Xe đang ĐỨNG (QUET/CHO)
-        // thì mẫu hỏng ngắn hơn kSensorGlitchMs chỉ bỏ qua bước này (vẫn giữ lệnh dừng); lúc đang chạy/lùi hoặc hỏng dài thì hủy như cũ.
-        const bool park_still=park_phase_==ParkPhase::QUET || park_phase_==ParkPhase::CHO;
-        const bool park_glitch=sensor_bad && park_still && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs;
+        // thì mẫu hỏng ngắn hơn kSensorGlitchMs chỉ bỏ qua bước này (vẫn giữ lệnh dừng); hỏng dài thì hủy như cũ.
+        // Log l25 12/11 (480 s): MỘT mẫu odo trống lúc đang lùi cung 1 hủy cả đợt đỗ. Lúc lùi/tiến căn giữa, mẫu hỏng ngắn cũng chỉ làm xe DỪNG tạm
+        // (lệnh tốc độ 0, giữ góc, không chuyển pha; thời gian glitch VẪN tính vào các hạn kParkPhaseMaxMs/kParkStallMs) rồi tiếp tục khi mẫu tốt trở lại; hỏng từ kSensorGlitchMs vẫn hủy.
+        const bool park_glitch=sensor_bad && park_phase_!=ParkPhase::XONG && park_phase_!=ParkPhase::NONE && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs;
         if(sensor_bad && park_phase_!=ParkPhase::XONG && !park_glitch) stop_park("DO_XE_CAM_BIEN");
         else if(park_glitch) { /* mẫu hỏng ngắn lúc xe đứng: giữ nguyên pha và lệnh dừng */ }
         else if(park_phase_==ParkPhase::QUET) {
@@ -910,7 +920,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 const std::string note=std::string("mode=")+std::to_string(park_mode_)+" truoc="+name(cf)+"("+std::to_string(sf.mm)+"mm) sau="+name(cr)+"("+std::to_string(sr.mm)+"mm) gop="+name(both);
                 park_note_=note;
                 if(park_mode_==0) {
-                    if(both==ScanCell::EMPTY) { park_unknown_=0; park_creep_cm_=0; step(kParkCreepCm,kParkCreepCms,1); park_note_+=" -> O_TRONG_BO_TIM_MEP"; }
+                    if(both==ScanCell::EMPTY) { park_unknown_=0; park_creep_cm_=0; step(params.park_cell_cm,kParkCreepCms,1); park_note_+=" -> O_TRONG_BO_TIM_MEP"; }
                     else {
                         park_unknown_=both==ScanCell::UNKNOWN ? park_unknown_+1 : 0;
                         park_scan_cm_+=params.park_cell_cm;
@@ -922,10 +932,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     if(cr==ScanCell::OCCUPIED) { step(kParkPastCm,kParkCreepCms,2); park_note_+=" -> THAY_MEP_XA"; }
                     else {
                         park_unknown_=cr==ScanCell::UNKNOWN ? park_unknown_+1 : 0;
-                        park_creep_cm_+=kParkCreepCm;
+                        park_creep_cm_+=params.park_cell_cm;
                         if(park_unknown_>=2) park_go_fixed(note+" TOF_KHONG_RO");
-                        else if(park_creep_cm_>=kParkMaxCreepCm) park_go_fixed(note+" KHONG_THAY_MEP");
-                        else step(kParkCreepCm,kParkCreepCms,1);
+                        else if(park_creep_cm_>=std::max(kParkMaxCreepCm,2*params.park_cell_cm)) park_go_fixed(note+" KHONG_THAY_MEP");
+                        else step(params.park_cell_cm,kParkCreepCms,1);
                     }
                 }
             }
@@ -974,7 +984,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 cms=-std::min(params.park_rev_cms,params.max_speed_cms);
                 target=(park_phase_==ParkPhase::LUI1 ? 1 : -1)*params.park_side*std::min(params.park_steer_deg,lim);
             } else if(park_phase_==ParkPhase::TIEN_GIUA) cms=std::min(kParkCenterCms,params.max_speed_cms);
-            if(person_stop_) { cms=0; target=sent_angle_; }
+            if(person_stop_ || park_glitch) { cms=0; target=sent_angle_; }
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             sent_angle_=std::max(-lim,std::min(lim,std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
             command_ms_=now_ms;
@@ -1047,7 +1057,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double lim=return_block_cm_<kReturnHardCm ? 0.0 : kReturnLeftMaxDeg;
         if(plan.cmd.deg>lim) { plan.cmd.deg=lim; plan.debug.angle_deg=lim; }
     }
-    if(params.turn_enable && rb_in_pass_ && !rb_losing_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
+    if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_losing_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
        result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
        WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
@@ -1077,7 +1087,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         else {
             rb_holding_=true;
             const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
-                params.rb_yaw_kp*WrapDeg((rb_in_pass_ ? rb_yaw0_ : rb_post_yaw_)-input.yaw_deg)));
+                params.rb_yaw_kp*WrapDeg((rb_in_pass_ ? (rb_arc_off_ ? rb_yaw0_ : rb_yaw0_-kRbArcDeg) : rb_post_yaw_)-input.yaw_deg)));
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
             plan.cmd={std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))),angle};

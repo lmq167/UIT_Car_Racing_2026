@@ -587,13 +587,17 @@ void T77(const std::string& name) {
         r.in.yaw_deg=3-45;
         const auto lane=r.votes({"round_barrier"},6);
         Expect(lane.state==PlannerState::BAM_LAN && Near(lane.cmd.deg,0),lane,"Đã quay phải 40°: B chưa mất làn vẫn bám làn");
+        // Đã ở hướng ra (yaw vào - 40°): mất làn phải giữ góc 0.
+        Rig exit; const auto aligned=exit.hold(3,3-40);
+        Expect(aligned.state==PlannerState::GIU_HUONG && Near(aligned.cmd.deg,0),aligned,"Đã ở hướng ra: giữ hướng phải có góc 0");
         r.in.yaw_deg=13;
         r.in.mask.setTo(0); const auto plan=r.votes({"round_barrier"},12);
-        Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-10*r.p.rb_yaw_kp),plan,"Mất làn dùng yaw0 đầu lượt");
+        Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,std::max(-r.p.steer_max_deg,-50*r.p.rb_yaw_kp)),plan,"Mất làn giữ hướng ra yaw0-40, kẹp trần góc");
     } else if (name=="yaw_sign" || name=="wrap") {
         for (double sign:{-1.,1.}) {
             Rig r; const bool wrap=name=="wrap";
-            const auto plan=r.hold(wrap?sign*179:0,wrap?-sign*179:sign*10);
+            // Yaw vào -141/-139 cho hướng ra tương đương +179/-179; kiểm gói góc cả hai chiều.
+            const auto plan=r.hold(wrap?(sign>0?-141:-139):0,wrap?-sign*179:-40+sign*10);
             const double expected=(wrap?-sign*2:-sign*10)*r.p.rb_yaw_kp;
             Expect(Near(plan.cmd.deg,expected),plan,"Dấu lái/yaw và gói ±180; kỳ vọng "+std::to_string(expected));
         }
@@ -605,14 +609,14 @@ void T77(const std::string& name) {
         }
     } else if (name=="steer_rate") {
         Rig r; r.p.steer_rate_dps=10;
-        const auto opened=r.enter(); r.in.mask.setTo(0); r.in.yaw_deg=10;
+        const auto opened=r.enter(); r.in.mask.setTo(0); r.in.yaw_deg=-30;
         double previous=opened.cmd.deg; Plan plan;  // vào lượt qua đã có cung phải (kRbArcSteerDeg), góc đầu không còn 0
         for (int i=0;i<35;++i) {
             plan=r.send({"round_barrier"});
             Expect(std::abs(plan.cmd.deg-previous)<=.4+1e-6 && std::abs(plan.cmd.deg)<=r.p.steer_max_deg,plan,"Giữ hướng đổi góc không quá rate×dt");
             previous=plan.cmd.deg;
         }
-        Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-10*r.p.rb_yaw_kp),plan,"Rate hội tụ tới góc giữ hướng");
+        Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,(-40-(-30))*r.p.rb_yaw_kp),plan,"Rate hội tụ tới góc giữ hướng ra yaw0-40");
     } else if (name=="speed") {
         for (int mode=0;mode<3;++mode) {
             Rig r; r.p.rb_yaw_kp=1; r.p.slow_per_deg=1;
@@ -668,10 +672,10 @@ void T77(const std::string& name) {
         r.in.stop=false; r.mask(); r.in.yaw_deg=40;
         r.in.go=true; r.send({"round_barrier"}); r.in.go=false;
         r.votes({"round_barrier"},r.p.regain_frames+1);
-        r.in.yaw_deg=45; r.in.mask.setTo(0);
+        r.in.yaw_deg=5; r.in.mask.setTo(0);
         const auto plan=r.votes({"round_barrier"},12);
         Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-5*r.p.rb_yaw_kp),
-               plan,"Lượt mới dùng yaw0=40 sau G, không dùng yaw0=3 trước Space");
+               plan,"Lượt mới giữ hướng ra 40-40=0 sau G, không dùng yaw0=3 trước Space");
     } else if (name=="reset") {
         for (bool preserve:{false,true}) {
             Rig r; r.hold();
