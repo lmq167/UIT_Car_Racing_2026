@@ -39,17 +39,21 @@ int main(int argc,char **argv) {
             return 0;
         } catch(const std::exception &e) { std::cerr<<e.what()<<'\n'; return 2; }
     }
-    // Kết thúc bất thường: gửi đúng một lệnh dừng motor (N1 v0, mở cổng không chặn, không lệnh cấu hình),
-    // rồi một lệnh servo về trim (khi đã nạp cấu hình), rồi trả mã 134. Lỗi thiết bị bị nuốt; motor luôn trước servo.
+    // Kết thúc bất thường: lệnh dừng motor (N1 v0, mở cổng không chặn, không lệnh cấu hình), servo về trim
+    // (khi đã nạp cấu hình), rồi dừng motor LẦN NỮA (luồng gửi lệnh có thể chen lệnh chạy trong lúc ghi I2C
+    // servo), rồi trả mã 134. Lỗi thiết bị bị nuốt để handler không treo.
     std::set_terminate([]{
         const int trim=terminateTrim.load();
-        try {
+        auto stopMotor=[]{
+            try {
 #ifdef UCR_FAKE_HW
-            app::fake::TraceNumber("motor_speed",0);
+                app::fake::TraceNumber("motor_speed",0);
 #else
-            Motor().EmergencyStop();
+                Motor().EmergencyStop();
 #endif
-        } catch(...) {}
+            } catch(...) {}
+        };
+        stopMotor();
         if(trim!=INT_MIN) try {
 #ifdef UCR_FAKE_HW
             app::fake::TraceNumber("servo_angle",trim);
@@ -58,6 +62,7 @@ int main(int argc,char **argv) {
             if(servo.Init() && servo.SetPWMFreq(50)) servo.SetAngle(static_cast<int16_t>(trim));
 #endif
         } catch(...) {}
+        stopMotor();
         std::_Exit(134);
     });
     // Không tự khởi động lại đọc stdin: tín hiệu cũng ngắt được câu hỏi đầu phiên.
