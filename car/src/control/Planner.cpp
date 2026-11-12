@@ -855,7 +855,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double entry_cm=park_fixed_ ? params.park_entry_cm : 0;
         const bool moving=park_phase_==ParkPhase::LUI_THANG || park_phase_==ParkPhase::LUI1 ||
                           park_phase_==ParkPhase::LUI2 || park_phase_==ParkPhase::TIEN_GIUA;
-        if(sensor_bad && park_phase_!=ParkPhase::XONG) stop_park("DO_XE_CAM_BIEN");
+        // Log 12/11 (l19, 484 s): một mẫu IMU/encoder hỏng đúng lúc bắt đầu quét ToF (vòng lặp 120-133 ms) hủy cả đợt đỗ. Xe đang ĐỨNG (QUET/CHO)
+        // thì mẫu hỏng ngắn hơn kSensorGlitchMs chỉ bỏ qua bước này (vẫn giữ lệnh dừng); lúc đang chạy/lùi hoặc hỏng dài thì hủy như cũ.
+        const bool park_still=park_phase_==ParkPhase::QUET || park_phase_==ParkPhase::CHO;
+        const bool park_glitch=sensor_bad && park_still && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs;
+        if(sensor_bad && park_phase_!=ParkPhase::XONG && !park_glitch) stop_park("DO_XE_CAM_BIEN");
+        else if(park_glitch) { /* mẫu hỏng ngắn lúc xe đứng: giữ nguyên pha và lệnh dừng */ }
         else if(park_phase_==ParkPhase::QUET) {
             // Xe đứng: đợi ổn định, rồi chỉ nhận mẫu ToF lấy SAU thời điểm đó. Mơ hồ/không thấy ô: chuyển ô cố định.
             const bool left=params.park_side==1;

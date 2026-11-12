@@ -634,6 +634,20 @@ void Case(const std::string& name) {
             Check(plan.reason=="DO_XE_LUI_1","Chờ xong phải lùi cung 1");
             return plan;
         };
+        { // Log 12/11: mẫu cảm biến hỏng NGẮN lúc xe đang đứng quét ToF không hủy đỗ; hỏng dài thì hủy.
+            Rig r; auto plan=to_scan(r,-1);
+            Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_QUET","Thiết lập đang quét ToF");
+            r.was_bad=true;  // Rig tự kéo dài mẫu hỏng đầu tiên thêm 250 ms: đặt trước để chỉ có đúng một mẫu hỏng ngắn
+            r.in.sensor_ok=false;
+            plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DO_XE && plan.cmd.cms==0 && plan.reason!="DO_XE_CAM_BIEN",std::string("Mẫu hỏng ngắn lúc đứng quét không được hủy đỗ; state=")+std::to_string(int(plan.state))+" reason="+plan.reason+" cms="+std::to_string(plan.cmd.cms));
+            r.in.sensor_ok=true; r.was_bad=false;
+            plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DO_XE && plan.cmd.cms==0,"Hết mẫu hỏng thì tiếp tục quét");
+            r.in.sensor_ok=false; r.was_bad=true;
+            for (int i=0;i<12 && plan.reason!="DO_XE_CAM_BIEN";++i) plan=tick(r,40);
+            Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_CAM_BIEN" && plan.cmd.cms==0,"Mẫu hỏng dài phải hủy đỗ và dừng");
+        }
         { // Ô bên phải: lùi, lái phải (âm) tới khi yaw tăng park_arc_deg, rồi lái trái tới khi về hướng đầu.
             Rig r; auto plan=to_reverse(r,-1);
             for (int i=0;i<10;++i) { r.in.odo_cm-=0.3; plan=tick(r); }
