@@ -71,6 +71,7 @@ private:
     enum class Swerve { NONE, LEFT, PASS };
     Swerve swerve_=Swerve::NONE;
     double pass_cm_=0, sent_cms_=0, return_cm_=-1;  // return_cm_ < 0: không ở pha VE_PHAI
+    double rb_post_yaw_=0;  // hướng lúc mất làn ngay sau lần qua vòng xuyến: giữ hướng này bằng IMU trong cửa sổ kRbPostHoldCm
     bool swerve_used_=false;  // đã né vật làn phải một lần và bắt đầu trả làn: chặng chỉ có hai vật (phải rồi trái) nên không né trái lần nữa; KHÔNG xóa trong Reset (sống qua Space/G), chỉ xóa khi mở lại chương trình
     bool swerve_right_seen_=false;  // đã thấy vật ở nửa phải ảnh trong pha trái (Lỗi 3, 11/11)
     double swerve_peak_w_=0;  // bề rộng hộp vật cản lớn nhất (theo ảnh) từ lúc bắt đầu pha trái; vật nhỏ hơn nửa mức này là vật xa, không giữ pha trái

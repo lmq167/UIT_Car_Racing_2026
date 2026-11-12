@@ -578,9 +578,11 @@ void T77(const std::string& name) {
     } else if (name=="pass_end") {
         Rig r; r.hold(); r.clear();
         const auto plan=r.at(r.p.rb_lost_cm);
-        Expect(plan.state!=PlannerState::GIU_HUONG,plan,"Hết lượt phải thoát giữ hướng");
+        // Quân 12/11: hết lần qua mà mất làn thì giữ hướng IMU theo hướng lúc mất làn tối đa 60 cm / 2 s; bánh đứng 1500 ms thì thôi giữ.
+        // Hết giữ hướng mà vẫn mất làn thì dừng như cũ (không đổi giới hạn dừng).
+        Expect(plan.state==PlannerState::GIU_HUONG || plan.state==PlannerState::BAM_LAN,plan,"Hết lượt: giữ hướng ngắn hoặc bám làn");
         r.in.detections={};
-        for (int i=0;i<(r.p.lost_stop_ms+160)/40;++i) r.send();
+        for (int i=0;i<(1500+r.p.lost_stop_ms+200)/40;++i) r.send();
         const auto stopped=r.send(); Expect(stopped.cmd.cms==0,stopped,"Hết lượt nhưng vẫn mất làn phải dừng");
         r.mask(); Lane(r.votes({},r.p.regain_frames+2),"Hết lượt rồi bắt lại làn phải chạy lại không G");
     } else if (name=="hold_distance") {

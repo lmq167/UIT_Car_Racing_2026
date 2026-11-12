@@ -78,6 +78,15 @@ constexpr double kPreTurnWindowCm=60, kPreTurnRefDeg=90, kPreTurnMinScale=0.75;
 //   bám làn mất thông tin và kéo sang làn trái) ở vote_min mặt nạ liên tiếp -> rẽ phải cung cố định (như RE_PHAI), một lần mỗi G.
 constexpr double kLBarrierCx=0.80, kLArmCm=150;
 constexpr int kLOpenRows=3;
+// Quân 12/11 (log lượt chạy 11:47): cua L phải trước vòng xuyến bắt đầu muộn ~15 cm vì biên phải chỉ chạm mép ảnh sát góc. Thêm điều kiện
+// ngoài kLOpenRows: >= kLWideRows hàng gần có biên trái sát mép (<= 6 %) và biên phải >= 90 % bề rộng mặt nạ, vote_min mặt nạ liên tiếp.
+// Phát lại 3 lượt: sớm 13 cm ở lượt 11:47, không kích hoạt thêm ở hai lượt còn lại. TẠM, CHƯA ĐO trên sa bàn.
+constexpr double kLWideLeftFrac=0.06, kLWideRightFrac=0.90;
+constexpr int kLWideRows=2;
+// Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
+// giữ hướng bằng IMU theo hướng lúc mất làn (cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua). TẠM, CHƯA ĐO.
+constexpr double kRbPostHoldCm=60;
+constexpr int64_t kRbPostHoldMs=2000;  // và không quá từng này, ngoài giới hạn không-tiến 1500 ms
 // Đỗ xe lùi song song (park_design_1011.md; Quân duyệt viết với số tạm 11/11). TẠM, CHƯA ĐO trên xe:
 // biển parking rộng >= 0,05 ảnh ở vote_min lô tươi -> bám làn park_forward_cm -> dừng 600 ms -> lùi cung 1 lái về phía ô
 // tới khi quay park_arc_deg -> lùi cung 2 lái ngược tới khi về hướng ban đầu ± 3° -> đứng yên (DO_XE_XONG).
@@ -669,7 +678,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         int open_both=0;
         for(size_t i=0;i<near_rows;++i) open_both+=corridor.rows[i].valid && corridor.rows[i].flag_left=="MEP_ANH" && corridor.rows[i].flag_right=="MEP_ANH";
-        l_open_run_=open_both>=kLOpenRows ? l_open_run_+1 : 0; l_mask_counted=true;
+        int open_wide=0;
+        for(size_t i=0;i<near_rows;++i) {
+            const auto &row=corridor.rows[i];
+            open_wide+=row.valid && row.left<=kLWideLeftFrac*input.mask.cols && row.right>=kLWideRightFrac*input.mask.cols;
+        }
+        l_open_run_=(open_both>=kLOpenRows || open_wide>=kLWideRows) ? l_open_run_+1 : 0; l_mask_counted=true;
         if(real_left>=2) left_real_ms_=now_ms;
         if(real_right>=2) right_real_ms_=now_ms;
         const int opened=valid_near-(turn_direction_>0 ? real_left : real_right);
@@ -1000,17 +1014,22 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
     const bool was_holding=rb_holding_;
     rb_holding_=false;
-    if(rb_in_pass_ && result.debug.state!="BAM_LAN" && result.debug.state!="MAT_NAN_CU" && mask_fresh && swerve_==Swerve::NONE &&
-       params.turn_enable && !turn_fault_ && !sensor_bad && std::isfinite(rb_yaw0_) && !rb_hold_spent_) {
-        if(!was_holding) { rb_hold_ms_=rb_prog_ms_=now_ms; rb_prog_odo_=input.odo_cm; }
+    const bool rb_post=!rb_in_pass_ && rb_passes_>0 && std::isfinite(rb_after_odo_) && std::isfinite(input.odo_cm) &&
+                       std::abs(input.odo_cm-rb_after_odo_)<=kRbPostHoldCm && std::isfinite(input.yaw_deg);
+    if((rb_in_pass_ || rb_post) && result.debug.state!="BAM_LAN" && result.debug.state!="MAT_NAN_CU" && mask_fresh && swerve_==Swerve::NONE &&
+       params.turn_enable && !turn_fault_ && !sensor_bad && (rb_in_pass_ ? std::isfinite(rb_yaw0_) : true) && !rb_hold_spent_) {
+        if(!was_holding) {
+            rb_hold_ms_=rb_prog_ms_=now_ms; rb_prog_odo_=input.odo_cm;
+            if(!rb_in_pass_) { rb_post_yaw_=input.yaw_deg; rb_hold_odo_=input.odo_cm; }  // sau lần qua: giữ hướng lúc mất làn, quãng tính từ đây
+        }
         if(std::abs(input.odo_cm-rb_prog_odo_)>=1) { rb_prog_odo_=input.odo_cm; rb_prog_ms_=now_ms; }
         // Giới hạn như máy rẽ: quá quãng, quá turn_max_ms, hoặc bánh không tiến 1 cm trong 1500 ms (kẹt đảo/rào).
         if(std::abs(input.odo_cm-rb_hold_odo_)>params.rb_hold_max_cm || now_ms-rb_hold_ms_>params.turn_max_ms ||
-           now_ms-rb_prog_ms_>=1500) rb_hold_spent_=true;
+           now_ms-rb_prog_ms_>=1500 || (!rb_in_pass_ && now_ms-rb_hold_ms_>kRbPostHoldMs)) rb_hold_spent_=true;
         else {
             rb_holding_=true;
             const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
-                params.rb_yaw_kp*WrapDeg(rb_yaw0_-input.yaw_deg)));
+                params.rb_yaw_kp*WrapDeg((rb_in_pass_ ? rb_yaw0_ : rb_post_yaw_)-input.yaw_deg)));
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
             plan.cmd={std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))),angle};

@@ -989,6 +989,16 @@ void Case(const std::string& name) {
         Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ rb_lost_cm chưa hết lần qua");
         for (int i=0;i<30;++i) { r.in.odo_cm+=1; plan=rb(false); }
         Check(plan.state==control::PlannerState::BAM_LAN,"Hết lần qua 1 vẫn bám làn");
+        // Quân 12/11: hết lần qua rồi mất làn: trong 60 cm giữ hướng IMU theo hướng lúc mất làn (không dừng); quá 60 cm thì về dừng như cũ.
+        r.in.mask=cv::Mat(60,200,CV_8UC1,cv::Scalar(0)); r.in.yaw_deg=10;
+        for (int i=0;i<4;++i) { r.in.odo_cm+=0.5; plan=rb(false); }
+        Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.cms>0,"Hết lần qua, mất làn: phải giữ hướng IMU, không dừng");
+        r.in.yaw_deg=18; r.in.odo_cm+=0.5; plan=rb(false);
+        Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.deg<0,"Giữ hướng lúc mất làn: lệch trái phải lái phải về hướng đó");
+        for (int i=0;i<6;++i) { r.in.yaw_deg=2; r.in.odo_cm+=0.5; plan=rb(false); }  // góc lái bị giới hạn tốc độ đổi, cần vài nhịp
+        Check(plan.state==control::PlannerState::GIU_HUONG && plan.cmd.deg>0,"Giữ hướng lúc mất làn: lệch phải phải lái trái về hướng đó");
+        for (int i=0;i<80 && plan.state==control::PlannerState::GIU_HUONG;++i) { r.in.odo_cm+=1; plan=rb(false); }
+        Check(plan.state!=control::PlannerState::GIU_HUONG,"Quá cửa sổ 60 cm sau lần qua phải thôi giữ hướng (về dừng mất làn như cũ)");
     } else if (name=="roundabout_after_space") {
         // Lỗi 3 (log 18:01 10/11, 289 s): Space rồi G giữa đảo mở lần qua mới với yaw0 = hướng giữa đảo;
         // mất làn ở lối ra thì GIU_HUONG lái về hướng đó (sang trái, lệch lối ra phải). Lần qua mở ngay sau
