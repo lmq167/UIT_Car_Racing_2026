@@ -149,7 +149,13 @@ void SwerveTests() {
                   }
                   Check(m<999,"Không kết thúc pha về phải");
               }
-              r.left(); break;
+              // Quân 12/11 (log xe 172 s, 186 s): chặng chỉ có hai vật (phải rồi trái). Đã né và trả làn một lần thì vật
+              // còn lại (làn trái) không được kích hoạt né trái lần hai, cả khi đang chạy lẫn sau Space/G (Reset).
+              r.p.obstacle_action=2; r.in.mask=Mask();
+              for(int k=0;k<2*r.p.vote_window;++k) Check(r.step().reason!="NE_TRAI","Không né trái lần hai sau khi đã trả làn");
+              r.planner.Reset(true); r.in.go=true; r.step(); r.in.go=false;
+              for(int k=0;k<2*r.p.vote_window;++k) Check(r.step().reason!="NE_TRAI","Không né trái lần hai sau Space/G");
+              break;
           }
           Check(n<999,"Không kết thúc né");
       }

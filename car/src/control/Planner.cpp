@@ -564,7 +564,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(right_present) swerve_right_seen_=true;
                 if(swerve_right_seen_) present_left=right_present;  // đã thấy vật ở làn phải: chỉ nó giữ pha trái
             }
-            if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 &&
+            // Log 12/11 (172 s, 186 s): vật thứ hai ở làn trái bị tính là vật làn phải (tâm hộp 0,43 >= 0,30) nên xe né trái lần hai.
+            // Chặng chỉ có hai vật (phải rồi trái): đã né và bắt đầu trả làn một lần thì không bắt đầu né trái nữa (Quân 12/11).
+            if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 && !swerve_used_ &&
                !rb_holding_ && !rb_in_pass_ && !turn_direction_) {
                 obstacle_votes_.push_back(obstacle);
                 while(obstacle_votes_.size()>size_t(params.vote_window)) obstacle_votes_.pop_front();
@@ -642,7 +644,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(); return_cm_=0; return_e_=1;
+        lane_.Reset(); return_cm_=0; return_e_=1; swerve_used_=true;
     }
     // Phiếu giao lộ độc lập với phiếu vật cản, chỉ thêm một lần cho mỗi mask mới.
     // Theo dõi cạnh thật cả trước khi chốt ý định (rào 2: cạnh trái đã mở ngay lúc chốt, log 09/11 sáng 65 s).
