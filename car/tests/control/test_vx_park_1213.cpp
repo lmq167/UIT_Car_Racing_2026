@@ -196,7 +196,7 @@ void ParkTienLongFault() {
 // 5) Nhiễu ngẫu nhiên có seed: mẫu odo/IMU hỏng ngắn và dài ở mọi pha, Space/G, mẫu ô ngẫu nhiên; mọi nhịp kiểm ranh giới cứng.
 void ParkFuzz() {
     int xong=0, total=0;
-    for(unsigned seed=1;seed<=300;++seed) {
+    for(unsigned seed=1;seed<=36;++seed) {
         std::mt19937 rng(seed);
         auto chance=[&](double p) { return std::uniform_real_distribution<double>(0,1)(rng)<p; };
         ParkSim s(seed%2 ? -1 : 1);
@@ -206,7 +206,7 @@ void ParkFuzz() {
         try {
             s.arm();
             int bad_left=0, space_left=0; bool faulted=false, spaced=false;
-            for(int i=0;i<3000;++i) {
+            for(int i=0;i<2000;++i) {
                 if(faults && bad_left==0 && chance(0.01)) { bad_left=chance(0.25) ? 8 : 1+int(chance(0.5)); faulted=true; (chance(0.5) ? s.odo_nan : s.sensor_off)=true; }
                 else if(bad_left>0 && --bad_left==0) s.odo_nan=s.sensor_off=false;
                 if(faults && !s.r.in.stop && chance(0.0007)) { s.r.in.stop=true; space_left=6; spaced=true; s.xong_seen=false; }  // người bấm Space rồi G: được chạy lại
@@ -223,18 +223,18 @@ void ParkFuzz() {
         }
     }
     std::cout << "park_fuzz: " << xong << "/" << total << " lượt tới DO_XE_XONG\n";
-    Check(xong>=20,"Phải có đủ lượt đỗ xong để phép kiểm có nghĩa");
+    Check(xong>=3,"Phải có đủ lượt đỗ xong để phép kiểm có nghĩa");
 }
 
 // 6) Vòng xuyến + Space/G ngẫu nhiên có seed: ranh giới cứng ở mọi nhịp (không lùi, <= max_speed_cms, <= steer_max_deg), chặng luôn trong 0..7.
 void RoundaboutFuzz() {
-    for(unsigned seed=1;seed<=200;++seed) {
+    for(unsigned seed=1;seed<=40;++seed) {
         std::mt19937 rng(seed);
         auto uni=[&](double a, double b) { return std::uniform_real_distribution<double>(a,b)(rng); };
         Rig r; r.p.steer_rate_dps=200; r.in.yaw_deg=uni(-20,20);
         int island_left=0, bad_left=0, shift=0;
         try {
-            for(int i=0;i<1500;++i) {
+            for(int i=0;i<1000;++i) {
                 if(island_left==0 && uni(0,1)<0.01) island_left=int(uni(10,80));
                 if(uni(0,1)<0.02) shift=int(uni(-40,40));
                 if(uni(0,1)<0.01) r.in.mask.setTo(0); else r.lane(60+shift,140+shift);

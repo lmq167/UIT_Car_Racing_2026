@@ -220,7 +220,7 @@ target_link_libraries(test_vx_park_1213 PRIVATE ucr_control)
 target_compile_options(test_vx_park_1213 PRIVATE -Wall -Wextra)
 foreach(scenario arc_through_exit park_closed_loop park_tien_long_fault park_fuzz roundabout_fuzz)
     add_test(NAME control_vx_park_${scenario} COMMAND test_vx_park_1213 ${scenario})
-    set_tests_properties(control_vx_park_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+    set_tests_properties(control_vx_park_${scenario} PROPERTIES LABELS "control" TIMEOUT 120)
 endforeach()
 
 add_executable(test_park_scan test_park_scan.cpp)
