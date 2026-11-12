@@ -690,6 +690,14 @@ void Case(const std::string& name) {
             Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"Không thấy ô trống: chuyển ô cố định");
             Check(r.planner.ParkNote().find("KHONG_CO_O")!=std::string::npos,"Ghi chú phải nêu KHONG_CO_O");
         }
+        for (double cell : {30.0, 80.0}) { // Quân 12/11: park_cell_cm là bước tiến giữa hai lần quét khi ô có vật/chưa rõ.
+            Rig r; r.p.park_cell_cm=cell; control::Plan plan=to_scan(r,-1); tf=tr=150;
+            const double o1=r.in.odo_cm;
+            for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);
+            for (int i=0;i<400 && plan.reason!="DO_XE_QUET";++i) { r.in.odo_cm+=1; plan=tick(r); Check(plan.cmd.cms>=0,"Quét bước ô không lùi"); }
+            Check(plan.reason=="DO_XE_QUET" && r.in.odo_cm-o1>=cell && r.in.odo_cm-o1<=cell+2.5,
+                  "park_cell_cm="+std::to_string(cell)+": bước giữa hai lần quét phải bằng đúng khóa, đo="+std::to_string(r.in.odo_cm-o1));
+        }
         { // Hai ToF bất đồng (trước trống, sau có vật) coi là KHÔNG RÕ, không được coi là ô trống.
             Rig r; control::Plan plan=to_scan(r,-1); tf=600; tr=150;
             for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);

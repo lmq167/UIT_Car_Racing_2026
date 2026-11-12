@@ -90,7 +90,16 @@ constexpr int kLOpenRows=3;
 // ngoài kLOpenRows: >= kLWideRows hàng gần có biên trái sát mép (<= 6 %) và biên phải >= 90 % bề rộng mặt nạ, vote_min mặt nạ liên tiếp.
 // Phát lại 3 lượt: sớm 13 cm ở lượt 11:47, không kích hoạt thêm ở hai lượt còn lại. TẠM, CHƯA ĐO trên sa bàn.
 constexpr double kLWideLeftFrac=0.06, kLWideRightFrac=0.90;
-constexpr int kLWideRows=2;
+constexpr int kLWideRows=3;  // Quân 12/11 (log l21): 2 hàng kích hoạt khi góc ngã còn xa, xe cắt qua đảo -> cần 3 hàng (TẠM, CHƯA ĐO)
+// Cầu (Quân 12/11, log l21): trên cầu số hàng hợp lệ tụt 8 -> 2-3 (nhiễu), bộ bám làn lái trái +19..+23° và yaw lệch +13°. Sau khi đã rẽ rào (work) lần thứ hai
+// và trước cua L / vòng xuyến: khi số hàng hợp lệ <= kBridgeLowRows thì giữ hướng IMU theo yaw lúc còn >= kBridgeGoodRows hàng, tới khi hàng hợp lệ trở lại
+// (vote_min mặt nạ liên tiếp), quá kBridgeHoldMaxCm, quá turn_max_ms hoặc bánh không tiến 1500 ms. Chỉ trong kBridgeWindowCm kể từ lần rẽ rào thứ hai. TẠM, CHƯA ĐO.
+constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
+// Vòng xuyến, lối ra bên phải (Quân 12/11, log l19-l21): bám làn trong vòng xuyến để xe lái trái / quay phải chỉ 8-19° trong 44-77 cm rồi đâm đảo (l20, l21), trong khi
+// các lần thoát tốt quay phải 31-48° với lái -12..-17°. Trong lần qua (VX_QUANH_DAO, đã có yaw lúc vào) lái phải tối thiểu kRbArcSteerDeg cho tới khi đã quay phải
+// kRbArcDeg hoặc đi kRbArcMaxCm kể từ lúc vào; sau đó bám làn như cũ. TẠM, CHƯA ĐO.
+constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
+constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
 // Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
 // giữ hướng bằng IMU theo hướng lúc mất làn (cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua). TẠM, CHƯA ĐO.
 constexpr double kRbPostHoldCm=60;
@@ -104,7 +113,7 @@ constexpr int64_t kParkWaitMs=600, kParkPhaseMaxMs=15000, kParkStallMs=2000;
 // Quét ô ToF khi xe đứng (Quân duyệt 11/11). TẠM, CHƯA ĐO: bước, ngưỡng vật, thời gian chờ mẫu.
 // Quân 12/11 (đã đo ToF trên xe): <= 250 mm có vật (ô có xe); > 500 mm hoặc phép đo invalid (cảm biến chạy, không thấy vật) = ô trống;
 // 250..500 mm mơ hồ. Cảm biến chưa khởi tạo, không mẫu, lỗi API hoặc mẫu cũ vẫn là KHÔNG RÕ (xe dừng, không lùi).
-constexpr double kParkStepCm=50, kParkCreepCm=10, kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
+constexpr double kParkCreepCm=10, kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
 constexpr double kParkStepCms=8, kParkCreepCms=5;
 constexpr int64_t kParkSettleMs=500, kParkScanMaxMs=3000;
 constexpr int kParkTofAgeMs=300;
@@ -430,6 +439,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(fallback && params.turn_enable && params.work_barrier_action && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_in_pass_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 && barriers>=params.vote_min) {
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_turn_=true;
+            if(++barrier_turns_==2) barrier2_odo_=input.odo_cm;
             barrier_wide_turn_=barriers_wide*2>barriers;
         }
         if(fallback && params.turn_enable && rb_pending_ && !turn_direction_ && !rb_in_pass_ && !rb_holding_ &&
@@ -443,6 +453,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min) {
             // Rào chỉ chốt ý định rẽ trái; thời điểm rẽ do mặt nạ xác nhận giao lộ (khối giao lộ bên dưới).
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true; barrier_turn_=true; barrier_wide_turn_=barriers_wide*2>barriers;
+            if(++barrier_turns_==2) barrier2_odo_=input.odo_cm;
         }
         // Rào gần mà không rẽ được (lỗi cảm biến tạm hoặc IMU lỗi từ khởi động): dừng trước rào, không đi thẳng.
         // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
@@ -902,10 +913,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     if(both==ScanCell::EMPTY) { park_unknown_=0; park_creep_cm_=0; step(kParkCreepCm,kParkCreepCms,1); park_note_+=" -> O_TRONG_BO_TIM_MEP"; }
                     else {
                         park_unknown_=both==ScanCell::UNKNOWN ? park_unknown_+1 : 0;
-                        park_scan_cm_+=kParkStepCm;
+                        park_scan_cm_+=params.park_cell_cm;
                         if(park_unknown_>=2) park_go_fixed(note+" TOF_KHONG_RO");
                         else if(park_scan_cm_>=kParkMaxScanCm) park_go_fixed(note+" KHONG_CO_O");
-                        else step(kParkStepCm,kParkStepCms,0);
+                        else step(params.park_cell_cm,kParkStepCms,0);
                     }
                 } else {  // mode 1: bò từng 10 cm tới khi cảm biến SAU thấy vật ở ô kế (mép xa của ô trống)
                     if(cr==ScanCell::OCCUPIED) { step(kParkPastCm,kParkCreepCms,2); park_note_+=" -> THAY_MEP_XA"; }
@@ -1036,6 +1047,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double lim=return_block_cm_<kReturnHardCm ? 0.0 : kReturnLeftMaxDeg;
         if(plan.cmd.deg>lim) { plan.cmd.deg=lim; plan.debug.angle_deg=lim; }
     }
+    if(params.turn_enable && rb_in_pass_ && !rb_losing_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
+       result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
+       WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
+        const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+        const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,-kRbArcSteerDeg));  // đổi góc không quá steer_rate_dps
+        if(angle<plan.cmd.deg) { plan.cmd.deg=angle; plan.debug.angle_deg=angle; }
+    }
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
     const bool was_holding=rb_holding_;
@@ -1061,6 +1079,37 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.cmd={std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))),angle};
             plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG";
             plan.debug.state=plan.debug.reason="GIU_HUONG"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
+        }
+    }
+    {   // Giữ hướng IMU khi nhiễu trên cầu (xem kBridge*). Ngoài vùng cầu thì mọi trạng thái được xóa.
+        const bool zone=params.turn_enable && barrier_turns_>=2 && !l_done_ && !route_anchored_ && !rb_in_pass_ && rb_passes_==0 && !turning_ && !turn_direction_ &&
+                        swerve_==Swerve::NONE && !returning && !sensor_bad && mask_fresh && state_==PlannerState::BAM_LAN && !input.stop &&
+                        std::isfinite(input.odo_cm) && std::isfinite(input.yaw_deg) && std::isfinite(barrier2_odo_) &&
+                        input.odo_cm-barrier2_odo_>=0 && input.odo_cm-barrier2_odo_<=kBridgeWindowCm;
+        if(!zone) { bridge_hold_=false; bridge_yaw_valid_=false; bridge_good_run_=0; }
+        else if(result.debug.state=="BAM_LAN") {
+            const int rows=result.debug.valid_rows;
+            if(rows>=kBridgeGoodRows) {
+                if(!bridge_hold_) { bridge_yaw_ref_=input.yaw_deg; bridge_yaw_valid_=true; bridge_spent_=false; }
+                else if(input.mask_ms!=bridge_last_mask_ms_ && ++bridge_good_run_>=std::max(1,params.vote_min)) bridge_hold_=false;
+            } else bridge_good_run_=0;
+            bridge_last_mask_ms_=input.mask_ms;
+            if(!bridge_hold_ && !bridge_spent_ && bridge_yaw_valid_ && rows<=kBridgeLowRows) {
+                bridge_hold_=true; bridge_hold_odo_=bridge_prog_odo_=input.odo_cm; bridge_hold_ms_=bridge_prog_ms_=now_ms; bridge_good_run_=0;
+            }
+            if(bridge_hold_) {
+                if(std::abs(input.odo_cm-bridge_prog_odo_)>=1) { bridge_prog_odo_=input.odo_cm; bridge_prog_ms_=now_ms; }
+                if(std::abs(input.odo_cm-bridge_hold_odo_)>kBridgeHoldMaxCm || now_ms-bridge_hold_ms_>params.turn_max_ms || now_ms-bridge_prog_ms_>=1500) {
+                    bridge_hold_=false; bridge_spent_=true;
+                } else {
+                    const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,params.rb_yaw_kp*WrapDeg(bridge_yaw_ref_-input.yaw_deg)));
+                    const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+                    const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
+                    plan.cmd={std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))),angle};
+                    plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG_CAU";
+                    plan.debug.state=plan.debug.reason="GIU_HUONG_CAU"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
+                }
+            }
         }
     }
     if(plan.reason=="BAM_LAN" && rb_in_pass_ && swerve_==Swerve::NONE && !returning)

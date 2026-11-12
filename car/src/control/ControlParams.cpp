@@ -48,6 +48,7 @@ const Parameter table[] = {
     {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
     {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,6,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi khi đỗ (Quân 11/11 18:54: pha đỗ lùi tới 6 cm/s, như FSM ucr)"},
     {"park_steer_deg",45.0,&ControlParams::park_steer_deg,5,45,"độ","TẠM, CHƯA ĐO: góc lái hai cung lùi khi đỗ (Quân 11/11 18:54: riêng pha đỗ tới 45°, như FSM ucr)"},
+    {"park_cell_cm",50.0,&ControlParams::park_cell_cm,10,200,"cm","Quân 12/11: chiều dài mỗi ô khi quét ToF: xe tiến chừng này giữa hai lần quét khi ô chưa rõ (50 = ô BTC 30x50; tune nếu quét quá ngắn so với thực tế)"},
     {"park_entry_cm",10.0,&ControlParams::park_entry_cm,0,120,"cm","TẠM, CHƯA ĐO: lùi thẳng trước cung 1 (ucr: 10 cm = ô giữa hàng; thêm 50 cm mỗi ô lùi xa hơn)"},
     {"park_tof_map",0,&ControlParams::park_tof_map,0,4444,"1","Ánh xạ ToF CHƯA ĐO = 0 (dùng ô cố định cuối đường). Đo xong: 4 chữ số = khe+1 của trái-sau, trái-trước, phải-trước, phải-sau (vd 1234)"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},

@@ -93,6 +93,9 @@ private:
     int rb_passes_=0, rb_pending_=0;
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
+    int barrier_turns_=0; double barrier2_odo_=0;  // số lần chốt ý định rẽ rào (work) từ lúc mở chương trình (không xóa trong Reset); odo lúc lần thứ hai
+    bool bridge_hold_=false, bridge_yaw_valid_=false, bridge_spent_=false;  // giữ hướng IMU khi nhiễu trên cầu (kBridge* trong Planner.cpp)
+    double bridge_yaw_ref_=0, bridge_hold_odo_=0, bridge_prog_odo_=0; int64_t bridge_hold_ms_=0, bridge_prog_ms_=0, bridge_last_mask_ms_=-1; int bridge_good_run_=0;
     bool rb_holding_=false; // Đang GIU_HUONG (bước trước): không bắt đầu rẽ/rào/né.
     bool person_latched_=false; // Giữ dừng tới khi lô tươi xác nhận vắng người đủ 2 s.
     int64_t person_seen_ms_=-1;
