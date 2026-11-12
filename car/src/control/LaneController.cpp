@@ -11,10 +11,6 @@ constexpr double kNoRealEdgePenalty=0.1; // TẠM, CHƯA ĐO: hai biên không t
 constexpr double kMergeFactor=1.5;   // TẠM, CHƯA ĐO: gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
 constexpr double kMinWidthRatio=0.6; // TẠM, CHƯA ĐO: bề rộng dưới 0,6·w(y) là bất thường
 constexpr double kRightLaneFrac=0.25, kLeftLaneFrac=0.75;  // tâm làn phải/trái của đường hai làn
-// Log 12/11 (a448f35): cuối pha VE_PHAI e ở hàng nhìn xa ≈ 0 (đường cong trái khiến mục tiêu xa nằm lệch trái) nhưng tâm làn ở hàng gần
-// vẫn lệch phải trục camera ~0,08-0,10 bề rộng ảnh và không giảm trong 40 cm: xe còn nằm một phần ở làn trái. Khi về làn phải dùng hàng
-// gần hơn để e đo độ lệch ngang thật thay vì hướng xa. TẠM, CHƯA ĐO trên sa bàn.
-constexpr double kReturnLookFrac=0.90;
 constexpr double kReturnKpScale=3.5;  // TẠM, CHƯA ĐO: độ lợi P khi về làn phải sau né (mô hình xe: dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°). Quân 12/11: 1,5 -> 2,0 -> 3,5 vì sa bàn trả làn vẫn chưa đủ mạnh (lái chỉ -10..-16° ở e 0,2-0,3 với 1,5); 35·3,5·0,3 ≈ 37°, chặn bởi steer_max_deg
 const char *const kThat="THAT";
 const char *const kEdge="MEP_ANH";
@@ -268,14 +264,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
             return row->flag_left==kThat || row->flag_right==kThat;
         });
         double x=-1;
-        double y_l=params.lookahead_frac*mask.rows;
-        if(mode==TrajMode::RETURN_RIGHT && !usable.empty()) {
-            const double near_y=kReturnLookFrac*mask.rows;
-            double low=usable.front()->y, high=low;
-            for(const auto *row:usable) { low=std::min(low,double(row->y)); high=std::max(high,double(row->y)); }
-            // Chỉ đo gần khi có hàng hợp lệ bao quanh, tránh ngoại suy ngoài vùng quan sát.
-            if(low<=near_y && near_y<=high) y_l=near_y;
-        }
+        const double y_l=params.lookahead_frac*mask.rows;
         if((mode==TrajMode::ROUNDABOUT || real_edge) && int(usable.size())>=std::max(2,params.min_valid_rows)) {
             // Bình phương tối thiểu trọng số conf, biến y dịch tâm c cho ổn định số rồi đổi về y pixel.
             const int degree=usable.size()>=3 ? 2 : 1;

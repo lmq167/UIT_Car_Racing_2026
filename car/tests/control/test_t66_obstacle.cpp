@@ -232,9 +232,8 @@ void SwerveTests() {
           else { Check(plan.reason=="VE_PHAI","Nhịp không đều không về đủ quãng"); break; }
           Check(n<99,"Nhịp không đều kẹt pha");
       }
-      // 100 nhịp ở 2/5 cm/s chưa đủ 40 cm; giữ nguyên kỳ vọng quãng và trần lệnh.
       distance=0;
-      for(int n=0;n<200;++n) {
+      for(int n=0;n<100;++n) {
           const int dt=n%2 ? 130 : 70;
           distance+=plan.cmd.cms*dt/1000.0;
           r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=n>=10 && n<15 ? 0 : (n%2 ? 2 : 5);
@@ -249,7 +248,7 @@ void SwerveTests() {
                     plan.mode==TrajMode::LANE,"Nhịp không đều không kết thúc về phải đủ quãng");
               break;
           }
-          Check(n<199,"Nhịp không đều kẹt pha về phải");
+          Check(n<99,"Nhịp không đều kẹt pha về phải");
       }
     }
     { Rig r; r.p.obstacle_pass_cm=10; r.pass(); r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=0;

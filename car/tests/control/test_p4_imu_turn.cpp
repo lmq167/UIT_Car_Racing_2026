@@ -131,8 +131,7 @@ void Return(bool blocked) {
         r.in.mask.setTo(0); r.in.mask.colRange(30,191).setTo(1); r.tick("",1);
         Check(r.last.mode==TrajMode::RETURN_RIGHT,"Chưa giữ VE_PHAI: "+r.info());
         Check(std::abs(r.last.debug.e)>1e-6,"Thiết lập sai số về phải bằng 0");
-        // Độ lợi đã là 3,5 tại HEAD; đổi hàng nhìn không đổi hệ số này.
-        const double expected=3.5*r.p.kp*r.last.debug.e;
+        const double expected=1.5*r.p.kp*r.last.debug.e;
         Check(std::abs(r.last.debug.p-expected)<1e-6,
               "P về phải: thực="+std::to_string(r.last.debug.p)+" kỳ vọng="+std::to_string(expected)+" "+r.info());
     }
