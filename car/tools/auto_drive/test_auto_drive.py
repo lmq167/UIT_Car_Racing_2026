@@ -1386,9 +1386,18 @@ def t73_lane_check(run, mark, lane_mark=None):
              if e[0] > first_hold and e[2] != 'CAM_BIEN_CHO']
     # Lệnh servo của chu kỳ thoát chờ có thể gửi trước khi lý do mới được ghi vết: bỏ một chu kỳ ở mép cuối.
     angle_end = min([end] + exits) - period
-    need(all(abs(e[2] - angles[-1][2]) < 0.01 for e in events
-             if e[1] == 'servo_angle' and not e[3] and first_hold <= e[0] < angle_end),
-         'CAM_BIEN_CHO không giữ góc', 't73_lane')
+    bad = [e for e in events if e[1] == 'servo_angle' and not e[3] and first_hold <= e[0] < angle_end
+           and abs(e[2] - angles[-1][2]) >= 0.01]
+    if bad:
+        # Chẩn đoán ca chập chờn: in đủ sự kiện quanh pha chờ (vết cuối của Failure chỉ có 20 sự kiện).
+        low = min(first_hold, bad[0][0]) - 150
+        print('CHAN_DOAN t73_lane: goc_tham_chieu={} first_hold={} angle_end={} end={} exits={} start={}'.format(
+            angles[-1], first_hold, angle_end, end, exits[:3], start))
+        for e in events:
+            if low <= e[0] <= bad[-1][0] + 60 and e[1] in ('servo_angle', 'motor_speed', 'reason', 'state',
+                                                           'command', 'inject'):
+                print('CHAN_DOAN', e)
+    need(not bad, 'CAM_BIEN_CHO không giữ góc', 't73_lane')
 
 
 def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, early_votes=True):
