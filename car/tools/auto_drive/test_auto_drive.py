@@ -1406,12 +1406,23 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
     need(0 < step <= run.values.get('turn_arm_cm', 80),
          'Bước encoder hồi phải dương và không vượt turn_arm_cm', 'setup')
     run.t57_odo = getattr(run, 't57_odo', 0) + step
-    def lane_only():
-        t73_add_lane(run, mark, lane_mark)
+    def lane_only(snapshot=None):
+        if snapshot is None:
+            t73_add_lane(run, mark, lane_mark)
+            return
+        # Kiểm trên đúng bản vết đã dùng để tính turns: lượt rẽ hợp lệ tới giữa hai lần đọc vết
+        # không được bị coi là "rẽ lại khi lỗi" (lần đọc sau sẽ thấy và kiểm bằng luật allow_turn).
+        live = run.events
+        run.events = lambda: snapshot
+        try:
+            t73_add_lane(run, mark, lane_mark)
+        finally:
+            run.events = live
     def enough(since, first, allow_turn=False):
-        turns = [e for e in run.of('state', first) if e[2] in ('RE_TRAI', 'RE_PHAI')]
+        snapshot = run.events()
+        turns = [e for e in snapshot[first:] if e[1] == 'state' and e[2] in ('RE_TRAI', 'RE_PHAI')]
         observed = turns[0][0] if allow_turn and turns else td.now_ms()
-        batches = [b for b in detection_batches(run.events()) if b[0] >= first and
+        batches = [b for b in detection_batches(snapshot) if b[0] >= first and
                    b[2] > since and 0 <= observed - b[2] <= run.values.get('det_max_age_ms', 500)]
         if allow_turn and turns:
             # M6: giao lộ đủ phiếu có thể rẽ ngay sau hồi, không cần thêm bước encoder.
@@ -1419,7 +1430,7 @@ def t73_recover(run, mark, lane_mark=None, direction='left', fresh_since=None, e
                  sum(b[2] <= turns[0][0] for b in batches) >= run.values.get('vote_min', 3),
                  'Rẽ lại trước mốc hồi hoặc trước đủ phiếu mới', 't73_recover')
         else:
-            lane_only()
+            lane_only(snapshot)
         return batches if len(batches) >= run.values.get('vote_min', 3) else None
     if early_votes:
         first = len(run.events())
