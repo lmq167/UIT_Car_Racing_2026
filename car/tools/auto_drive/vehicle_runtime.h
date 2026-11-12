@@ -303,8 +303,7 @@ struct DriveImu {
             if (!stable)
                 std::cerr<<"CANH BAO IMU: do troi chua on dinh (lan do cuoi "<<bias<<" do/giay)"
                          <<(readFailed ? ", loi doc IMU khi kiem" : "")
-                         <<"; kiem yaw dung yen truoc khi bam G, neu yaw tu tang thi mo lai chuong trinh
-";
+                         <<"; kiem yaw dung yen truoc khi bam G, neu yaw tu tang thi mo lai chuong trinh\n";
         }
         previous=Clock::now();
 #endif
