@@ -540,7 +540,7 @@ class Suite:
         code, _ = run(args, folder, env, observe=observe, timeout=25)
         require(code != 0, "A02: lỗi luồng phải thoát lỗi")
         if fault == "terminate":
-            require(code == -signal.SIGABRT, "A02: giữ tín hiệu SIGABRT")
+            require(code == 134, "A02: giữ mã terminate 134")
         rows = trace(folder / "trace.csv")
         require(sum(k == "motor_init" for _, k, _ in rows) == 1, "A02: không khởi tạo motor lại")
         require(sum(k == "motor_cfg" and "$101=1" in v for _, k, v in rows) == 1, "A02: không lưu/reset lại")
