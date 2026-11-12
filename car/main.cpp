@@ -1,5 +1,9 @@
 #include "app/App.h"
 #include "common/Smoke.h"
+#include "hardware/Motor.h"
+#ifdef UCR_FAKE_HW
+#include "app/FakeHardware.h"
+#endif
 #include <cstdlib>
 #include <csignal>
 #include <exception>
@@ -29,8 +33,18 @@ int main(int argc,char **argv) {
             return 0;
         } catch(const std::exception &e) { std::cerr<<e.what()<<'\n'; return 2; }
     }
-    // Hàm kết thúc bất thường trả mã lỗi; trình bao bên ngoài đảm nhận dừng độc lập.
-    std::set_terminate([]{ std::_Exit(134); });
+    // Kết thúc bất thường: gửi đúng một lệnh dừng motor (N1 v0, mở cổng không chặn, không lệnh cấu hình)
+    // rồi trả mã 134. Lỗi mở/ghi cổng bị nuốt để handler không treo.
+    std::set_terminate([]{
+        try {
+#ifdef UCR_FAKE_HW
+            app::fake::TraceNumber("motor_speed",0);
+#else
+            Motor().EmergencyStop();
+#endif
+        } catch(...) {}
+        std::_Exit(134);
+    });
     // Không tự khởi động lại đọc stdin: tín hiệu cũng ngắt được câu hỏi đầu phiên.
     struct sigaction action{}; action.sa_handler=Signal; sigemptyset(&action.sa_mask);
     sigaction(SIGINT,&action,nullptr); sigaction(SIGTERM,&action,nullptr);
