@@ -129,7 +129,8 @@ void PlannerObstacle() {
           r.in.odo_cm+=1; plan=r.Step();
           Check(plan.reason==phase,"Một cm chưa đủ kết thúc pha");
           double distance=1; bool finished=false;
-          for(int n=1;n<=100;++n) {
+          // 100 nhịp chỉ tích phân được 28,4 cm sau khi chờ encoder 1,5 s; pha về cần 40 cm.
+          for(int n=1;n<=200;++n) {
               if(n>=30) distance+=plan.cmd.cms*0.05;
               plan=r.Step();
               const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
