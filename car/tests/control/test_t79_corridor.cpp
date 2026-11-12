@@ -129,7 +129,8 @@ void PlannerObstacle() {
           r.in.odo_cm+=1; plan=r.Step();
           Check(plan.reason==phase,"Một cm chưa đủ kết thúc pha");
           double distance=1; bool finished=false;
-          for(int n=1;n<=100;++n) {
+          // 100 nhịp chỉ tích phân được 28,4 cm sau khi chờ encoder 1,5 s; pha về cần 40 cm.
+          for(int n=1;n<=200;++n) {
               if(n>=30) distance+=plan.cmd.cms*0.05;
               plan=r.Step();
               const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
@@ -490,7 +491,36 @@ void LaneMemory() {
         const cv::Mat off=Road(q,kW/2.0+30,2.0);
         const auto a=lane.Step(off,now+50,now+50,q,TrajMode::LANE,false);
         const auto c=back.Step(off,now+50,now+50,q,TrajMode::RETURN_RIGHT,false);
-        Check(std::abs(a.debug.e)>0.05 && std::abs(c.debug.p)>std::abs(a.debug.p)*1.4,"RETURN_RIGHT: độ lợi P lớn hơn bám làn thường");
+        // Hai hàng nhìn có sai số khác nhau: kiểm độ lợi theo e riêng, không so trực tiếp P.
+        Check(std::abs(a.debug.e)>0.05 && std::abs(c.debug.e)>0.05,"Cần sai số khác 0 để kiểm độ lợi");
+        Near(a.debug.p,q.kp*a.debug.e,1e-6,"LANE: độ lợi P giữ nguyên");
+        Near(c.debug.p,3.5*q.kp*c.debug.e,1e-6,"RETURN_RIGHT: độ lợi P lớn hơn bám làn thường");
+    }
+    // Log 12/11: đường cong trái, tâm làn ở hàng nhìn xa nằm đúng trục nhưng hàng gần lệch phải 40 px:
+    // bám làn thường e ≈ 0; về làn phải phải đo độ lệch ở hàng gần (e dương rõ).
+    {
+        cv::Mat curve(kH,kW,CV_8UC1,cv::Scalar(0));
+        const double y_far=q.lookahead_frac*kH;
+        for(int y=0;y<kH;++y) {
+            // Đặt lệch 40 px tại hàng gần 0,90H, đúng hình học mô tả của ca.
+            const double cx=kW/2.0+40.0*(y-y_far)/(0.90*kH-y_far);
+            const double half=Lane1(q,y)/2;
+            const int a=std::max(0,int(std::lround(cx-half))), b=std::min(kW-1,int(std::lround(cx+half)));
+            for(int x=a;x<=b;++x) curve.at<unsigned char>(y,x)=1;
+        }
+        LaneController lane, back;
+        const auto a=lane.Step(curve,now+50,now+50,q,TrajMode::LANE,false);
+        const auto c=back.Step(curve,now+50,now+50,q,TrajMode::RETURN_RIGHT,false);
+        Check(a.debug.valid_rows>0 && c.debug.valid_rows>0,"Đường cong: cần hàng hợp lệ");
+        Check(std::abs(a.debug.e)<0.08,"Đường cong: bám làn thường e ở hàng xa ≈ 0");
+        Check(c.debug.e>a.debug.e+0.15,"RETURN_RIGHT: e đo ở hàng gần, thấy độ lệch phải của làn");
+        Check(c.debug.look_y>a.debug.look_y,"RETURN_RIGHT: hàng nhìn gần hơn bám làn thường");
+        // Mất các hàng gần: dùng lại hàng xa, không ngoại suy về vùng chưa quan sát.
+        curve.rowRange(int(0.85*kH),kH).setTo(0);
+        LaneController fallback;
+        const auto missing=fallback.Step(curve,now+100,now+100,q,TrajMode::RETURN_RIGHT,false);
+        Check(missing.debug.state=="BAM_LAN","Thiếu hàng gần vẫn dùng được hàng xa");
+        Near(missing.debug.look_y,q.lookahead_frac*kH,1e-9,"Thiếu hàng gần: quay lại lookahead_frac");
     }
     // Mặt nạ cũ xóa bộ nhớ.
     LaneController stale;
