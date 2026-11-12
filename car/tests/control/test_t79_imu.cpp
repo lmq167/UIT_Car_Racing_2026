@@ -83,7 +83,8 @@ struct Rig {
 };
 void Run(const std::string &name) {
     if(name=="roundabout" || name=="flicker") {
-        Rig r; r.pass(name=="flicker"); r.exit(false); r.pass(name=="flicker"); r.exit(true);
+        // Hai lần qua liên tiếp (nhánh thoát theo rb_turn1/2_cm của lộ trình cũ đã bỏ).
+        Rig r; r.pass(name=="flicker"); r.step("",r.p.rb_turn1_cm); r.pass(name=="flicker");
     } else if(name=="disabled") {
         Rig r(false); r.arm(); r.mask(1);
         for(int i=0;i<100;++i) Check(r.step().state==PlannerState::BAM_LAN,"Tắt dự phòng phải không cua khi IMU lỗi");
@@ -123,7 +124,6 @@ void Run(const std::string &name) {
         Check(counting.step().mode==TrajMode::ROUNDABOUT,"Không được tính quãng đi khi encoder lỗi");
         counting.step("",counting.p.rb_lost_cm);
         Check(counting.last.mode==TrajMode::LANE,"Encoder hồi phải đo lại từ mốc tốt");
-        counting.exit(false);
     } else if(name=="repeat") {
         Rig r; r.step("round_barrier");
         for(int i=0;i<5;++i) Check(r.step("",0,50,true,false).mode==TrajMode::LANE,"Lặp cùng lô không được thêm phiếu");

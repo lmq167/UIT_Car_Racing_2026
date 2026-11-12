@@ -932,8 +932,8 @@ void Case(const std::string& name) {
           for (int i=0;i<r.p.vote_window+r.p.vote_min && plan.state!=control::PlannerState::RE_TRAI;++i) plan=box(r,0.5f,0.80f);
           Check(plan.state==control::PlannerState::RE_TRAI,"Mặt nạ tươi lại, rào còn gần: rẽ lại, không bám làn vào rào"); }
     } else if (name=="roundabout") {
-        // Đếm lần qua bằng phiếu round_barrier; sau lần 1 đi rb_turn1_cm rồi RE_TRAI; sau lần 2 RE_PHAI;
-        // trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.
+        // Đếm lần qua bằng phiếu round_barrier; trong lần qua mất làn thì GIU_HUONG lái về yaw lúc vào.
+        // Phần rẽ theo rb_turn1/2_cm (lộ trình cũ) đã bỏ; lộ trình mới kiểm ở control_t94_*.
         Rig r; r.in.yaw_deg=10; r.in.odo_cm=0;
         auto rb=[&](bool seen) {
             r.now+=40;
@@ -962,20 +962,7 @@ void Case(const std::string& name) {
         for (int i=0;i<8;++i) { r.in.odo_cm+=1; plan=rb(false); }
         Check(plan.state==control::PlannerState::BAM_LAN,"Chưa đủ rb_lost_cm chưa hết lần qua");
         for (int i=0;i<30;++i) { r.in.odo_cm+=1; plan=rb(false); }
-        Check(plan.state==control::PlannerState::BAM_LAN,"Hết lần qua 1, chưa đủ rb_turn1_cm");
-        r.junction_mask();
-        for (int i=0;i<90 && plan.state==control::PlannerState::BAM_LAN;++i) { r.in.odo_cm+=1; plan=rb(false); }
-        Check(plan.state==control::PlannerState::RE_TRAI,"Sau lần 1 phải rẽ trái");
-        r.in.yaw_deg=10+r.p.turn_yaw_deg; plan=rb(false); r.mask(60,140); Check(plan.state==control::PlannerState::BAM_LAN,"Xong rẽ");
-        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
-        for (int i=0;i<35;++i) { r.in.odo_cm+=1; plan=rb(false); }
-        r.junction_mask();
-        for (int i=0;i<120 && plan.state==control::PlannerState::BAM_LAN;++i) { r.in.odo_cm+=1; plan=rb(false); }
-        Check(plan.state==control::PlannerState::RE_PHAI,"Sau lần 2 phải rẽ phải");
-        r.in.yaw_deg-=r.p.turn_yaw_deg; plan=rb(false);
-        for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
-        for (int i=0;i<200;++i) { r.in.odo_cm+=1; plan=rb(false);
-            Check(plan.state==control::PlannerState::BAM_LAN,"Sau lần 2 không rẽ nữa"); }
+        Check(plan.state==control::PlannerState::BAM_LAN,"Hết lần qua 1 vẫn bám làn");
     } else if (name=="roundabout_after_space") {
         // Lỗi 3 (log 18:01 10/11, 289 s): Space rồi G giữa đảo mở lần qua mới với yaw0 = hướng giữa đảo;
         // mất làn ở lối ra thì GIU_HUONG lái về hướng đó (sang trái, lệch lối ra phải). Lần qua mở ngay sau

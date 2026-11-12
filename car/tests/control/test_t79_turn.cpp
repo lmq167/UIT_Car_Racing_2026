@@ -331,7 +331,8 @@ void Run(const std::string &name) {
             r.mask(2);
             for(int cm=1;cm<=r.p.vote_min;++cm) r.step(r.anchor+cm,"round_barrier");
             r.mask(5);
-            for(int cm=r.p.vote_min+1;cm<r.p.turn_start_cm;++cm) {
+            // Trong lần qua: phiếu cuối ở cm 9, lần qua hết sau rb_lost_cm (không phụ thuộc turn_start_cm).
+            for(int cm=r.p.vote_min+1;cm<10+r.p.rb_lost_cm;++cm) {
                 const auto plan=r.step(r.anchor+cm,cm<10?"round_barrier":"");
                 Check(plan.state==control::PlannerState::BAM_LAN && plan.reason!="RE_GIAO_LO",
                       "Đảo rộng trong vòng xuyến không được kích hoạt RE_GIAO_LO");

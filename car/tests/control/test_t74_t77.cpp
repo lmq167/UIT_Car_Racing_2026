@@ -504,58 +504,11 @@ void Q9(const std::string& name) {
             r.votes({"right"}); const auto plan=r.junction();
             Expect(plan.state==PlannerState::RE_PHAI,plan,"Q9: cả hai điều kiện tốt đủ 1 s thì biển mới rẽ được");
         }
-    } else if (name=="rb_not_revived") {
-        Rig r; r.enter(); r.leave();
-        const double after_first=r.in.odo_cm;
-        Lane(r.at(after_first+r.p.rb_turn1_cm-1),"Q9: lượt 1 đang chờ đủ quãng rẽ");
-        r.in.sensor_ok=false;
-        Lane(r.send(),"Q9: lỗi lúc chờ vòng xuyến không dừng bám làn");
-        r.in.sensor_ok=true;
-        Lane(r.send({},.9f,.5f,.8f,1),"Q9: bắt đầu hồi sau khi bỏ lượt chờ");
-        r.in.odo_cm=after_first+r.p.rb_turn1_cm+10;
-        for (int elapsed=40;elapsed<=1000;elapsed+=40)
-            Lane(r.send(),"Q9: qua chỗ rẽ cũ và hồi đủ 1 s không hồi sinh lượt 1");
-        Lane(r.at(r.in.odo_cm+100),"Q9: đi xa hơn vẫn không rẽ muộn lượt 1");
-        r.enter(); r.clear(); const double lost0=r.in.odo_cm;
-        Lane(r.at(lost0+r.p.rb_lost_cm-.01),"Q9: lượt kế chưa đủ quãng mất phiếu");
-        Lane(r.at(lost0+r.p.rb_lost_cm),"Q9: kết thúc lượt 2, bắt đầu chờ rẽ phải");
-        Lane(r.at(lost0+r.p.rb_lost_cm+r.p.rb_turn2_cm-.01),"Q9: lượt 2 chưa đủ quãng rẽ");
-        r.at(lost0+r.p.rb_lost_cm+r.p.rb_turn2_cm); const auto plan=r.junction();
-        Expect(plan.state==PlannerState::RE_PHAI,plan,"Q9: lần qua kế vẫn là lượt 2 và rẽ phải đúng quãng");
-        r.finish(false); r.enter(); r.leave();
-        Lane(r.at(r.in.odo_cm+400),"Q9: lượt 3 không đếm nhầm thành lượt 2");
     } else throw std::runtime_error("Ca Q9 không tồn tại: "+name);
 }
-// T68b Chỉ làm §1–4: đếm lần bằng phiếu/encoder, không dùng yaw để đếm.
+// T68b Chỉ làm §1–4: đếm lần bằng phiếu/encoder, không dùng yaw để đếm (ca rẽ theo rb_turn1/2_cm đã bỏ).
 void T68b(const std::string& name) {
-    if (name=="pass1_distance" || name=="pass2_distance") {
-        Rig r;
-        if (name=="pass2_distance") { r.rbturn(1); r.finish(); }
-        r.enter(); r.clear(); const double lost0=r.in.odo_cm;
-        Lane(r.at(lost0+29.99),"Mất phiếu chưa 30cm");
-        Lane(r.at(lost0+30),"Đúng 30cm hết lượt, chưa tới chỗ rẽ");
-        Lane(r.at(lost0+89.99),"Sau lượt chưa đủ 60cm");
-        r.at(lost0+90); const auto plan=r.junction();
-        Expect(plan.state==(name=="pass1_distance"?PlannerState::RE_TRAI:PlannerState::RE_PHAI),plan,"Đúng 60cm sau lượt phải rẽ đúng hướng");
-    } else if (name=="flicker") {
-        Rig r; r.enter(); r.clear(); Lane(r.at(29),"Nhấp nháy chưa hết lượt");
-        r.enter(); r.clear(); Lane(r.at(59),"Bắt đầu tính lại mất phiếu từ 29cm");
-        Lane(r.at(118.99),"Chưa đủ quãng sau một lượt");
-        r.at(119); const auto plan=r.junction();
-        Expect(plan.state==PlannerState::RE_TRAI,plan,"Nhấp nháy vẫn chỉ lượt thứ nhất");
-        r.finish(); r.rbturn(2);
-    } else if (name=="after_two") {
-        for (int reset=-1;reset<2;++reset) {
-            Rig r; r.rbturn(1); r.finish();
-            if (reset>=0) {
-                r.in.stop=true; ++r.now; r.step(); r.in.stop=false;
-                r.planner.Reset(reset!=0); r.in.go=true; ++r.now; r.step(); r.in.go=false;
-            }
-            r.rbturn(2); r.finish(false);
-            r.enter(); r.leave(); const double start=r.in.odo_cm;
-            for (int i=1;i<=10;++i) Lane(r.at(start+40*i),"Sau hai lượt không rẽ nữa, kể cả Reset/G");
-        }
-    } else if (name=="visible") {
+    if (name=="visible") {
         for (const std::string other:{"","left","work_barrier"}) {
             Rig r; r.enter();
             for (int i=1;i<=10;++i) Lane(r.at(30*i,other.empty()?std::vector<std::string>{"round_barrier"}:std::vector<std::string>{"round_barrier",other}),"Còn phiếu vòng xuyến không rẽ, lớp kèm="+other);
@@ -573,13 +526,6 @@ void T68b(const std::string& name) {
             if (!stale) r.in.sensor_ok=false;
             else { r.sensor_fresh=false; r.now+=201; r.step(true,false); }
             Lane(r.at(r.in.odo_cm+60),"IMU lỗi: luật sau vòng xuyến không rẽ, không dừng");
-        }
-    } else if (name=="zero_distance") {
-        for (int pass:{1,2}) {
-            Rig r; if (pass==2) { r.rbturn(1); r.finish(); }
-            if (pass==1) r.p.rb_turn1_cm=0; else r.p.rb_turn2_cm=0;
-            r.enter(); r.leave(); const auto plan=r.junction();
-            Expect(plan.state==(pass==1?PlannerState::RE_TRAI:PlannerState::RE_PHAI),plan,"Quãng sau lượt 0cm phải rẽ ngay khi hết lượt");
         }
     } else throw std::runtime_error("Ca T68b không tồn tại: "+name);
 }
