@@ -86,6 +86,10 @@ add_test(NAME test_t57_l_turn_after_bridge COMMAND test_t57_turn l_turn_after_br
 set_tests_properties(test_t57_l_turn_after_bridge PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t57_park_reverse COMMAND test_t57_turn park_reverse)
 set_tests_properties(test_t57_park_reverse PROPERTIES LABELS "control" TIMEOUT 60)
+foreach(scenario park_tien_nan_short park_tien_nan_long)
+    add_test(NAME test_t57_${scenario} COMMAND test_t57_turn ${scenario})
+    set_tests_properties(test_t57_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+endforeach()
 add_test(NAME test_t57_obstacle_blocked_in_roundabout COMMAND test_t57_turn obstacle_blocked_in_roundabout)
 set_tests_properties(test_t57_obstacle_blocked_in_roundabout PROPERTIES LABELS "control" TIMEOUT 60)
 add_test(NAME test_t74_barrier_turn COMMAND test_t57_turn barrier_turn)
@@ -128,6 +132,8 @@ foreach(scenario only_on_loss yaw_sign wrap steer_max steer_rate speed regain pa
 endforeach()
 add_test(NAME acc_t77_params COMMAND test_t74_t77 t77_params ${CMAKE_CURRENT_BINARY_DIR}/t77_lot3b_params.yaml)
 set_tests_properties(acc_t77_params PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
+add_test(NAME control_t77_arc_delay COMMAND test_t74_t77 t77_arc_delay)
+set_tests_properties(control_t77_arc_delay PROPERTIES LABELS "control" TIMEOUT 60)
 foreach(scenario people person votes low_conf release absent turn_pause_stuck turn_pause_timeout space_priority)
     add_test(NAME acc_t75_${scenario} COMMAND test_t74_t77 t75_${scenario})
     set_tests_properties(acc_t75_${scenario} PROPERTIES LABELS "control;acceptance" TIMEOUT 60)
@@ -203,7 +209,7 @@ foreach(scenario pre_anchor sequence lane_l noise space_corner space_island imu
         h1_sign h1_barrier h1_then_r5 m2_stopped m2_space_carry
         m2_space_wheels m2_space_released_wheels
         m3_no_double_left m1_far_island m1_reset_c0_small_island
-        ambig_no_c2c3 skip_same_heading skip_same_heading_sign yaw_40_50)
+        ambig_no_c2c3 skip_same_heading skip_same_heading_sign yaw_40_50 yaw_axis_35 yaw_axis_40)
     add_test(NAME control_t94_${scenario} COMMAND test_t94_route ${scenario})
     set_tests_properties(control_t94_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()

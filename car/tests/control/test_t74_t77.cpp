@@ -580,9 +580,11 @@ void T68b(const std::string& name) {
 void T77(const std::string& name) {
     if (name=="only_on_loss") {
         Rig r; r.in.yaw_deg=3; r.enter(); r.in.yaw_deg=13;
-        // Quân 12/11: trong lần qua, làn tốt vẫn lái phải tối thiểu 15° cho tới khi đã quay phải 40° (cung ngắn tới lối ra phải).
+        // Cung phải chỉ bắt đầu sau 15 cm kể từ lúc mở lần qua; trước đó bám làn bình thường.
         r.p.steer_rate_dps=1000;
-        const auto arc=r.votes({"round_barrier"},6);
+        const auto before=r.votes({"round_barrier"},6);
+        Expect(before.state==PlannerState::BAM_LAN && Near(before.cmd.deg,0),before,"Chưa đi 15 cm: làn tốt vẫn bám làn");
+        const auto arc=r.at(20,{"round_barrier"});
         Expect(arc.state==PlannerState::BAM_LAN && Near(arc.cmd.deg,-15),arc,"Vòng xuyến: lái phải tối thiểu 15° tới khi quay phải 40°");
         r.in.yaw_deg=3-45;
         const auto lane=r.votes({"round_barrier"},6);
@@ -593,6 +595,18 @@ void T77(const std::string& name) {
         r.in.yaw_deg=13;
         r.in.mask.setTo(0); const auto plan=r.votes({"round_barrier"},12);
         Expect(plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,std::max(-r.p.steer_max_deg,-50*r.p.rb_yaw_kp)),plan,"Mất làn giữ hướng ra yaw0-40, kẹp trần góc");
+    } else if (name=="arc_delay") {
+        Rig r;
+        const auto opened=r.enter(); const double odo0=r.in.odo_cm;
+        Expect(opened.state==PlannerState::BAM_LAN && Near(opened.cmd.deg,0),opened,"Vừa mở lần qua: bám làn, chưa ép cung phải");
+        for (double cm:{10.0,14.99}) {
+            const auto plan=r.at(odo0+cm,{"round_barrier"});
+            Expect(plan.state==PlannerState::BAM_LAN && Near(plan.cmd.deg,0),plan,"Trước 15 cm kể từ mở lần qua: bám làn bình thường");
+        }
+        for (double cm:{15.0,20.0}) {
+            const auto plan=r.at(odo0+cm,{"round_barrier"});
+            Expect(plan.state==PlannerState::BAM_LAN && Near(plan.cmd.deg,-15),plan,"Từ 15 cm, gồm 20 cm: bắt đầu cung phải -15 độ");
+        }
     } else if (name=="yaw_sign" || name=="wrap") {
         for (double sign:{-1.,1.}) {
             Rig r; const bool wrap=name=="wrap";
@@ -610,7 +624,7 @@ void T77(const std::string& name) {
     } else if (name=="steer_rate") {
         Rig r; r.p.steer_rate_dps=10;
         const auto opened=r.enter(); r.in.mask.setTo(0); r.in.yaw_deg=-30;
-        double previous=opened.cmd.deg; Plan plan;  // vào lượt qua đã có cung phải (kRbArcSteerDeg), góc đầu không còn 0
+        double previous=opened.cmd.deg; Plan plan;  // chưa đi 15 cm nên góc đầu vẫn theo làn
         for (int i=0;i<35;++i) {
             plan=r.send({"round_barrier"});
             Expect(std::abs(plan.cmd.deg-previous)<=.4+1e-6 && std::abs(plan.cmd.deg)<=r.p.steer_max_deg,plan,"Giữ hướng đổi góc không quá rate×dt");

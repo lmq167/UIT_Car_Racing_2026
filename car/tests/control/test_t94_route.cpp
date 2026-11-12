@@ -336,6 +336,22 @@ void Run(const std::string &name) {
         // Rủi ro bỏ chặng cùng hướng: R2 vẫn giữ ý định; H1 chỉ cứu khi có biển/rào.
         r.reach(2); r.restart(0); r.hold(0); r.expect(2,"SYNC_R2");
         if(name=="skip_same_heading") r.tee(true); else r.sign_right();
+    } else if(name=="yaw_axis_35") {
+        r.anchor();
+        for(double yaw: {35.0,125.0}) {
+            const int step=r.planner.RouteStep();
+            r.in.yaw_deg=r.in.yaw=yaw;
+            // 13 mẫu đứng yên: mới 480 ms từ mẫu đầu; thêm 2 cm ở mẫu 520 ms.
+            for(int i=0;i<13;++i) { r.sample("",80,false); r.expect(step); }
+            r.in.odo_cm+=2; r.sample("",80,false); r.expect(step+1,"BUOC");
+        }
+    } else if(name=="yaw_axis_40") {
+        // Nhận c2 ở lệch 35° trước, rồi không nhận c3 khi cách trục Tây 40°.
+        r.anchor(); r.hold(35,14); r.expect(2,"BUOC");
+        r.in.yaw_deg=r.in.yaw=130;
+        for(int i=0;i<13;++i) { r.sample("",80,false); r.expect(2,"BUOC"); }
+        r.in.odo_cm+=2; r.sample("",80,false); r.expect(2,"BUOC");
+        r.hold(90,14); r.expect(3,"BUOC");
     } else if(name=="yaw_40_50") {
         r.reach(2);
         for(int i=0;i<200;++i) {

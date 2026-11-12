@@ -576,7 +576,8 @@ void Case(const std::string& name) {
         { // Log l25 12/11: đảo LỚN thấy sớm khi cua L còn chờ mở lần qua: KHÔNG được lái cung phải lối ra (xe chưa tới vòng xuyến).
             Rig r; r.in.yaw_deg=0; r.p.steer_rate_dps=1000;
             control::Plan plan; double most_right=0;
-            for (int i=0;i<r.p.vote_min+6;++i) { r.in.odo_cm+=2; plan=island(r,0.82,360); most_right=std::min(most_right,plan.cmd.deg); }
+            // Đi thêm 20 cm sau khi mở lần qua, vượt 15 cm chờ cung phải.
+            for (int i=0;i<r.p.vote_min+10;++i) { r.in.odo_cm+=2; plan=island(r,0.82,360); most_right=std::min(most_right,plan.cmd.deg); }
             Check(plan.reason=="VX_QUANH_DAO" || plan.mode==control::TrajMode::ROUNDABOUT,"Thiết lập: đảo lớn mở lần qua");
             Check(most_right>-15.0+1e-9,"Lần qua mở lúc cua L còn chờ: không được ép cung phải -15 độ");
         }
@@ -616,7 +617,7 @@ void Case(const std::string& name) {
             for (int i=0;i<2*r.p.vote_min;++i) { r.in.odo_cm+=1; any=any || empty(r).state==control::PlannerState::RE_PHAI; }
             Check(!any,"Lỗi cảm biến khi chờ cua L phải bỏ cua L");
         }
-    } else if (name=="park_reverse") {
+    } else if (name=="park_reverse" || name=="park_tien_nan_short" || name=="park_tien_nan_long") {
         // Đỗ xe lùi song song (Quân duyệt viết với số tạm 11/11): biển parking -> tiến park_forward_cm -> chờ -> lùi 2 cung -> đứng.
         auto sign=[](Rig& r) {
             r.now+=40; r.in.detections={{{"parking",cv::Rect2f(576,200,128,128),0.9f,r.now}},r.now,++r.frame};
@@ -639,6 +640,42 @@ void Case(const std::string& name) {
             for (int i=0;i<200 && plan.reason!="DO_XE_QUET";++i) { r.in.odo_cm+=1; plan=tick(r); }
             return plan;
         };
+        if (name!="park_reverse") {
+            Rig r; auto plan=to_scan(r,-1);
+            for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0 && plan.cmd.cms<=5+1e-9 &&
+                  r.planner.ParkNote().find("O_TRONG_BO_TIM_MEP")!=std::string::npos,"Thiết lập đang TIẾN dò mép ô trống");
+            const double odo=r.in.odo_cm;
+            r.was_bad=true;  // Không để PersistBad kéo một mẫu NaN thành lỗi 250 ms.
+            r.in.odo_cm=std::numeric_limits<double>::quiet_NaN(); plan=tick(r,40);
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0 && plan.cmd.cms<=5+1e-9,
+                  "Một mẫu odo NaN ngắn phải giữ pha TIẾN dò mép, không về tốc độ bám làn thường");
+            r.in.odo_cm=odo+1; r.was_bad=false; plan=tick(r,40);
+            Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>0 && plan.cmd.cms<=5+1e-9,
+                  "Odo tốt trở lại phải tiếp tục TIẾN dò mép");
+            if (name=="park_tien_nan_short") {
+                for (int i=0;i<200 && plan.reason!="DO_XE_QUET";++i) {
+                    r.in.odo_cm+=1; plan=tick(r);
+                    Check(plan.cmd.cms>=0 && plan.cmd.cms<=5+1e-9,"Sau mẫu NaN ngắn vẫn tiến dò mép <= 5 cm/s");
+                }
+                Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_QUET" && plan.cmd.cms==0,
+                      "Giữ pha TIẾN sau mẫu NaN ngắn: đủ quãng phải dừng quét lại");
+            } else {
+                // Đợt NaN mới đủ 250 ms vẫn hủy như cũ; phần ngắn ở trên bắt được lỗi hủy sớm.
+                const double recovered_odo=r.in.odo_cm;
+                r.was_bad=true; r.in.odo_cm=std::numeric_limits<double>::quiet_NaN(); tick(r,40);
+                plan=tick(r,250);
+                Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>5,
+                      "Odo NaN đủ 250 ms phải hủy pha TIẾN và bỏ giới hạn dò mép");
+                r.in.odo_cm=recovered_odo; r.was_bad=false;
+                for (int i=0;i<200;++i) {
+                    r.in.odo_cm+=1; plan=tick(r);
+                    Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>5,
+                          "Đã hủy do NaN dài: hồi odo rồi đi đủ quãng cũng không quét lại");
+                }
+            }
+            return;
+        }
         // Đưa tới đầu pha lùi 1; trả về Rig đang ở DO_XE_LUI_1.
         auto to_reverse=[&](Rig& r, int side) {
             r.p.park_enable=1; r.p.park_tof_map=1234; r.p.park_side=side; r.in.yaw_deg=0; r.in.odo_cm=0; tf=tr=600;
