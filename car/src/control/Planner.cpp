@@ -854,6 +854,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Log l27 12/11 (16656, dòng 4497): MỘT mẫu odo trống lúc đang tiến dò mép hủy đỗ ngầm, xe quay về bám làn và chạy thẳng. Mẫu hỏng ngắn hơn
         // kSensorGlitchMs không hủy pha tiến (quãng không tăng khi odo không hữu hạn nên pha vẫn chờ); hỏng từ kSensorGlitchMs vẫn hủy như cũ.
         const bool park_tien_bad=sensor_bad && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
+        // Hỏng từ kSensorGlitchMs lúc đang tiến quét/dò mép (không còn biết quãng): DỪNG có lý do như pha quét/lùi, không hủy ngầm rồi bám làn tốc độ thường trong bãi.
+        if(park_phase_==ParkPhase::TIEN && park_tien_bad && state_==PlannerState::BAM_LAN) {
+            park_phase_=ParkPhase::NONE; park_fixed_=false; ClearTurn(); state_=PlannerState::DUNG; reason_="DO_XE_CAM_BIEN"; lane_.Reset();
+        }
         if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || turn_direction_ || park_tien_bad ||
                                             rb_in_pass_ || rb_holding_)) { park_phase_=ParkPhase::NONE; park_fixed_=false; }
         if(park_phase_==ParkPhase::TIEN && park_fixed_) {
