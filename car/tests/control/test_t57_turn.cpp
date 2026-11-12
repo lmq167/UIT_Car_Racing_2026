@@ -661,17 +661,17 @@ void Case(const std::string& name) {
                 Check(plan.state==control::PlannerState::DO_XE && plan.reason=="DO_XE_QUET" && plan.cmd.cms==0,
                       "Giữ pha TIẾN sau mẫu NaN ngắn: đủ quãng phải dừng quét lại");
             } else {
-                // Đợt NaN mới đủ 250 ms vẫn hủy như cũ; phần ngắn ở trên bắt được lỗi hủy sớm.
+                // Đợt NaN mới đủ 250 ms: DỪNG có lý do (13/11: trước đây hủy ngầm rồi bám làn tốc độ thường trong bãi, như log 16656).
                 const double recovered_odo=r.in.odo_cm;
                 r.was_bad=true; r.in.odo_cm=std::numeric_limits<double>::quiet_NaN(); tick(r,40);
                 plan=tick(r,250);
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>5,
-                      "Odo NaN đủ 250 ms phải hủy pha TIẾN và bỏ giới hạn dò mép");
+                Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_CAM_BIEN" && plan.cmd.cms==0,
+                      "Odo NaN đủ 250 ms lúc TIẾN phải dừng DO_XE_CAM_BIEN, không bám làn tốc độ thường");
                 r.in.odo_cm=recovered_odo; r.was_bad=false;
                 for (int i=0;i<200;++i) {
                     r.in.odo_cm+=1; plan=tick(r);
-                    Check(plan.state==control::PlannerState::BAM_LAN && plan.cmd.cms>5,
-                          "Đã hủy do NaN dài: hồi odo rồi đi đủ quãng cũng không quét lại");
+                    Check(plan.state==control::PlannerState::DUNG && plan.cmd.cms==0,
+                          "Đã dừng do NaN dài: hồi odo vẫn đứng tới khi bấm G, không quét lại");
                 }
             }
             return;

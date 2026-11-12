@@ -214,6 +214,15 @@ foreach(scenario pre_anchor sequence lane_l noise space_corner space_island imu
     set_tests_properties(control_t94_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
 endforeach()
 
+# 13/11: lối ra vòng xuyến 1, cua L arm lại sau Space/G, đỗ xe vòng kín + nhiễu có seed.
+add_executable(test_vx_park_1213 test_vx_park_1213.cpp)
+target_link_libraries(test_vx_park_1213 PRIVATE ucr_control)
+target_compile_options(test_vx_park_1213 PRIVATE -Wall -Wextra)
+foreach(scenario arc_through_exit l_rearm_after_space park_closed_loop park_tien_long_fault park_fuzz roundabout_fuzz)
+    add_test(NAME control_vx_park_${scenario} COMMAND test_vx_park_1213 ${scenario})
+    set_tests_properties(control_vx_park_${scenario} PROPERTIES LABELS "control" TIMEOUT 60)
+endforeach()
+
 add_executable(test_park_scan test_park_scan.cpp)
 target_link_libraries(test_park_scan PRIVATE ucr_control)
 add_test(NAME control_park_scan COMMAND test_park_scan)
