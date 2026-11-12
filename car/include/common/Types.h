@@ -7,6 +7,23 @@
 #include <string>
 namespace common {
 using Clock = std::chrono::steady_clock;
+// Mã trạng thái truyền về giao diện BTC, giữ nguyên thứ tự 0–13.
+enum class VehicleState : int32_t {
+    NONE = 0,
+    GREEN_LIGHT = 1,
+    RED_LIGHT = 2,
+    ROAD_WORK = 3,
+    BRIDGE = 4,
+    ROUNDABOUT = 5,
+    OBSTACLE = 6,
+    TURN_RIGHT = 7,
+    NO_TURN_RIGHT = 8,
+    TURN_LEFT = 9,
+    NO_TURN_LEFT = 10,
+    PARKING_SIGN = 11,
+    PARKING = 12,
+    PEDESTRIAN = 13
+};
 struct CalibrationLimits {
     bool enabled=false;
     Clock::time_point deadline{};

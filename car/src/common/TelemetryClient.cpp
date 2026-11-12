@@ -79,22 +79,47 @@ void TelemetryClient::Close()
     initialized_ = false;
 }
 
+void TelemetryClient::SetVehicleState(int state)
+{
+    SetVehicleStates({{state, 0, 0}});
+}
+
+int TelemetryClient::GetVehicleState() const
+{
+    return states_[0].load();
+}
+
+void TelemetryClient::SetVehicleStates(const std::array<int, 3> &states)
+{
+    for (std::size_t i = 0; i < states.size(); ++i) states_[i].store(states[i]);
+}
+
+std::array<int, 3> TelemetryClient::GetVehicleStates() const
+{
+    return {{states_[0].load(), states_[1].load(), states_[2].load()}};
+}
+
 bool TelemetryClient::SendVehicleState(int state)
 {
-    state_ = state;
+    return SendVehicleStates({{state, 0, 0}});
+}
+
+bool TelemetryClient::SendVehicleStates(const std::array<int, 3> &states)
+{
+    SetVehicleStates(states);
     if (!initialized_ || socket_ < 0)
         return false;
 
-    // Gói tin trạng thái nhanh (Header 40 bytes, Payload 0 bytes)
-    constexpr size_t HEADER_SIZE = 40;
+    // Fast state-only packet (UCR3, 48-byte header, no image payload).
+    constexpr size_t HEADER_SIZE = 48;
     std::vector<uint8_t> packet;
     packet.reserve(HEADER_SIZE);
 
-    // Magic Header: "UCRC"
+    // Magic Header: "UCR3"
     packet.push_back('U');
     packet.push_back('C');
     packet.push_back('R');
-    packet.push_back('C');
+    packet.push_back('3');
 
     // Car ID (16 bytes, null-padded)
     char idBuf[16] = {0};
@@ -117,9 +142,12 @@ bool TelemetryClient::SendVehicleState(int state)
     packet.insert(packet.end(), steeringBytes, steeringBytes + 4);
 
     // Vehicle State (int32_t)
-    const int32_t stateVal = static_cast<int32_t>(state_);
-    const uint8_t *stateBytes = reinterpret_cast<const uint8_t *>(&stateVal);
-    packet.insert(packet.end(), stateBytes, stateBytes + 4);
+    for (int stateValue : states)
+    {
+        const int32_t stateVal = static_cast<int32_t>(stateValue);
+        const uint8_t *stateBytes = reinterpret_cast<const uint8_t *>(&stateVal);
+        packet.insert(packet.end(), stateBytes, stateBytes + 4);
+    }
 
     // Payload size: 0 (No image)
     const uint32_t payloadSize = 0;
@@ -148,10 +176,22 @@ bool TelemetryClient::SendFrameAndTelemetry(const cv::Mat &frame,
                                            int height,
                                            int quality)
 {
-    if (vehicleState >= 0)
-    {
-        state_ = vehicleState;
-    }
+    const std::array<int, 3> states = vehicleState >= 0
+        ? std::array<int, 3>{{vehicleState, 0, 0}}
+        : GetVehicleStates();
+    return SendFrameAndTelemetry(frame, speedCmPerSec, steeringDeg, states,
+                                 width, height, quality);
+}
+
+bool TelemetryClient::SendFrameAndTelemetry(const cv::Mat &frame,
+                                           float speedCmPerSec,
+                                           int steeringDeg,
+                                           const std::array<int, 3> &vehicleStates,
+                                           int width,
+                                           int height,
+                                           int quality)
+{
+    SetVehicleStates(vehicleStates);
 
     if (!initialized_ || socket_ < 0 || frame.empty())
         return false;
@@ -182,24 +222,24 @@ bool TelemetryClient::SendFrameAndTelemetry(const cv::Mat &frame,
         return false;
     }
 
-    // 3. Đóng gói Header (40 bytes) + JPEG body
-    // [0..3]:   "UCRC" (Magic Header)
+    // 3. Build UCR3 packet: 48-byte header + JPEG body
+    // [0..3]:   "UCR3" (Magic Header)
     // [4..19]:  car_id (16 bytes, null-padded)
     // [20..23]: sequence (uint32_t)
     // [24..27]: speedCmPerSec (float)
     // [28..31]: steeringDeg (int32_t)
-    // [32..35]: vehicleState (int32_t)
-    // [36..39]: payloadSize (uint32_t)
-    // [40..N]:  JPEG bytes
-    constexpr size_t HEADER_SIZE = 40;
+    // [32..43]: vehicleStates[3] (3 x int32_t)
+    // [44..47]: payloadSize (uint32_t)
+    // [48..N]:  JPEG bytes
+    constexpr size_t HEADER_SIZE = 48;
     std::vector<uint8_t> packet;
     packet.reserve(HEADER_SIZE + jpegBuffer.size());
 
-    // Magic Header: "UCRC"
+    // Magic Header: "UCR3"
     packet.push_back('U');
     packet.push_back('C');
     packet.push_back('R');
-    packet.push_back('C');
+    packet.push_back('3');
 
     // Car ID (16 bytes, null-padded)
     char idBuf[16] = {0};
@@ -221,9 +261,12 @@ bool TelemetryClient::SendFrameAndTelemetry(const cv::Mat &frame,
     packet.insert(packet.end(), steeringBytes, steeringBytes + 4);
 
     // Vehicle State (int32_t)
-    const int32_t stateVal = static_cast<int32_t>(state_);
-    const uint8_t *stateBytes = reinterpret_cast<const uint8_t *>(&stateVal);
-    packet.insert(packet.end(), stateBytes, stateBytes + 4);
+    for (int stateValue : vehicleStates)
+    {
+        const int32_t stateVal = static_cast<int32_t>(stateValue);
+        const uint8_t *stateBytes = reinterpret_cast<const uint8_t *>(&stateVal);
+        packet.insert(packet.end(), stateBytes, stateBytes + 4);
+    }
 
     // Payload size (uint32_t)
     const uint32_t payloadSize = static_cast<uint32_t>(jpegBuffer.size());

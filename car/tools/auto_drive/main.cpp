@@ -4,6 +4,7 @@
 #include "debug_fill.h"
 #include "tui_runtime.h"
 #include "control/Planner.h"
+#include "telemetry_state.h"
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
 #include "common/TelemetryClient.h"
 #endif
@@ -129,6 +130,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     std::atomic<int> yoloEvery{params->yolo_every_n};
     Mailbox<ControlInput> inputs;
     Mailbox<CommandStamped> commands;
+    static_assert(std::atomic<uint64_t>::is_always_lock_free,"Lenh telemetry phai khong khoa");
+    std::atomic<uint64_t> sentTelemetry{0};
+    std::atomic<bool> telemetryPlanActive{false};
     std::thread cameraThread,modelThread,controllerThread,telemetryThread;
     int code=0; std::string error;
     try {
@@ -313,34 +317,20 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             try {
                 common::TelemetryClient client(kTelemetryIp,kTelemetryPort,kTelemetryCarId);
                 const bool ready=client.Init();
+                CommandStamped latestCommand;
+                YoloResult yolo;
                 while (ready && !quit) {
                     const auto next=Clock::now()+std::chrono::milliseconds(kTelemetryPeriodMs);
                     Frame frame;
                     if (frames.latest(frame) && !frame.bgr.empty()) {
                         try {
-                            // Ảnh camera gốc (client BTC tự thu nhỏ, không sửa khung chung) + mã nhãn YOLO.
-                            int state=0;
-                            float bestConfidence=-1.0f;
-                            YoloResult yolo;
-                            if (detections.latest(yolo) && frame.captured_ms-yolo.detections.captured_ms<=500) {
-                                for (const auto& d:yolo.detections.items) {
-                                    // Chọn nhãn BTC từ hộp có độ tin cậy cao nhất; hòa thì giữ hộp đầu.
-                                    if (d.confidence>bestConfidence) {
-                                        bestConfidence=d.confidence;
-                                        state=0;
-                                        if (d.class_name=="green") state=1;
-                                        else if (d.class_name=="red") state=2;
-                                        else if (d.class_name=="work_barrier") state=3;
-                                        else if (d.class_name=="round_barrier") state=5;
-                                        else if (d.class_name=="right") state=7;
-                                        else if (d.class_name=="no_right") state=8;
-                                        else if (d.class_name=="left") state=9;
-                                        else if (d.class_name=="no_left") state=10;
-                                        else if (d.class_name=="parking") state=11;
-                                    }
-                                }
-                            }
-                            client.SendFrameAndTelemetry(frame.bgr,0.0f,0,state);
+                            // Chỉ đọc hộp thư có sẵn; nén/gửi ảnh nằm ngoài khóa và ngoài vòng an toàn.
+                            detections.latest(yolo); commands.latest(latestCommand);
+                            const auto sent=unpackTelemetryCommand(sentTelemetry.load(std::memory_order_relaxed));
+                            const auto plan=telemetryPlanActive.load(std::memory_order_relaxed)
+                                ? latestCommand.plan : control::Plan{};
+                            const auto states=telemetryStates(yolo.detections,frame.captured_ms,plan,sent);
+                            client.SendFrameAndTelemetry(frame.bgr,static_cast<float>(sent.cms),int(sent.deg),states);
                         } catch (...) {}
                     }
                     while (!quit && Clock::now()<next) ::poll(nullptr,0,2);
@@ -413,6 +403,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (key==' ') {
                     enabled=false; latch.clear(); reason="SPACE"; ++epoch; eventStop=true; forceLog=true;
                     if (!stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng Space");
+                    sentTelemetry.store(0,std::memory_order_relaxed); telemetryPlanActive=false;
                 } else if (key=='g' || key=='G') {
                     eventGo=true; forceLog=true;
                     if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
@@ -444,7 +435,10 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;
-                if (eventStop && !stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng trước đọc cảm biến");
+                if (eventStop) {
+                    if (!stopVehicle(motor,servo)) throw Failure(1,"Lỗi dừng trước đọc cảm biến");
+                    sentTelemetry.store(0,std::memory_order_relaxed); telemetryPlanActive=false;
+                }
                 sensor=SensorSample{};
                 for (int i=0;i<4;++i) sensor.tof[i]=lastTof[i];
                 const bool imuOk=imu.read(sensor);
@@ -507,6 +501,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 if (!motor.SetSpeedCms(static_cast<float>(speed))) throw Failure(1,"Lỗi gửi motor");
                 if (!servo.SetAngle(angle,parkSteer)) throw Failure(1,"Lỗi gửi servo");
             }
+            sentTelemetry.store(packTelemetryCommand(static_cast<float>(speed),angle),std::memory_order_relaxed);
+            telemetryPlanActive=enabled && commandFresh && commandMaskFresh && maskFresh && latch.empty();
             // Quét ô đỗ: đọc ToF SAU khi lệnh tốc độ 0 của bước này đã gửi (đọc I2C không được trễ lệnh dừng).
             if (enabled && !eventStop && speed==0 && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&
                 command.plan.reason=="DO_XE_QUET") tof.sample(lastTof);
@@ -619,6 +615,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     if (watchdog) { watchdog->cleanupCode=code; watchdog->cleanupAt=nowMs(); }
     // Dừng trước mọi join, ghi đĩa, đóng preview.
     const bool stopped=stopVehicle(motor,servo);
+    if (stopped) { sentTelemetry.store(0,std::memory_order_relaxed); telemetryPlanActive=false; }
     tui.stop();  // sau lệnh dừng: trả terminal; cảnh báo in SAU để khung cuối không xóa mất
     if (!stopped) { if (!code) code=1; warning(); }
     if (writer) {
