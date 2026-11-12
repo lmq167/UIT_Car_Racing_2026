@@ -278,25 +278,33 @@ struct DriveImu {
         if (!std::isfinite(bias)) throw Failure(1,"Độ trôi IMU không hữu hạn");
         // Kiểm độ trôi (Quân duyệt 12/11): log 12/11 có 3/6 phiên yaw trôi hằng số 50-85 °/s khi xe đứng yên (phiên tốt 0,1 °/s)
         // vì độ trôi đo lúc khởi tạo lệch so với tốc độ quay thật sau đó. Đo lại sau 1 s: hai lần phải khớp (<= 1 °/s) và nhỏ (<= 5 °/s),
-        // lệch thì đo lại tối đa 3 lần; vẫn lệch thì từ chối khởi động (xe chưa chạy, chưa bấm G).
+        // lệch thì đo lại tối đa 3 lần. KHÔNG bao giờ chặn khởi động (Quân 12/11: mã BTC vẫn khởi động được IMU): lỗi đọc hoặc vẫn lệch
+        // thì chỉ in cảnh báo và dùng kết quả đo gần nhất.
         {
             const double maxBias=5.0, maxDiff=1.0;
-            bool stable=false;
-            for (int attempt=0; attempt<3 && !stable; ++attempt) {
+            bool stable=false, readFailed=false;
+            for (int attempt=0; attempt<3 && !stable && !readFailed; ++attempt) {
                 ::poll(nullptr,0,1000);
                 double sum=0; int count=0;
                 const auto end=Clock::now()+std::chrono::milliseconds(drift);
                 do {
                     BNO055::Data data;
-                    { HardwareCall call(2); if (!device->read(data)) throw Failure(1,"Lỗi kiểm độ trôi IMU"); }
+                    bool ok;
+                    { HardwareCall call(2); ok=device->read(data); }
+                    if (!ok) { readFailed=true; break; }
                     sum+=Axis(data.gyroscopeDegPerSec); ++count;
                     ::poll(nullptr,0,10);
                 } while (Clock::now()<end);
+                if (readFailed || count==0) break;
                 const double again=sum/count;
                 stable=std::isfinite(again) && std::abs(again)<=maxBias && std::abs(again-bias)<=maxDiff;
-                bias=stable ? (bias+again)/2 : again;
+                if (std::isfinite(again)) bias=stable ? (bias+again)/2 : again;
             }
-            if (!stable) throw Failure(1,"IMU trôi bất thường khi đứng yên: giữ xe yên rồi mở lại chương trình");
+            if (!stable)
+                std::cerr<<"CANH BAO IMU: do troi chua on dinh (lan do cuoi "<<bias<<" do/giay)"
+                         <<(readFailed ? ", loi doc IMU khi kiem" : "")
+                         <<"; kiem yaw dung yen truoc khi bam G, neu yaw tu tang thi mo lai chuong trinh
+";
         }
         previous=Clock::now();
 #endif
