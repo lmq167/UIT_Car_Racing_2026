@@ -272,6 +272,53 @@ void T74(const std::string& name) {
             r.votes({"work_barrier"}); auto plan=r.junction();
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Hết phiếu rồi rào mới phải được rẽ");
         }
+        if (name=="no_repeat") {
+            // Giữ hướng IMU trên cầu (Planner kBridge*): chỉ trong vùng cầu sau lần rẽ rào thứ hai.
+            // Trong lúc kiểm vẫn gửi lô work_barrier để barrier_done_ giữ true (không sinh lần rẽ rào thứ ba).
+            Rig b; b.p.vote_min=std::max(b.p.vote_min,3);
+            auto narrow=[&b]() { b.mask(); b.in.mask.rowRange(0,52).setTo(0); };  // chỉ còn hàng y 52..59 = 2 hàng hợp lệ
+            auto go=[&b]() { b.in.odo_cm+=1; return b.send({"work_barrier"}); };
+            b.votes({"work_barrier"}); b.junction();
+            b.in.yaw_deg+=b.p.turn_yaw_deg; Lane(b.send({"work_barrier"}),"Cầu: rẽ rào lần 1 xong");
+            // (1) Mới rẽ rào một lần: hàng hợp lệ tụt thì KHÔNG giữ hướng.
+            b.mask(); for (int i=0;i<4;++i) Lane(go(),"Cầu: mặt nạ đầy đủ sau rẽ rào 1");
+            narrow();
+            for (int i=0;i<4;++i) {
+                const auto plan=go();
+                Expect(plan.state!=PlannerState::GIU_HUONG && plan.reason!="GIU_HUONG_CAU",plan,"Cầu (1): chưa rẽ rào lần 2 thì không giữ hướng");
+            }
+            b.mask(); for (int i=0;i<b.p.regain_frames+2;++i) go();
+            b.clear(); b.votes({"work_barrier"}); auto plan=b.junction();
+            Expect(plan.state==PlannerState::RE_TRAI,plan,"Cầu: thiết lập rẽ rào lần 2");
+            b.in.yaw_deg+=b.p.turn_yaw_deg; plan=b.send({"work_barrier"});
+            Expect(plan.state==PlannerState::BAM_LAN,plan,"Cầu: rẽ rào lần 2 xong");
+            // (2) Vài bước mặt nạ đầy đủ để ghi yaw tham chiếu, rồi mặt nạ chỉ còn dải đáy.
+            b.mask(); for (int i=0;i<5;++i) Lane(go(),"Cầu: mặt nạ đầy đủ ghi yaw");
+            const double ref=b.in.yaw_deg;
+            narrow(); b.in.yaw_deg=ref+10;
+            plan=go();
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="GIU_HUONG_CAU" && plan.cmd.deg<0,plan,"Cầu (2): yaw +10 phải giữ hướng, lái âm");
+            b.in.yaw_deg=ref-10; plan=go();
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="GIU_HUONG_CAU" && plan.cmd.deg>0,plan,"Cầu (2): yaw -10 phải giữ hướng, lái dương");
+            // (3) Mặt nạ đầy đủ trở lại: hết giữ hướng sau đúng vote_min mặt nạ mới.
+            b.in.yaw_deg=ref; b.mask();
+            for (int i=1;i<b.p.vote_min;++i) {
+                plan=go();
+                Expect(plan.state==PlannerState::GIU_HUONG,plan,"Cầu (3): chưa đủ vote_min mặt nạ mới thì còn giữ hướng");
+            }
+            plan=go();
+            Lane(plan,"Cầu (3): đủ vote_min mặt nạ đầy đủ trả BAM_LAN");
+            Expect(plan.reason!="GIU_HUONG_CAU",plan,"Cầu (3): hết giữ hướng");
+            // (4) Giữ hướng quá 80 cm odo thì thôi.
+            narrow(); plan=go();
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="GIU_HUONG_CAU",plan,"Cầu (4): bắt đầu giữ hướng lần nữa");
+            for (int i=0;i<79;++i) {
+                plan=go();
+                Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="GIU_HUONG_CAU",plan,"Cầu (4): trong 80 cm còn giữ hướng");
+            }
+            plan=go(); plan=go();
+            Expect(plan.state!=PlannerState::GIU_HUONG && plan.reason!="GIU_HUONG_CAU",plan,"Cầu (4): quá 80 cm thì thôi giữ hướng");
+        }
     } else if (name=="sign_priority") {
         Rig r; r.p.turn_start_cm=30; r.votes({"right"});
         Lane(r.votes({"work_barrier"}),"Biển armed thắng rào");

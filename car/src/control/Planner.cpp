@@ -439,7 +439,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(fallback && params.turn_enable && params.work_barrier_action && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_in_pass_ &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 && barriers>=params.vote_min) {
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_turn_=true;
-            if(++barrier_turns_==2) barrier2_odo_=input.odo_cm;
+            if(!barrier_counted_) { barrier_counted_=true; if(++barrier_turns_==2) barrier2_odo_=input.odo_cm; }  // mỗi lần thấy biển chỉ đếm một lần (rẽ bị hủy rồi chốt lại không đếm đôi)
             barrier_wide_turn_=barriers_wide*2>barriers;
         }
         if(fallback && params.turn_enable && rb_pending_ && !turn_direction_ && !rb_in_pass_ && !rb_holding_ &&
@@ -447,13 +447,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            std::abs(input.odo_cm-rb_after_odo_)>=(rb_pending_==1 ? params.rb_turn1_cm : params.rb_turn2_cm)) {
             turn_direction_=rb_pending_; arm_odo_=input.odo_cm; rb_pending_=0; rb_turn_=true;
         }
-        if(!barriers_seen) barrier_done_=false;
+        if(!barriers_seen) { barrier_done_=false; barrier_counted_=false; }
         // Rào gần đủ phiếu: rẽ trái ngay bằng máy rẽ IMU (vòng kín theo yaw), chốt quyết định tới hết rẽ.
         if(params.work_barrier_action && params.turn_enable && !turn_fault_ && !sensor_bad && !turn_direction_ && !barrier_done_ && !rb_holding_ && !rb_present &&
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min) {
             // Rào chỉ chốt ý định rẽ trái; thời điểm rẽ do mặt nạ xác nhận giao lộ (khối giao lộ bên dưới).
             turn_direction_=1; arm_odo_=input.odo_cm; barrier_done_=true; barrier_turn_=true; barrier_wide_turn_=barriers_wide*2>barriers;
-            if(++barrier_turns_==2) barrier2_odo_=input.odo_cm;
+            if(!barrier_counted_) { barrier_counted_=true; if(++barrier_turns_==2) barrier2_odo_=input.odo_cm; }
         }
         // Rào gần mà không rẽ được (lỗi cảm biến tạm hoặc IMU lỗi từ khởi động): dừng trước rào, không đi thẳng.
         // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
@@ -1052,7 +1052,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
         const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,-kRbArcSteerDeg));  // đổi góc không quá steer_rate_dps
-        if(angle<plan.cmd.deg) { plan.cmd.deg=angle; plan.debug.angle_deg=angle; }
+        if(angle<plan.cmd.deg) {
+            plan.cmd.deg=angle; plan.debug.angle_deg=angle;
+            plan.cmd.cms=std::min(plan.cmd.cms,std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle))));  // giảm tốc theo góc như GIU_HUONG
+            plan.debug.speed_cms=plan.cmd.cms;
+        }
     }
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
