@@ -1070,7 +1070,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double lim=return_block_cm_<kReturnHardCm ? 0.0 : kReturnLeftMaxDeg;
         if(plan.cmd.deg>lim) { plan.cmd.deg=lim; plan.debug.angle_deg=lim; }
     }
-    if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_losing_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
+    // Log l27 12/11 (16925, dòng 1088-1096): hộp đảo rời khung (VX_THOAT) khi cung phải mới quay 23°/57 cm; bỏ cung ở đó thì bám làn lái TRÁI +16° về phía đảo
+    // (mặt nạ lối ra tách mảnh, hành lang được chọn nằm bên trái). Cung phải giữ cả khi đang mất phiếu đảo, tới khi đủ kRbArcDeg/kRbArcMaxCm hoặc hết lần qua (rb_lost_cm).
+    if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
        result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
        WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)>=kRbArcDelayCm && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
