@@ -53,9 +53,9 @@ constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục l
 constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
 int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
-// Log 12/11: pha về làn phải (VE_PHAI) kết thúc quá sớm, xe chưa về làn đã bám làn đi tiếp và đâm vật 2. Quân 12/11: thêm 10 cm vào quãng
+// Log 12/11: pha về làn phải (VE_PHAI) kết thúc quá sớm, xe chưa về làn đã bám làn đi tiếp và đâm vật 2. Quân 12/11: thêm 10 cm, rồi 20 cm (xe chuyển bám làn quá sớm) vào quãng
 // tối thiểu của pha này (TẠM, CHƯA ĐO); không đổi lúc bắt đầu về làn (obstacle_pass_cm).
-constexpr double kReturnExtraCm=10;
+constexpr double kReturnExtraCm=20;
 // Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
 // tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
 // (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm so với lúc vật rời ảnh nên hở đuôi xe CHƯA ĐO, cần đo sa bàn).

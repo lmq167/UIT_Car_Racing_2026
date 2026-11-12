@@ -115,7 +115,7 @@ void PlannerObstacle() {
       const double cap=2*r.p.max_speed_cms*0.05;
       for(const std::string phase:{"NE_QUA","VE_PHAI"}) {
           double distance=0;
-          const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 10.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm kReturnExtraCm = 10 cm
+          const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 20.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm kReturnExtraCm = 20 cm
           do {
               r.in.odo_cm+=1000; distance+=cap;
               const auto plan=r.Step();
@@ -133,7 +133,7 @@ void PlannerObstacle() {
               if(n>=30) distance+=plan.cmd.cms*0.05;
               plan=r.Step();
               const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
-              const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 10.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm 10 cm
+              const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 20.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm 20 cm
               Check(plan.reason==(distance>=target ? next : phase),
                     "Encoder đứng 1500 ms phải dùng tích phân từng bước, không cộng bù quãng cũ");
               if(distance>=target) { finished=true; break; }
