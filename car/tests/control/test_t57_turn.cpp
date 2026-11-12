@@ -6,8 +6,8 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
-// Quân 12/11: pha VE_PHAI dài obstacle_pass_cm + 20 cm (Planner kReturnExtraCm).
-static constexpr double kReturnExtraCm = 20;
+// Quân 12/11: pha VE_PHAI dài obstacle_pass_cm + 30 cm (Planner kReturnExtraCm).
+static constexpr double kReturnExtraCm = 30;
 
 namespace {
 // Tốc độ rẽ IMU có chặn bởi trần cấu hình.
