@@ -139,6 +139,12 @@ void SwerveTests() {
           Check(plan.reason=="VE_PHAI" && plan.mode==TrajMode::RETURN_RIGHT,"Vật bên cạnh: vẫn trong pha về phải");
           Check(plan.cmd.deg<=0,"Vật còn bên cạnh trái xe: không được lái trái");
       }
+      // Log l20 12/11: hộp chỉ còn lát mỏng ở mép trái ảnh (vật đã sau vai xe) thì không chặn nữa, xe phải bám theo làn lệch trái.
+      r.beside_box=false; r.auto_box=false;
+      for(int n=0;n<60;++n) { r.in.detections={{},r.now+50,++r.frame}; r.in.detections.items.push_back({"obstacle",cv::Rect2f(0,400,100,200),0.9f,r.now+50}); plan=r.step(true); }
+      bool freed=false;
+      for(int n=0;n<40;++n) { r.in.detections={{},r.now+50,++r.frame}; r.in.detections.items.push_back({"obstacle",cv::Rect2f(0,400,100,200),0.9f,r.now+50}); plan=r.step(true); freed=freed || plan.cmd.deg>0; }
+      Check(freed && plan.reason=="VE_PHAI","Hộp chỉ còn lát mỏng ở mép ảnh: phải cho lái trái theo làn");
     }
     { Rig r; r.p.slow_per_deg=0; const double normal_cms=r.step().cmd.cms;
       Check(normal_cms>8.0,"Thiết lập tốc độ thường phải cao hơn tốc độ né");

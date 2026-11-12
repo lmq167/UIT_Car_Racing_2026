@@ -60,6 +60,9 @@ constexpr double kReturnExtraCm=30;
 // Còn thấy hộp vật có tâm <= kReturnBesideMaxCx và đáy >= kReturnBesideY2 thì chưa hết pha; hết pha sau khi đi thêm kReturnClearCm (Quân 12/11: 20 -> 30 -> 50 cm: hộp YOLO biến mất khi vật đã ngang xe, thân vật dài ~50 cm còn cạnh xe)
 // kể từ lần cuối thấy (hoặc đủ kReturnCapFactor·obstacle_pass_cm). TẠM, CHƯA ĐO trên sa bàn.
 constexpr double kReturnClearCm=50, kReturnBesideMaxCx=0.40, kReturnBesideY2=0.70;
+// Chặn lái trái trong pha về phải chỉ khi hộp vật bên cạnh còn lấn vào ảnh (mép phải hộp >= kReturnBlockMinX2) và trong kReturnBlockCm sau lần cuối thấy.
+// Log l20 12/11: chặn theo kReturnClearCm (50 cm, kể cả khi hộp chỉ còn lát mỏng ở mép ảnh) làm xe chạy thẳng 60 cm, e -0,85, ra khỏi đường. TẠM, CHƯA ĐO.
+constexpr double kReturnBlockMinX2=0.15, kReturnBlockCm=15;
 // Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
 // tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
 // (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm so với lúc vật rời ảnh nên hở đuôi xe CHƯA ĐO, cần đo sa bàn).
@@ -533,7 +536,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     swerve_odo_=input.odo_cm; swerve_odo_valid_=!sensor_bad;
     if(swerve_==Swerve::PASS) pass_cm_+=distance;
-    if(return_cm_>=0) { return_cm_+=distance; return_clear_cm_+=distance; }
+    if(return_cm_>=0) { return_cm_+=distance; return_clear_cm_+=distance; return_block_cm_+=distance; }
     // Về làn phải: tối thiểu obstacle_pass_cm + kReturnExtraCm, rồi chờ sai số nhỏ hoặc đủ 5 lần quãng.
     if(return_cm_>=params.obstacle_pass_cm+kReturnExtraCm &&
        (return_cm_>=kReturnCapFactor*params.obstacle_pass_cm ||
@@ -542,7 +545,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
         bool present=false, present_left=false;
         if(input.yolo_enabled && fresh && new_obstacle_batch) {
-            bool obstacle=false, ahead_close=false, ahead_stop=false, beside=false;
+            bool obstacle=false, ahead_close=false, ahead_stop=false, beside=false, intrude=false;
             double widest=0, widest_right=0;
             for(const auto &d:batch.items) {
                 const auto &b=d.box;
@@ -554,6 +557,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 widest=std::max(widest,double(b.width)/1280.0);
                 const double cx=(double(b.x)+b.width/2)/1280.0;
                 beside=beside || (cx<=kReturnBesideMaxCx && (double(b.y)+b.height)/720.0>=kReturnBesideY2);
+                intrude=intrude || (cx<=kReturnBesideMaxCx && (double(b.y)+b.height)/720.0>=kReturnBesideY2 && (double(b.x)+b.width)/1280.0>=kReturnBlockMinX2);
                 if(cx>=kHoldRightCx) widest_right=std::max(widest_right,double(b.width)/1280.0);
                 const bool ahead=cx>=kPassAheadMinCx && cx<=kPassAheadMaxCx && b.width/1280.0>=params.obstacle_near_w_frac;
                 ahead_close=ahead_close || (ahead && (double(b.y)+b.height)/720.0>=kPassAheadY2);
@@ -561,6 +565,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 obstacle=obstacle || (b.width/1280.0>=params.obstacle_near_w_frac &&
                     (double(b.x)+b.width/2)/1280.0>=kObstacleRightLaneCx);
             }
+            if(return_cm_>=0 && intrude) return_block_cm_=0;
             if(return_cm_>=0 && beside) return_clear_cm_=0;  // vật còn bên cạnh trái xe: chưa hết pha về làn
             // Pha trái chỉ giữ bởi vật còn lớn so với vật đang né: log 10/11 18:01 vật thứ hai ở xa (nhỏ) làm pha trái
             // kéo dài 44 s / 223 cm, không bao giờ qua NE_QUA/VE_PHAI.
@@ -667,7 +672,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(swerve_==Swerve::PASS && pass_cm_>=params.obstacle_pass_cm) {
         swerve_=Swerve::NONE; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
-        lane_.Reset(); return_cm_=0; return_e_=1; swerve_used_=true; return_clear_cm_=kReturnClearCm;
+        lane_.Reset(); return_cm_=0; return_e_=1; swerve_used_=true; return_clear_cm_=kReturnClearCm; return_block_cm_=kReturnBlockCm;
     }
     // Phiếu giao lộ độc lập với phiếu vật cản, chỉ thêm một lần cho mỗi mask mới.
     // Theo dõi cạnh thật cả trước khi chốt ý định (rào 2: cạnh trái đã mở ngay lúc chốt, log 09/11 sáng 65 s).
@@ -1025,8 +1030,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Log 12/11 (l14, l17, l19): trong pha về làn phải, khi vật còn bên cạnh trái xe, bộ bám làn bẻ TRÁI (+5..+12°) vì e ở hàng nhìn xa ≈ 0
-    // và xe quay đầu về phía vật rồi va. Chưa qua kReturnClearCm kể từ lần cuối thấy vật bên cạnh thì không cho lái trái (chỉ thẳng hoặc phải).
-    if(returning && return_clear_cm_<kReturnClearCm && plan.cmd.deg>0) { plan.cmd.deg=0; plan.debug.angle_deg=0; }
+    // và xe quay đầu về phía vật rồi va. Chưa qua kReturnBlockCm kể từ lần cuối hộp vật bên cạnh còn lấn vào ảnh thì không cho lái trái (chỉ thẳng hoặc phải).
+    if(returning && return_block_cm_<kReturnBlockCm && plan.cmd.deg>0) { plan.cmd.deg=0; plan.debug.angle_deg=0; }
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
     const bool was_holding=rb_holding_;
