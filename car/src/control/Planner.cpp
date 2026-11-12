@@ -1019,6 +1019,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode,turn_direction_==0);
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
+    // Log 12/11 (l14, l17, l19): trong pha về làn phải, khi vật còn bên cạnh trái xe, bộ bám làn bẻ TRÁI (+5..+12°) vì e ở hàng nhìn xa ≈ 0
+    // và xe quay đầu về phía vật rồi va. Chưa qua kReturnClearCm kể từ lần cuối thấy vật bên cạnh thì không cho lái trái (chỉ thẳng hoặc phải).
+    if(returning && return_clear_cm_<kReturnClearCm && plan.cmd.deg>0) { plan.cmd.deg=0; plan.debug.angle_deg=0; }
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
     // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
     const bool was_holding=rb_holding_;

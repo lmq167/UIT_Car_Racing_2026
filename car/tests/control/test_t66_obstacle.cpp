@@ -23,6 +23,7 @@ struct Rig {
     int64_t now=1000;
     uint64_t frame=0;
     bool auto_box=true; // Các ca cũ giữ hình học mask, bổ sung nguồn hộp độc lập ở ca T85.
+    bool beside_box=false; // Thêm hộp vật nằm bên cạnh trái xe (tâm 0,2, đáy 0,83) cho ca pha về phải.
     Rig() {
         p.obstacle_action=1; p.start_wait_green=0;
         p.avoid_min_width_ratio=0.4;
@@ -36,6 +37,7 @@ struct Rig {
             in.detections={{},now,++frame};
             if(in.mask.at<unsigned char>(70,100)==0 && cv::countNonZero(in.mask)>0)
                 in.detections.items.push_back({"obstacle",cv::Rect2f(600,100,128,100),0.9f,now});
+            if(beside_box) in.detections.items.push_back({"obstacle",cv::Rect2f(192,400,128,200),0.9f,now});
         }
         return planner.Step(in,now,p);
     }
@@ -121,6 +123,23 @@ void Params(const char *yaml, const char *temporary) {
     }
 }
 void SwerveTests() {
+    // Log 12/11: pha về phải không được lái TRÁI khi vật còn bên cạnh trái xe (bộ bám làn đòi lái trái vì làn lệch trái).
+    { Rig r; r.p.slow_per_deg=0; auto plan=r.pass();
+      for(int n=0;n<1000 && plan.reason!="VE_PHAI";++n) plan=r.step();
+      Check(plan.reason=="VE_PHAI","Thiết lập pha về phải");
+      cv::Mat shifted(100,200,CV_8UC1,cv::Scalar(0));
+      shifted.colRange(20,141).setTo(1); shifted.col(20).setTo(2); shifted.col(140).setTo(2);
+      r.in.mask=shifted;
+      bool left_steer=false;
+      for(int n=0;n<20;++n) { plan=r.step(); left_steer=left_steer || plan.cmd.deg>0; }
+      Check(left_steer && plan.reason=="VE_PHAI","Không có vật bên cạnh: về phải vẫn cho lái trái khi làn lệch trái");
+      r.beside_box=true;
+      for(int n=0;n<20;++n) {
+          plan=r.step();
+          Check(plan.reason=="VE_PHAI" && plan.mode==TrajMode::RETURN_RIGHT,"Vật bên cạnh: vẫn trong pha về phải");
+          Check(plan.cmd.deg<=0,"Vật còn bên cạnh trái xe: không được lái trái");
+      }
+    }
     { Rig r; r.p.slow_per_deg=0; const double normal_cms=r.step().cmd.cms;
       Check(normal_cms>8.0,"Thiết lập tốc độ thường phải cao hơn tốc độ né");
       auto plan=r.pass(); double distance=0;
