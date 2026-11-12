@@ -3,7 +3,11 @@
 #include "hardware/Motor.h"
 #ifdef UCR_FAKE_HW
 #include "app/FakeHardware.h"
+#else
+#include "hardware/Servo.h"
 #endif
+#include <atomic>
+#include <climits>
 #include <cstdlib>
 #include <csignal>
 #include <exception>
@@ -16,6 +20,8 @@
 #include <unistd.h>
 namespace {
 volatile std::sig_atomic_t stopped=0;
+// Góc trim servo cho handler kết thúc bất thường; INT_MIN = chưa nạp cấu hình (chưa mở thiết bị).
+std::atomic<int> terminateTrim{INT_MIN};
 void Signal(int value) { stopped=value; }
 }
 int main(int argc,char **argv) {
@@ -33,14 +39,23 @@ int main(int argc,char **argv) {
             return 0;
         } catch(const std::exception &e) { std::cerr<<e.what()<<'\n'; return 2; }
     }
-    // Kết thúc bất thường: gửi đúng một lệnh dừng motor (N1 v0, mở cổng không chặn, không lệnh cấu hình)
-    // rồi trả mã 134. Lỗi mở/ghi cổng bị nuốt để handler không treo.
+    // Kết thúc bất thường: gửi đúng một lệnh dừng motor (N1 v0, mở cổng không chặn, không lệnh cấu hình),
+    // rồi một lệnh servo về trim (khi đã nạp cấu hình), rồi trả mã 134. Lỗi thiết bị bị nuốt; motor luôn trước servo.
     std::set_terminate([]{
+        const int trim=terminateTrim.load();
         try {
 #ifdef UCR_FAKE_HW
             app::fake::TraceNumber("motor_speed",0);
 #else
             Motor().EmergencyStop();
+#endif
+        } catch(...) {}
+        if(trim!=INT_MIN) try {
+#ifdef UCR_FAKE_HW
+            app::fake::TraceNumber("servo_angle",trim);
+#else
+            Servo servo;
+            if(servo.Init() && servo.SetPWMFreq(50)) servo.SetAngle(static_cast<int16_t>(trim));
 #endif
         } catch(...) {}
         std::_Exit(134);
@@ -105,6 +120,7 @@ int main(int argc,char **argv) {
             throw std::runtime_error("Không chạy được scripts/env_check.sh bằng bash");
         }
         common::Config config; config.Load(path);
+        terminateTrim=config.servo_trim_deg;
         app::App application(config,mode,path,step,calib_drop_after);
         application.Init();
         if(!stopped) application.Start();
