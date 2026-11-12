@@ -276,6 +276,28 @@ struct DriveImu {
             bias=sum/count;
         }
         if (!std::isfinite(bias)) throw Failure(1,"Độ trôi IMU không hữu hạn");
+        // Kiểm độ trôi (Quân duyệt 12/11): log 12/11 có 3/6 phiên yaw trôi hằng số 50-85 °/s khi xe đứng yên (phiên tốt 0,1 °/s)
+        // vì độ trôi đo lúc khởi tạo lệch so với tốc độ quay thật sau đó. Đo lại sau 1 s: hai lần phải khớp (<= 1 °/s) và nhỏ (<= 5 °/s),
+        // lệch thì đo lại tối đa 3 lần; vẫn lệch thì từ chối khởi động (xe chưa chạy, chưa bấm G).
+        {
+            const double maxBias=5.0, maxDiff=1.0;
+            bool stable=false;
+            for (int attempt=0; attempt<3 && !stable; ++attempt) {
+                ::poll(nullptr,0,1000);
+                double sum=0; int count=0;
+                const auto end=Clock::now()+std::chrono::milliseconds(drift);
+                do {
+                    BNO055::Data data;
+                    { HardwareCall call(2); if (!device->read(data)) throw Failure(1,"Lỗi kiểm độ trôi IMU"); }
+                    sum+=Axis(data.gyroscopeDegPerSec); ++count;
+                    ::poll(nullptr,0,10);
+                } while (Clock::now()<end);
+                const double again=sum/count;
+                stable=std::isfinite(again) && std::abs(again)<=maxBias && std::abs(again-bias)<=maxDiff;
+                bias=stable ? (bias+again)/2 : again;
+            }
+            if (!stable) throw Failure(1,"IMU trôi bất thường khi đứng yên: giữ xe yên rồi mở lại chương trình");
+        }
         previous=Clock::now();
 #endif
         initialized=true;
