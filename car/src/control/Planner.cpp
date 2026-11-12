@@ -48,7 +48,9 @@ constexpr double kRightTurnYawFactor=0.92;
 constexpr int kRouteSteps=8;
 constexpr int kRouteHeading[kRouteSteps]={0,-1,0,1,2,1,0,-1};
 constexpr double kRbHoldAlignDeg=40;   // TẠM, CHƯA ĐO: lần qua mở sau G-sau-Space vẫn giữ hướng nếu yaw lệch trục lộ trình không quá từng này
-constexpr double kRouteAxisDeg=30;     // TẠM, CHƯA ĐO: cách trục <= 30° mới coi là đang theo trục đó
+// Log l27 12/11 (16488): cua L kết thúc bằng hạn 11 s mới quay 70,4° (đích 73,6°) và neo lộ trình lấy yaw lúc bắt đầu cua - 90° nên yaw thực sau VX1 chỉ cách trục c1
+// 13,2° trong khi cửa là 13,0°: thiếu 0,24° nên không bao giờ nhận c1, không đặt ý định rẽ trái ở hai ngã T. Nới 30 -> 38° (< 45° để hai trục kề nhau không chồng).
+constexpr double kRouteAxisDeg=38;     // TẠM, CHƯA ĐO: cách trục <= 38° mới coi là đang theo trục đó
 constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục liên tục từng này mới tính hướng ổn định
 constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
 int Mod4(int q) { return ((q%4)+4)%4; }
@@ -100,6 +102,8 @@ constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
 // kRbArcDeg hoặc đi kRbArcMaxCm kể từ lúc vào; sau đó bám làn như cũ. Mất làn trong lần qua thì GIU_HUONG giữ hướng RA (yaw vào - kRbArcDeg), không kéo
 // xe về hướng vào (log l19 123 s, l25 95 s: GIU_HUONG bẻ trái +26° hủy cung phải). TẠM, CHƯA ĐO.
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
+// Log l27 12/11: Quân báo xe rẽ phải ở vòng xuyến 1 hơi SỚM. Cung phải chỉ bắt đầu sau khi đã đi kRbArcDelayCm kể từ lúc mở lần qua. TẠM, CHƯA ĐO.
+constexpr double kRbArcDelayCm=15;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
 // Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
 // giữ hướng bằng IMU theo hướng lúc mất làn (cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua). TẠM, CHƯA ĐO.
@@ -847,7 +851,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
         }
         // Có ý định rẽ trong lúc tiến (biển/lộ trình): bỏ đỗ, để rẽ chạy như thường (review MEDIUM-2).
-        if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || turn_direction_ || sensor_bad ||
+        // Log l27 12/11 (16656, dòng 4497): MỘT mẫu odo trống lúc đang tiến dò mép hủy đỗ ngầm, xe quay về bám làn và chạy thẳng. Mẫu hỏng ngắn hơn
+        // kSensorGlitchMs không hủy pha tiến (quãng không tăng khi odo không hữu hạn nên pha vẫn chờ); hỏng từ kSensorGlitchMs vẫn hủy như cũ.
+        const bool park_tien_bad=sensor_bad && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
+        if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || turn_direction_ || park_tien_bad ||
                                             rb_in_pass_ || rb_holding_)) { park_phase_=ParkPhase::NONE; park_fixed_=false; }
         if(park_phase_==ParkPhase::TIEN && park_fixed_) {
             if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) park_fixed_ms0_+=now_ms-command_ms_;  // đứng vì người không tính
@@ -1059,7 +1066,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_losing_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
        result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
-       WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
+       WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)>=kRbArcDelayCm && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
         const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,-kRbArcSteerDeg));  // đổi góc không quá steer_rate_dps
         if(angle<plan.cmd.deg) {
