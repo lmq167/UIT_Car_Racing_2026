@@ -2098,6 +2098,16 @@ def test_case(case, cfg, root):
                 if error.tag != 'setup' or attempt == 2:
                     raise
                 print('THỬ LẠI THIẾT LẬP {} ({}/3): {}'.format(case, attempt + 1, error), file=sys.stderr)
+    if case == 'A28' and cfg is not None:
+        # Tiền đề A28 đòi 2 dòng CSV cuối không rơi; bộ ghi log cố ý bỏ dòng khi tranh khóa (try_lock, vòng
+        # điều khiển không chờ), nên chỉ thử lại khi lỗi THIẾT LẬP; lỗi hành vi vẫn hỏng ngay.
+        for attempt in range(3):
+            try:
+                return test_case('A28_lan', cfg, root / str(attempt))
+            except Failure as error:
+                if error.tag != 'setup' or attempt == 2:
+                    raise
+                print('THỬ LẠI THIẾT LẬP {} ({}/3): {}'.format(case, attempt + 1, error), file=sys.stderr)
     if case in T73_ADDED_CASES:
         return t73_add_case(case, cfg, root)
     if case.startswith('t62_'):
@@ -2647,7 +2657,7 @@ def test_case(case, cfg, root):
             test_case(probe, cfg, root / probe)
         return
     # A28 — L3: phân đoạn theo thời gian gốc, không cộng S vào hold/stop/regain.
-    if case == 'A28':
+    if case in ('A28', 'A28_lan'):
         values = dict(lost_hold_ms=500, lost_stop_ms=1400, regain_frames=3, slow_per_deg=0,
                       min_cms=0, kd=0, control_period_ms=20)
         with running(cfg, root, values=values, schedule=((1, 'left'), (120, 'empty'), (300, 'right'))) as r:
