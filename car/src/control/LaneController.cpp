@@ -11,7 +11,7 @@ constexpr double kNoRealEdgePenalty=0.1; // TẠM, CHƯA ĐO: hai biên không t
 constexpr double kMergeFactor=1.5;   // TẠM, CHƯA ĐO: gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
 constexpr double kMinWidthRatio=0.6; // TẠM, CHƯA ĐO: bề rộng dưới 0,6·w(y) là bất thường
 constexpr double kRightLaneFrac=0.25, kLeftLaneFrac=0.75;  // tâm làn phải/trái của đường hai làn
-constexpr double kReturnKpScale=2.0;  // TẠM, CHƯA ĐO: độ lợi P khi về làn phải sau né (mô hình xe: dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°). Quân 12/11: 1,5 -> 2,0 vì lượt chạy sa bàn trả làn chưa đủ mạnh (lái chỉ -10..-16° ở e 0,2-0,3)
+constexpr double kReturnKpScale=3.5;  // TẠM, CHƯA ĐO: độ lợi P khi về làn phải sau né (mô hình xe: dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°). Quân 12/11: 1,5 -> 2,0 -> 3,5 vì sa bàn trả làn vẫn chưa đủ mạnh (lái chỉ -10..-16° ở e 0,2-0,3 với 1,5); 35·3,5·0,3 ≈ 37°, chặn bởi steer_max_deg
 const char *const kThat="THAT";
 const char *const kEdge="MEP_ANH";
 const char *const kJump="NHAY";
