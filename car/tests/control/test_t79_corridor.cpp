@@ -115,13 +115,14 @@ void PlannerObstacle() {
       const double cap=2*r.p.max_speed_cms*0.05;
       for(const std::string phase:{"NE_QUA","VE_PHAI"}) {
           double distance=0;
+          const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 10.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm kReturnExtraCm = 10 cm
           do {
               r.in.odo_cm+=1000; distance+=cap;
               const auto plan=r.Step();
               const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
-              Check(plan.reason==(distance>=r.p.obstacle_pass_cm ? next : phase),
+              Check(plan.reason==(distance>=target ? next : phase),
                     "Encoder nhảy lớn chỉ được cộng tối đa 2*max_speed_cms*dt mỗi bước");
-          } while(distance<r.p.obstacle_pass_cm);
+          } while(distance<target);
       } }
     { ObstacleRig r; auto plan=r.Pass();
       for(const std::string phase:{"NE_QUA","VE_PHAI"}) {
@@ -132,9 +133,10 @@ void PlannerObstacle() {
               if(n>=30) distance+=plan.cmd.cms*0.05;
               plan=r.Step();
               const std::string next=phase=="NE_QUA" ? "VE_PHAI" : "BAM_LAN";
-              Check(plan.reason==(distance>=r.p.obstacle_pass_cm ? next : phase),
+              const double target=r.p.obstacle_pass_cm+(phase=="VE_PHAI" ? 10.0 : 0.0);  // Quân 12/11: VE_PHAI dài thêm 10 cm
+              Check(plan.reason==(distance>=target ? next : phase),
                     "Encoder đứng 1500 ms phải dùng tích phân từng bước, không cộng bù quãng cũ");
-              if(distance>=r.p.obstacle_pass_cm) { finished=true; break; }
+              if(distance>=target) { finished=true; break; }
           }
           Check(finished,"Encoder đứng yên phải kết thúc pha nhờ tích phân lệnh");
       } }

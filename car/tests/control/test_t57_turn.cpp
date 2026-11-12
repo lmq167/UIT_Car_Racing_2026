@@ -6,6 +6,8 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+// Quân 12/11: pha VE_PHAI dài obstacle_pass_cm + 10 cm (Planner kReturnExtraCm).
+static constexpr double kReturnExtraCm = 10;
 
 namespace {
 // Tốc độ rẽ IMU có chặn bởi trần cấu hình.
@@ -314,16 +316,16 @@ void Case(const std::string& name) {
             for (double fraction:{0.0,0.5}) {
                 Rig r; r.p.obstacle_pass_cm=90; r.p.turn_arm_cm=200;
                 auto plan=returning(r); double distance=0; int votes=0;
-                for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm;++i) {
+                for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm+kReturnExtraCm;++i) {
                     const bool sign=distance>=fraction*r.p.obstacle_pass_cm;
                     tick(r,plan,distance,sign); if (sign) ++votes;
-                    if (distance+1e-9<r.p.obstacle_pass_cm)
+                    if (distance+1e-9<r.p.obstacle_pass_cm+kReturnExtraCm)
                         Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
                               plan.mode==control::TrajMode::RETURN_RIGHT,
                               "Biển ở đầu/giữa VE_PHAI phải chờ hết quãng; nhận "+plan.reason+
                               " state="+control::StateName(plan.state)+" quãng="+std::to_string(distance));
                 }
-                Check(votes>=r.p.vote_min && distance+1e-9>=r.p.obstacle_pass_cm,
+                Check(votes>=r.p.vote_min && distance+1e-9>=r.p.obstacle_pass_cm+kReturnExtraCm,
                       "Thiết lập biển phải đủ phiếu và hoàn tất quãng VE_PHAI");
                 plan=r.junction();
                 // Hết VE_PHAI, đủ phiếu giao lộ mới rẽ dù biển còn trong ảnh.
@@ -331,8 +333,8 @@ void Case(const std::string& name) {
                       "Hết VE_PHAI, đủ phiếu giao lộ phải rẽ; nhận "+plan.reason);
             }
             Rig fresh; auto plan=returning(fresh); double distance=0;
-            for (int i=0;i<1000 && distance+1e-9<fresh.p.obstacle_pass_cm;++i) tick(fresh,plan,distance);
-            Check(distance+1e-9>=fresh.p.obstacle_pass_cm && plan.state==control::PlannerState::BAM_LAN,
+            for (int i=0;i<1000 && distance+1e-9<fresh.p.obstacle_pass_cm+kReturnExtraCm;++i) tick(fresh,plan,distance);
+            Check(distance+1e-9>=fresh.p.obstacle_pass_cm+kReturnExtraCm && plan.state==control::PlannerState::BAM_LAN,
                   "Không biển trong VE_PHAI phải trở về bám làn");
             fresh.arm();
             Check(fresh.advance(fresh.p.turn_start_cm-1).state==control::PlannerState::BAM_LAN,
@@ -342,16 +344,16 @@ void Case(const std::string& name) {
         } else if (name=="q8_speed_min") {
             Rig r; r.p.cruise_cms=5; r.p.approach_cms=6;
             auto plan=returning(r); double distance=0;
-            for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm;++i) {
+            for (int i=0;i<1000 && distance+1e-9<r.p.obstacle_pass_cm+kReturnExtraCm;++i) {
                 Check(plan.state==control::PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
                       plan.mode==control::TrajMode::RETURN_RIGHT && plan.cmd.cms==r.p.cruise_cms &&
                       plan.debug.speed_cms==plan.cmd.cms,
                       "VE_PHAI phải giữ cruise_cms=5 khi approach_cms=6, không tăng tốc");
                 tick(r,plan,distance);
             }
-            Check(distance+1e-9>=r.p.obstacle_pass_cm && plan.reason=="BAM_LAN",
+            Check(distance+1e-9>=r.p.obstacle_pass_cm+kReturnExtraCm && plan.reason=="BAM_LAN",
                   "Cruise thấp vẫn phải hoàn tất đủ quãng VE_PHAI; nhận "+plan.reason+
-                  " quãng="+std::to_string(distance)+" đích="+std::to_string(r.p.obstacle_pass_cm));
+                  " quãng="+std::to_string(distance)+" đích="+std::to_string(r.p.obstacle_pass_cm+kReturnExtraCm));
         } else if (name=="q8_space_in_ve_phai") {
             Rig r; auto plan=returning(r); double distance=0;
             for (int i=0;i<1000 && distance<r.p.obstacle_pass_cm/2;++i) tick(r,plan,distance);
@@ -379,19 +381,20 @@ void Case(const std::string& name) {
             for (double cm:{45.0,90.0}) {
                 Rig r; r.p.obstacle_pass_cm=cm;
                 auto plan=returning(r); double distance=0, last_cm=0;
-                for (int i=0;i<1000 && distance+1e-9<cm;++i) {
+                const double target=cm+kReturnExtraCm;
+                for (int i=0;i<1000 && distance+1e-9<target;++i) {
                     last_cm=plan.cmd.cms*0.1;
                     tick(r,plan,distance);
-                    Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==(distance+1e-9<cm?control::TrajMode::RETURN_RIGHT:control::TrajMode::LANE) &&
-                          plan.reason==(distance+1e-9<cm?"VE_PHAI":"BAM_LAN"),
-                          "VE_PHAI phải kết thúc đúng obstacle_pass_cm, không dùng quãng cố định");
+                    Check(plan.state==control::PlannerState::BAM_LAN && plan.mode==(distance+1e-9<target?control::TrajMode::RETURN_RIGHT:control::TrajMode::LANE) &&
+                          plan.reason==(distance+1e-9<target?"VE_PHAI":"BAM_LAN"),
+                          "VE_PHAI phải kết thúc đúng obstacle_pass_cm + kReturnExtraCm, không dùng quãng cố định");
                 }
-                Check(distance+1e-9>=cm && distance<cm+last_cm+1e-9,"Sai quãng VE_PHAI theo bước mô phỏng");
+                Check(distance+1e-9>=target && distance<target+last_cm+1e-9,"Sai quãng VE_PHAI theo bước mô phỏng");
                 measured[index++]=distance;
                 std::cout<<"Q8 obstacle_pass_cm="<<cm<<" VE_PHAI_cm="<<distance<<'\n';
             }
-            Check(std::abs(measured[1]-2*measured[0])<1,
-                  "obstacle_pass_cm 90 phải cho quãng VE_PHAI gấp đôi 45 trong sai số một bước");
+            Check(std::abs((measured[1]-measured[0])-45)<1,
+                  "obstacle_pass_cm 90 phải cho quãng VE_PHAI dài hơn 45 đúng 45 cm (cả hai cộng kReturnExtraCm) trong sai số một bước");
         } else {
             Rig r; auto plan=returning(r);
             control::LaneController expected;
@@ -682,6 +685,29 @@ void Case(const std::string& name) {
             Rig r; control::Plan plan=to_scan(r,-1); tf=tr=600;
             for (int i=0;i<4000 && plan.state!=control::PlannerState::DUNG;++i) { r.in.odo_cm+=0.5; plan=tick(r,50); Check(plan.cmd.cms>=0,"Không thấy mép không được lùi"); }
             Check(plan.state==control::PlannerState::DUNG && plan.reason=="DO_XE_KHONG_THAY_CUOI_DUONG" && r.planner.ParkNote().find("O_CO_DINH")!=std::string::npos,"Không thấy mép xa: chuyển ô cố định");
+        }
+        // Quân 12/11 (đo ToF): <= 250 mm có vật; > 500 mm hoặc invalid = trống; 250..500 mm mơ hồ.
+        for (int mm:{300,450}) { // vùng mơ hồ: không coi là ô trống, không lùi
+            Rig r; control::Plan plan=to_scan(r,-1); tf=tr=mm;
+            for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);
+            Check(plan.reason!="DO_XE_CHO" && plan.cmd.cms>=0 && r.planner.ParkNote().find("KHONG_RO")!=std::string::npos,
+                  "ToF "+std::to_string(mm)+" mm là mơ hồ: ghi KHONG_RO, không vào ô trống, không lùi; note="+r.planner.ParkNote());
+        }
+        { // Đúng 250 mm vẫn là có vật; 251 mm là mơ hồ (không phải có vật cũng không phải trống).
+            Rig r; control::Plan plan=to_scan(r,-1); tf=tr=250;
+            for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);
+            Check(r.planner.ParkNote().find("CO_VAT")!=std::string::npos,"250 mm phải là CO_VAT; note="+r.planner.ParkNote());
+            Rig q; control::Plan p2=to_scan(q,-1); tf=tr=251;
+            for (int i=0;i<30 && p2.reason=="DO_XE_QUET";++i) p2=tick(q,50);
+            Check(q.planner.ParkNote().find("KHONG_RO")!=std::string::npos,"251 mm phải là KHONG_RO; note="+q.planner.ParkNote());
+        }
+        { // 501 mm là trống; ToF invalid (cảm biến chạy, không thấy vật) cũng là trống.
+            for (int mm:{501,-1}) {
+                Rig r; control::Plan plan=to_scan(r,-1); tf=tr=mm;
+                for (int i=0;i<30 && plan.reason=="DO_XE_QUET";++i) plan=tick(r,50);
+                Check(r.planner.ParkNote().find("gop=TRONG")!=std::string::npos && plan.cmd.cms>=0,
+                      "ToF "+std::to_string(mm)+" phải là TRONG; note="+r.planner.ParkNote());
+            }
         }
         { // Ô bên trái dùng khe [1] trước, [0] sau.
             Rig r; control::Plan plan=to_scan(r,1);

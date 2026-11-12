@@ -53,6 +53,9 @@ constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục l
 constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
 int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
+// Log 12/11: pha về làn phải (VE_PHAI) kết thúc quá sớm, xe chưa về làn đã bám làn đi tiếp và đâm vật 2. Quân 12/11: thêm 10 cm vào quãng
+// tối thiểu của pha này (TẠM, CHƯA ĐO); không đổi lúc bắt đầu về làn (obstacle_pass_cm).
+constexpr double kReturnExtraCm=10;
 // Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
 // tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
 // (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm so với lúc vật rời ảnh nên hở đuôi xe CHƯA ĐO, cần đo sa bàn).
@@ -82,7 +85,9 @@ constexpr int kLOpenRows=3;
 constexpr double kParkSignMinW=0.05, kParkYawDoneDeg=3, kParkPhaseMaxCm=80;
 constexpr int64_t kParkWaitMs=600, kParkPhaseMaxMs=15000, kParkStallMs=2000;
 // Quét ô ToF khi xe đứng (Quân duyệt 11/11). TẠM, CHƯA ĐO: bước, ngưỡng vật, thời gian chờ mẫu.
-constexpr double kParkStepCm=50, kParkCreepCm=10, kParkPastCm=10, kParkOccMm=400, kParkMaxScanCm=400, kParkMaxCreepCm=80;
+// Quân 12/11 (đã đo ToF trên xe): <= 250 mm có vật (ô có xe); > 500 mm hoặc phép đo invalid (cảm biến chạy, không thấy vật) = ô trống;
+// 250..500 mm mơ hồ. Cảm biến chưa khởi tạo, không mẫu, lỗi API hoặc mẫu cũ vẫn là KHÔNG RÕ (xe dừng, không lùi).
+constexpr double kParkStepCm=50, kParkCreepCm=10, kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
 constexpr double kParkStepCms=8, kParkCreepCms=5;
 constexpr int64_t kParkSettleMs=500, kParkScanMaxMs=3000;
 constexpr int kParkTofAgeMs=300;
@@ -514,8 +519,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     swerve_odo_=input.odo_cm; swerve_odo_valid_=!sensor_bad;
     if(swerve_==Swerve::PASS) pass_cm_+=distance;
     if(return_cm_>=0) return_cm_+=distance;
-    // Về làn phải: tối thiểu obstacle_pass_cm, rồi chờ sai số nhỏ hoặc đủ 5 lần quãng.
-    if(return_cm_>=params.obstacle_pass_cm &&
+    // Về làn phải: tối thiểu obstacle_pass_cm + kReturnExtraCm, rồi chờ sai số nhỏ hoặc đủ 5 lần quãng.
+    if(return_cm_>=params.obstacle_pass_cm+kReturnExtraCm &&
        (std::abs(return_e_)<kReturnAlignedError || return_cm_>=kReturnCapFactor*params.obstacle_pass_cm)) return_cm_=-1;
     if(params.obstacle_action!=0 &&
        (state_==PlannerState::BAM_LAN || state_==PlannerState::DUNG_VAT_CAN)) {
@@ -835,7 +840,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             static const TofSlot kNoTof{};  // phòng thủ: ánh xạ không hợp lệ thì coi như không có mẫu
             const TofSlot &sf=slot_f>=0 && slot_f<4 ? input.tof[slot_f] : kNoTof, &sr=slot_r>=0 && slot_r<4 ? input.tof[slot_r] : kNoTof;
             const int64_t min_ms=park_scan_ms0_+kParkSettleMs, waited=now_ms-park_scan_ms0_;
-            ScanCell cf=ClassifyTofSample(sf,now_ms,kParkOccMm,kParkTofAgeMs), cr=ClassifyTofSample(sr,now_ms,kParkOccMm,kParkTofAgeMs);
+            const auto park_cell=[&](const TofSlot &t) {
+                if(!t.initialized || !t.has_sample || t.api_error!=0 || t.sample_ms<0 || t.sample_ms>now_ms ||
+                   now_ms-t.sample_ms>kParkTofAgeMs) return ScanCell::UNKNOWN;
+                if(!t.valid || t.mm<0) return ScanCell::EMPTY;  // invalid: cảm biến không thấy vật trong tầm
+                if(t.mm<=kParkOccMm) return ScanCell::OCCUPIED;
+                return t.mm>kParkEmptyMm ? ScanCell::EMPTY : ScanCell::UNKNOWN;
+            };
+            ScanCell cf=park_cell(sf), cr=park_cell(sr);
             if(sf.sample_ms<min_ms) cf=ScanCell::UNKNOWN;
             if(sr.sample_ms<min_ms) cr=ScanCell::UNKNOWN;
             const bool fresh=sf.sample_ms>=min_ms || sr.sample_ms>=min_ms;

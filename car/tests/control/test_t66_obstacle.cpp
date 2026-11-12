@@ -139,7 +139,7 @@ void SwerveTests() {
                         "Suốt pha về phải giữ RIGHT/VE_PHAI và kẹp tốc độ né");
                   return_distance+=plan.cmd.cms*0.05;
                   plan=r.step();
-                  if(return_distance+1e-9<r.p.obstacle_pass_cm)
+                  if(return_distance+1e-9<r.p.obstacle_pass_cm+10.0)  // Quân 12/11: pha VE_PHAI dài thêm 10 cm
                       Check(plan.reason=="VE_PHAI","Kết thúc về phải trước đủ quãng");
                   else {
                       Check(plan.state==PlannerState::BAM_LAN && plan.reason=="BAM_LAN" &&
@@ -238,7 +238,7 @@ void SwerveTests() {
           distance+=plan.cmd.cms*dt/1000.0;
           r.p.max_speed_cms=r.p.cruise_cms=r.p.min_cms=r.p.lost_cms=n>=10 && n<15 ? 0 : (n%2 ? 2 : 5);
           r.now+=dt-50; plan=r.step();
-          if(distance<r.p.obstacle_pass_cm-1e-9)
+          if(distance<r.p.obstacle_pass_cm+10.0-1e-9)  // Quân 12/11: pha VE_PHAI dài thêm 10 cm
               Check(plan.state==PlannerState::BAM_LAN && plan.reason=="VE_PHAI" &&
                     plan.mode==TrajMode::RETURN_RIGHT && plan.cmd.cms>=0 &&
                     plan.cmd.cms<=r.p.max_speed_cms,
