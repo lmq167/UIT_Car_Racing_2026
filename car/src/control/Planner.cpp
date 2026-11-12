@@ -355,8 +355,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big});
                 l_right_run_=round_right ? l_right_run_+1 : 0;
                 park_run_=parking ? park_run_+1 : 0;
-                // Đã neo lộ trình thì chỉ arm lại sau G-sau-Space khi chưa đồng bộ lại chặng (route_check_rb_): Quân đặt lại xe trước cua L dưới cầu (handoff 12/11 lỗi 3).
-                if(l_right_run_>=params.vote_min && (!route_anchored_ || route_check_rb_) && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
+                if(l_right_run_>=params.vote_min && !route_anchored_ && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
@@ -400,17 +399,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     route_sync_=route_ambig_=false; route_note_="NEO_VX1";
                 } else if(!sensor_bad && (route_check_rb_ || route_ambig_)) {
                     // Đảo phía trước sau G: hướng Bắc chỉ có thể là đầu cả chặng (R5), hướng Nam là c4.
-                    // Lần qua mở khi còn đang cua L (arm lại sau G): hướng xét là hướng sau cua (yaw đầu cua − 90°), như lúc neo lần đầu.
-                    const double yaw_in=l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg;
-                    const int q=int(std::lround((yaw_in-route_yaw_ref_)/90.0));
+                    const int q=int(std::lround((input.yaw_deg-route_yaw_ref_)/90.0));
                     if(Mod4(q)==0 || Mod4(q)==2) {
                         // Log xe 11/11 (m4): 5/5 lần qua mở sau G-sau-Space không giữ hướng nên mất làn ở lối ra rồi dừng;
                         // lần qua đầu sau G thường (có giữ hướng) thoát bình thường. Nếu xe đang chỉnh theo trục lộ trình
                         // (không giữa đảo với yaw tùy ý như log 10/11 289 s) thì vẫn giữ hướng.
-                        if(rb_hold_spent_ && std::abs(WrapDeg(yaw_in-route_yaw_ref_-90.0*q))<=kRbHoldAlignDeg) rb_hold_spent_=false;
+                        if(rb_hold_spent_ && std::abs(WrapDeg(input.yaw_deg-route_yaw_ref_-90.0*q))<=kRbHoldAlignDeg) rb_hold_spent_=false;
                         route_sync_=route_ambig_=route_check_rb_=false;
                         if(rb_turn_ && !turning_) ClearTurn();
-                        if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=yaw_in; rb_passes_=0; route_note_="SYNC_R5"; }
+                        if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=input.yaw_deg; rb_passes_=0; route_note_="SYNC_R5"; }
                         else { route_step_=4; route_q_=q; route_note_="SYNC_R4"; }
                     }
                 }
@@ -785,7 +782,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
     if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // review LOW-1: không dùng đếm cũ
-    if(l_armed_ && ((route_anchored_ && !route_check_rb_) || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
+    if(l_armed_ && (route_anchored_ || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
     if(params.turn_enable && l_armed_ && !l_done_ && !turning_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
        swerve_==Swerve::NONE && !returning && !rb_holding_ && !sensor_bad && mask_fresh && !input.stop &&
        !turn_fault_ && l_mask_counted && std::isfinite(input.yaw_deg) && l_open_run_>=params.vote_min) {
