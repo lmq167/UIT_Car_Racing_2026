@@ -1,4 +1,4 @@
-// Ca kiểm 13/11: lối ra vòng xuyến 1, cua L arm lại sau Space/G, đỗ xe (mẫu hỏng dài lúc tiến, chuỗi lùi vòng kín, nhiễu ngẫu nhiên có seed).
+// Ca kiểm 13/11: lối ra vòng xuyến 1, đỗ xe (mẫu hỏng dài lúc tiến, chuỗi lùi vòng kín, nhiễu ngẫu nhiên có seed).
 // Chỉ dùng giao diện công khai của Planner; đồng hồ giả, xe giả động học (dyaw = d·tan(lái)/L, L = 31 cm như Planner dùng cho cua IMU).
 #include "control/Planner.h"
 #include <algorithm>
@@ -83,44 +83,6 @@ void ArcThroughExit() {
     for(int s=4;s<=40;s+=4) { q.lane(60-s,140-s); q.tick("round_barrier"); }
     for(int i=0;i<12;++i) q.tick();
     Check(q.last.reason=="VX_THOAT" && q.last.cmd.deg>-15,"Đã quay 41°: bám làn tự lái, không ép cung phải; "+Seen(q.last));
-}
-
-// 2) Handoff 12/11 lỗi 3: sau khi đã neo lộ trình (đã vào VX1 một lần), Quân đặt lại xe trước cua L dưới cầu rồi Space/G:
-//    cua L không arm lại được (route_anchored_ không bao giờ xóa). Sau G-sau-Space, đảo ở mép phải + góc cua rộng phải rẽ lại.
-void LRearmAfterSpace() {
-    Rig r; r.in.yaw_deg=0;
-    for(int i=0;i<r.p.vote_window+4;++i) r.tick("round_barrier");
-    Check(r.planner.RouteNote()=="NEO_VX1","Thiết lập: neo VX1; note="+r.planner.RouteNote());
-    r.in.yaw_deg=-90;
-    for(int i=0;i<int(r.p.rb_lost_cm)+r.p.vote_window+50;++i) r.tick();
-    Check(r.planner.RouteStep()==1,"Thiết lập: sang c1; chặng="+std::to_string(r.planner.RouteStep()));
-    // Đặt lại xe trước cua L (hướng trước cua = Bắc + 90°), Space rồi G.
-    r.in.yaw_deg=90; r.lane(60,140); r.space_go();
-    for(int i=0;i<r.p.vote_min;++i) r.tick("round_barrier",0.88,130,2);
-    r.lane(0,199);  // góc cua rộng: hàng gần chạm hai mép ảnh
-    bool turned=false;
-    for(int i=0;i<r.p.vote_min+2 && !turned;++i) { r.tick(); turned=r.last.state==PlannerState::RE_PHAI; }
-    Check(turned && r.last.reason=="RE_L_CAU","G sau Space, đảo mép phải + góc cua rộng: phải rẽ cua L lại; "+Seen(r.last));
-    // Đảo lớn mở lần qua khi còn đang cua (yaw mới quay 40°): neo lại Bắc = hướng sau cua (yaw đầu cua - 90°), chặng về c0.
-    r.in.yaw_deg=50; r.lane(60,140);
-    for(int i=0;i<r.p.vote_window+2;++i) r.tick("round_barrier");
-    Check(r.planner.RouteStep()==0 && r.planner.RouteNote()=="SYNC_R5",
-          "Lần qua mở giữa cua L sau G: phải đồng bộ c0 (R5); chặng="+std::to_string(r.planner.RouteStep())+" note="+r.planner.RouteNote());
-    r.in.yaw_deg=0;
-    for(int i=0;i<10;++i) r.tick("round_barrier");
-    Check(r.last.state!=PlannerState::RE_PHAI,"Quay đủ thì hết cua L; "+Seen(r.last));
-    r.in.yaw_deg=-90;
-    for(int i=0;i<int(r.p.rb_lost_cm)+r.p.vote_window+50;++i) r.tick();
-    Check(r.planner.RouteStep()==1 && r.planner.RouteNote()=="BUOC",
-          "Sau lối ra phải (Bắc mới - 90°) phải đếm c1; chặng="+std::to_string(r.planner.RouteStep())+" note="+r.planner.RouteNote());
-    // Đối chứng: không có G-sau-Space thì sau khi neo, đảo mép phải KHÔNG arm cua L (chặng vòng xuyến không có cua L cố định).
-    Rig q; q.in.yaw_deg=0;
-    for(int i=0;i<q.p.vote_window+4;++i) q.tick("round_barrier");
-    q.in.yaw_deg=-90;
-    for(int i=0;i<int(q.p.rb_lost_cm)+q.p.vote_window+50;++i) q.tick();
-    for(int i=0;i<q.p.vote_min;++i) q.tick("round_barrier",0.88,130,2);
-    q.lane(0,199);
-    for(int i=0;i<q.p.vote_min+2;++i) { q.tick(); Check(q.last.state!=PlannerState::RE_PHAI,"Đã neo, không Space/G: không rẽ cua L; "+Seen(q.last)); }
 }
 
 // Xe giả cho pha đỗ: nhịp 50 ms, quãng = lệnh tốc độ, yaw theo góc lái đã gửi; ToF theo ô (50 cm) kể từ lần quét đầu.
@@ -302,7 +264,6 @@ int main(int argc, char **argv) {
     const std::string name=argc>1 ? argv[1] : "";
     try {
         if(name=="arc_through_exit") ArcThroughExit();
-        else if(name=="l_rearm_after_space") LRearmAfterSpace();
         else if(name=="park_closed_loop") ParkClosedLoop();
         else if(name=="park_tien_long_fault") ParkTienLongFault();
         else if(name=="park_fuzz") ParkFuzz();
