@@ -116,8 +116,10 @@ int ParkTofSlot(int map, int pos) {
     static const int div[4]={1000,100,10,1};
     return map/div[pos]%10-1;
 }
+// Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
+constexpr double kNarrowBarrierSteerScale=1.0;
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
-    const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : 1.12) : p.turn_steer_deg;
+    const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
 }
 // Sai số góc gói về [-180, 180).

@@ -234,7 +234,7 @@ void T74(const std::string& name) {
             Rig r; r.in.yaw_deg=5;
             r.votes({"work_barrier"}); auto plan=r.junction();
             Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.cms,TurnCms(r.p)) &&
-                   Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Rào hẹp (cx 0,5) vào lệnh rẽ IMU min_cms/+1,12*turn_steer_deg (rào 1: rẽ trái vào đường 1 làn, bán kính nhỏ)");
+                   Near(plan.cmd.deg,1.0*r.p.turn_steer_deg),plan,"Rào hẹp (cx 0,5) vào lệnh rẽ IMU min_cms/+1,0*turn_steer_deg (rào 1: rẽ trái vào đường 1 làn, bán kính nhỏ)");
             r.in.yaw_deg=5+sign*(r.p.turn_yaw_deg-.01); plan=r.send({"work_barrier"});
             Expect(plan.state==PlannerState::RE_TRAI,plan,"Chưa đủ yaw còn rẽ");
             r.in.yaw_deg=5+sign*r.p.turn_yaw_deg; plan=r.send({"work_barrier"});
@@ -244,7 +244,7 @@ void T74(const std::string& name) {
         // Work 1 (hộp giữa, vào đường 1 làn): rẽ gắt 1,12*turn_steer_deg, kích hoạt sớm 0,05; work 2 (hộp lệch phải): 0,8*turn_steer_deg.
         const double frac=Rig().p.work_barrier_y2_frac;
         { Rig r; r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.04)); auto plan=r.junction();
-          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,1.12*r.p.turn_steer_deg),plan,"Work 1: sớm 0,04 và lái 1,12*turn_steer_deg"); }
+          Expect(plan.state==PlannerState::RE_TRAI && Near(plan.cmd.deg,1.0*r.p.turn_steer_deg),plan,"Work 1: sớm 0,04 và lái 1,0*turn_steer_deg"); }
         { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.5f,static_cast<float>(frac-.06));
           Lane(plan,"Work 1: chưa tới đáy hộp thì chưa rẽ"); }
         { Rig r; auto plan=r.votes({"work_barrier"},-1,.9f,.75f,static_cast<float>(frac-.04));
