@@ -334,11 +334,13 @@ void Run(const std::string &name) {
             // Trong lần qua: phiếu cuối ở cm 9, lần qua hết sau rb_lost_cm (không phụ thuộc turn_start_cm).
             for(int cm=r.p.vote_min+1;cm<10+r.p.rb_lost_cm;++cm) {
                 const auto plan=r.step(r.anchor+cm,cm<10?"round_barrier":"");
-                Check(plan.state==control::PlannerState::BAM_LAN && plan.reason!="RE_GIAO_LO",
+                // Quân 13/11: VX1 được GIU_HUONG/RE_VX1_IMU, vẫn cấm rẽ giao lộ.
+                Check((plan.state==control::PlannerState::BAM_LAN ||
+                       (plan.state==control::PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && plan.cmd.deg<0)) && plan.reason!="RE_GIAO_LO",
                       "Đảo rộng trong vòng xuyến không được kích hoạt RE_GIAO_LO");
                 if(cm>=2*r.p.vote_min)
                     Check(plan.mode==control::TrajMode::ROUNDABOUT,"Phải còn trong lần qua vòng xuyến");
-                if(cm>=15) Check(plan.reason=="VX_THOAT","Phải kiểm cả lúc mất phiếu nhưng chưa hết lần qua");
+                if(cm>=15) Check(plan.reason=="RE_VX1_IMU","Phải kiểm cả lúc mất phiếu nhưng chưa hết lần qua");
             }
         } else if(name=="R3" || name=="R4" || name=="R6") {
             if(name=="R3") for(int cm=1;cm<=15;++cm)

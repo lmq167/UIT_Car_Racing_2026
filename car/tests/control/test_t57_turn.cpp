@@ -1002,6 +1002,10 @@ void Case(const std::string& name) {
             r.in.detections={items,r.now,++r.frame};
             return r.step();
         };
+        // Quân 13/11: ca giữ hướng B1 cũ dùng lần qua thứ hai, không phải VX1.
+        for (int i=0;i<r.p.vote_min;++i) rb(true);
+        for (int i=0;i<r.p.vote_window;++i) rb(false);
+        r.in.odo_cm+=r.p.rb_lost_cm; rb(false);
         control::Plan plan;
         for (int i=0;i<r.p.vote_min;++i) plan=rb(true);
         Check(plan.state==control::PlannerState::BAM_LAN,"Thấy vòng xuyến vẫn bám làn");

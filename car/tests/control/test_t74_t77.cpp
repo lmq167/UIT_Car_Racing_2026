@@ -145,6 +145,63 @@ struct Rig {
         return plan;
     }
 };
+// V28/V29: đặc tả Quân 13/11, VX1 tin cậy rẽ IMU; VX2 giữ B1 cũ.
+void V28() {
+    for(int mode=0;mode<6;++mode) {
+        Rig r; r.p.steer_max_deg=40; r.enter();
+        Check(r.planner.RouteNote()=="NEO_VX1","V28: chưa neo VX1");
+        r.in.odo_cm=15;
+        auto plan=r.send({"round_barrier"});
+        Expect(plan.reason=="RE_VX1_IMU" && plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-38),plan,"VX1 sau cua L và 15 cm lái -38°");
+        r.mask(10,90); r.in.odo_cm=16;
+        plan=r.send({"round_barrier"});
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-38),plan,"Làn đòi trái không ghi đè IMU VX1");
+        if(mode==0) {
+            r.in.yaw_deg=-53; r.in.odo_cm=50; plan=r.send({"round_barrier"});
+            Expect(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_VX1_IMU",plan,"Tới hướng đích trả quyền bám làn");
+            r.in.yaw_deg=-20; plan=r.send({"round_barrier"});
+            Expect(plan.reason!="RE_VX1_IMU",plan,"Không bật lại pha đã kết thúc");
+        } else if(mode==1 || mode==5) {
+            // Bỏ PersistBad: chủ động kiểm đúng biên 249/250 ms bằng đồng hồ giả.
+            auto sample=[&](int dt) {
+                r.now+=dt; r.in.image_ms=r.in.mask_ms=r.in.sensor_ms=r.now;
+                r.in.detections.captured_ms=r.now; r.in.detections.frame_id=++r.frame;
+                for(auto &d:r.in.detections.items) d.captured_ms=r.now;
+                return r.planner.Step(r.in,r.now,r.p);
+            };
+            const double held=plan.cmd.deg;
+            r.in.yaw_deg=std::numeric_limits<double>::quiet_NaN();
+            plan=sample(40);
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.cmd.cms==0 && Near(plan.cmd.deg,held) && plan.reason=="RE_VX1_IMU_CHO",plan,"NaN đầu đợt: dừng tạm và giữ góc");
+            plan=sample(249);
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.cmd.cms==0 && Near(plan.cmd.deg,held) && plan.reason=="RE_VX1_IMU_CHO",plan,"NaN 249 ms: giữ pha, chưa khóa lỗi");
+            if(mode==5) {
+                plan=sample(1);
+                Expect(plan.state==PlannerState::DUNG && plan.cmd.cms==0 && plan.cmd.deg==0 && plan.reason=="VX1_IMU_LOI",plan,"NaN đủ 250 ms: khóa dừng");
+            }
+            r.in.yaw_deg=0; plan=sample(1);
+            if(mode==1)
+                Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && plan.cmd.cms>0 && Near(plan.cmd.deg,-38),plan,"Yaw hồi sau lỗi ngắn: tiếp tục pha IMU");
+            else {
+                Expect(plan.state==PlannerState::DUNG && plan.reason=="VX1_IMU_LOI" && plan.cmd.cms==0,plan,"Yaw hồi không tự nhả khóa");
+                r.in.odo_cm+=2; plan=sample(1000);
+                Expect(plan.state==PlannerState::DUNG && plan.reason=="VX1_IMU_LOI" && plan.cmd.cms==0,plan,"Cảm biến tốt lâu vẫn khóa tới G");
+            }
+        } else if(mode==2) {
+            plan=r.send({"round_barrier"},.9f,.5f,.8f,1500);
+            Expect(plan.state==PlannerState::DUNG && plan.cmd.cms==0 && plan.reason=="VX1_IMU_KET",plan,"Không tiến 1 cm trong 1500 ms phải dừng");
+        } else if(mode==3) {
+            r.in.odo_cm=100; plan=r.send({"round_barrier"});
+            Expect(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_VX1_IMU",plan,"Đủ 100 cm trả quyền bám làn");
+        } else {
+            r.in.yaw_deg=-53; r.send({"round_barrier"}); r.leave();
+            r.in.yaw_deg=-180; r.at(r.in.odo_cm+5); r.enter();
+            const double entry=r.in.odo_cm;
+            r.mask(); plan=r.at(entry+40,{"round_barrier"});
+            Expect(Near(plan.cmd.deg,-15),plan,"VX2 giữ B1 -15° sau 40 cm");
+        }
+    }
+}
 void Lane(const Plan& p, const std::string& why) {
     Expect(p.state==PlannerState::BAM_LAN && p.cmd.cms>0,p,why);
 }
@@ -558,7 +615,12 @@ void T68b(const std::string& name) {
     if (name=="visible") {
         for (const std::string other:{"","left","work_barrier"}) {
             Rig r; r.enter();
-            for (int i=1;i<=10;++i) Lane(r.at(30*i,other.empty()?std::vector<std::string>{"round_barrier"}:std::vector<std::string>{"round_barrier",other}),"Còn phiếu vòng xuyến không rẽ, lớp kèm="+other);
+            // Quân 13/11: VX1 ưu tiên IMU trong 100 cm đầu; lớp kèm không đổi pha.
+            for (int i=1;i<=10;++i) {
+                const auto plan=r.at(30*i,other.empty()?std::vector<std::string>{"round_barrier"}:std::vector<std::string>{"round_barrier",other});
+                if(i<=3) Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-30) && plan.cmd.cms>0,plan,"VX1 rẽ IMU, kẹp trần 30°, lớp kèm="+other);
+                else Lane(plan,"VX1 đủ 100 cm về làn, lớp kèm="+other);
+            }
         }
     } else if (name=="sign_priority") {
         Rig r; r.enter(); r.leave(); r.p.turn_start_cm=60;
@@ -579,12 +641,14 @@ void T68b(const std::string& name) {
 // T77 phương án B: làn tốt theo làn, mất làn trong lượt mới giữ yaw lúc vào.
 void T77(const std::string& name) {
     if (name=="only_on_loss") {
-        Rig r; r.in.yaw_deg=3; r.enter(); r.in.yaw_deg=13;
+        // Quân 13/11: ca này kiểm B1 cũ, dùng lần qua thứ hai (không phải VX1).
+        Rig r; r.enter(); r.leave(); const double base=r.in.odo_cm;
+        r.in.yaw_deg=3; r.enter(); r.in.yaw_deg=13;
         // Cung phải chỉ bắt đầu sau 15 cm kể từ lúc mở lần qua; trước đó bám làn bình thường.
         r.p.steer_rate_dps=1000;
         const auto before=r.votes({"round_barrier"},6);
         Expect(before.state==PlannerState::BAM_LAN && Near(before.cmd.deg,0),before,"Chưa đi 15 cm: làn tốt vẫn bám làn");
-        const auto arc=r.at(20,{"round_barrier"});
+        const auto arc=r.at(base+20,{"round_barrier"});
         Expect(arc.state==PlannerState::BAM_LAN && Near(arc.cmd.deg,-15),arc,"Vòng xuyến: lái phải tối thiểu 15° tới khi quay phải 40°");
         r.in.yaw_deg=3-45;
         const auto lane=r.votes({"round_barrier"},6);
@@ -605,7 +669,7 @@ void T77(const std::string& name) {
         }
         for (double cm:{15.0,20.0}) {
             const auto plan=r.at(odo0+cm,{"round_barrier"});
-            Expect(plan.state==PlannerState::BAM_LAN && Near(plan.cmd.deg,-15),plan,"Từ 15 cm, gồm 20 cm: bắt đầu cung phải -15 độ");
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-std::min(38.0,r.p.steer_max_deg)),plan,"Quân 13/11: từ 15 cm VX1 rẽ IMU, kẹp trần góc");
         }
     } else if (name=="yaw_sign" || name=="wrap") {
         for (double sign:{-1.,1.}) {
@@ -657,12 +721,14 @@ void T77(const std::string& name) {
         const auto stopped=r.send(); Expect(stopped.cmd.cms==0,stopped,"Hết lượt nhưng vẫn mất làn phải dừng");
         r.mask(); Lane(r.votes({},r.p.regain_frames+2),"Hết lượt rồi bắt lại làn phải chạy lại không G");
     } else if (name=="hold_distance") {
-        Rig r; r.enter(); r.in.odo_cm=r.p.rb_hold_max_cm-1; r.in.mask.setTo(0); r.in.yaw_deg=10;
+        // Quân 13/11: giới hạn giữ hướng B1 cũ kiểm ở lần qua không phải VX1.
+        Rig r; r.enter(); r.leave(); const double base=r.in.odo_cm;
+        r.enter(); r.in.odo_cm=base+r.p.rb_hold_max_cm-1; r.in.mask.setTo(0); r.in.yaw_deg=10;
         auto plan=r.votes({"round_barrier"},12);
         Expect(plan.state==PlannerState::GIU_HUONG,plan,"Mất làn cuối quãng vẫn được giữ hướng");
-        plan=r.at(r.p.rb_hold_max_cm,{"round_barrier"});
+        plan=r.at(base+r.p.rb_hold_max_cm,{"round_barrier"});
         Expect(plan.state==PlannerState::GIU_HUONG,plan,"Đúng hold_max_cm chưa quá hạn");
-        plan=r.at(r.p.rb_hold_max_cm+.01,{"round_barrier"});
+        plan=r.at(base+r.p.rb_hold_max_cm+.01,{"round_barrier"});
         Expect(plan.state!=PlannerState::GIU_HUONG,plan,"Quá hold_max tính từ đầu lượt phải thoát");
         LostStop(r,"Quá quãng giữ hướng");
     } else if (name=="sensor_entry" || name=="sensor_mid") {
@@ -849,7 +915,9 @@ void Params(const std::string& group, const std::string& path) {
 int main(int argc, char** argv) {
     try {
         Check(argc>=2,"Thiếu tên scenario");
-        const std::string name=argv[1]; const auto split=name.find('_');
+        const std::string name=argv[1];
+        if(name=="t77_params") V28();
+        const auto split=name.find('_');
         Check(split!=std::string::npos,"Tên phải có tiền tố phiếu");
         const auto group=name.substr(0,split), scenario=name.substr(split+1);
         if (scenario=="params") { Check(argc==3,"Thiếu đường YAML tạm"); Params(group,argv[2]); }
