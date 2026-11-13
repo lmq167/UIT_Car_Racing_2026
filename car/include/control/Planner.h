@@ -91,6 +91,7 @@ private:
     // Vòng xuyến: lần qua = từ lúc đủ phiếu round_barrier tới khi mất phiếu liên tục rb_lost_cm.
     // Bộ đếm chỉ về 0 khi khởi động chương trình (Quân đặt lại xe ở điểm xuất phát).
     bool rb_in_pass_=false, rb_losing_=false, rb_hold_spent_=false;
+    bool rb_vx1_imu_=false, rb_vx1_active_=false; // chốt VX1 tin cậy lúc mở lần qua; pha rẽ IMU đang chạy (bắt đầu sau cua L)
     int rb_passes_=0, rb_pending_=0;
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;

@@ -106,6 +106,9 @@ constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
 // Log l27 12/11: Quân báo xe rẽ phải ở vòng xuyến 1 hơi SỚM. Cung phải chỉ bắt đầu sau khi đã đi kRbArcDelayCm kể từ lúc mở lần qua. TẠM, CHƯA ĐO.
 constexpr double kRbArcDelayCm=15;
+// Quân 13/11: VX1 rẽ phải bằng IMU. Log l04/l09: hướng ra ổn định ≈ hướng vào −52,3/−52,7°; lái −38° cho R≈31/tan38°≈40 cm
+// (cung −15° cũ R≈116 cm chỉ quay ~16° qua neo trong 100 cm).
+constexpr double kVx1TurnDeg=53, kVx1SteerDeg=38;
 // Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
 constexpr double kRb2ArcDelayCm=40;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
@@ -213,7 +216,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0;
-    rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
+    rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
@@ -237,7 +240,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
-        ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
+        ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false;
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
@@ -256,7 +259,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
         // G sau Space/reset (không phải G đầu chương trình): đồng bộ lại chặng khi hướng ổn định (R1-R6).
         if(route_g_seen_) { route_sync_=route_check_rb_=rb_hold_check_=true; route_cand_ms_=-1; }
-        route_g_seen_=true;
+        route_g_seen_=true; rb_vx1_imu_=rb_vx1_active_=false;
+    }
+    // Cảm biến hỏng từ kSensorGlitchMs trong pha rẽ IMU VX1: khóa dừng tới G, không tự rơi về bám làn khi cảm biến hồi.
+    // Hỏng ngắn hơn (log l08: odo trống 51 ms) chỉ dừng tạm ở khối rẽ IMU bên dưới.
+    if(rb_vx1_active_ && !input.stop && sensor_bad && sensor_bad_since_>=0 && now_ms-sensor_bad_since_>=kSensorGlitchMs) {
+        state_=PlannerState::DUNG; reason_="VX1_IMU_LOI";
+        rb_hold_spent_=true; rb_vx1_active_=false; rb_holding_=false; lane_.Reset();
     }
     const bool l_rearm_ok=!route_anchored_ || (route_check_rb_ && route_step_==0);
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
@@ -436,12 +445,16 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                         else { route_step_=4; route_q_=q; route_note_="SYNC_R4"; }
                     }
                 }
+                rb_vx1_imu_=!sensor_bad && route_anchored_ && !route_sync_ && !route_ambig_ &&
+                    route_step_==0 && rb_passes_==0 && !rb_arc_off_ && !rb_hold_spent_ &&
+                    (route_note_=="NEO_VX1" || route_note_=="SYNC_R5");
+                rb_vx1_active_=false;
                 route_pass_seen_=true; }
             rb_losing_=false;
         } else if(rb_in_pass_ && (!params.imu_fallback || encoder_good)) {
             if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
             else if(std::abs(input.odo_cm-rb_lost_odo_)>=params.rb_lost_cm) {
-                rb_in_pass_=rb_losing_=false; ++rb_passes_; rb_after_odo_=input.odo_cm;
+                rb_in_pass_=rb_losing_=false; if(rb_vx1_imu_) { rb_hold_spent_=true; rb_vx1_active_=false; } ++rb_passes_; rb_after_odo_=input.odo_cm;
                 // Lộ trình cũ (rb_pending_: lần 1 trái, lần 2 phải) đã tắt: ý định lấy từ chặng (T94). Gỡ hẳn ở giai đoạn 2.
             }
         }
@@ -1119,7 +1132,51 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     // Log l27 12/11 (16925, dòng 1088-1096): hộp đảo rời khung (VX_THOAT) khi cung phải mới quay 23°/57 cm; bỏ cung ở đó thì bám làn lái TRÁI +16° về phía đảo
     // (mặt nạ lối ra tách mảnh, hành lang được chọn nằm bên trái). Cung phải giữ cả khi đang mất phiếu đảo, tới khi đủ kRbArcDeg/kRbArcMaxCm hoặc hết lần qua (rb_lost_cm).
     const double rb_arc_delay=route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==4 && rb_passes_==1 ? kRb2ArcDelayCm : kRbArcDelayCm;
-    if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
+    if(params.turn_enable && rb_vx1_imu_ && rb_in_pass_ && !rb_hold_spent_ && !rb_arc_off_ &&
+       !turning_ && swerve_==Swerve::NONE && !returning && mask_fresh && result.debug.state!="MAT_NAN_CU") {
+        const double distance=std::abs(input.odo_cm-rb_hold_odo_);
+        // Người đi bộ giữ xe đứng: thời gian đứng không tính vào hạn pha/kẹt (như lượt rẽ thường).
+        if(rb_vx1_active_ && person_stop_ && command_ms_>=0 && now_ms>command_ms_) { rb_hold_ms_+=now_ms-command_ms_; rb_prog_ms_+=now_ms-command_ms_; }
+        // Pha chưa bắt đầu mà cảm biến hỏng: chưa bắt đầu (bám làn như cũ), không khóa dừng.
+        if(rb_vx1_active_ || (distance>=kRbArcDelayCm && !sensor_bad)) {
+            if(rb_vx1_active_ && sensor_bad && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs) {
+                // Mẫu hỏng ngắn: dừng tạm, giữ góc và pha (thời gian vẫn tính vào turn_max_ms/kẹt 1500 ms).
+                plan.cmd={0,sent_angle_}; plan.state=PlannerState::GIU_HUONG; plan.reason=plan.debug.reason="RE_VX1_IMU_CHO";
+                plan.debug.state="GIU_HUONG"; plan.debug.angle_deg=sent_angle_; plan.debug.speed_cms=0;
+                command_ms_=now_ms; return plan;
+            }
+            if(sensor_bad || !std::isfinite(rb_yaw0_) || !std::isfinite(rb_hold_odo_)) {
+                state_=plan.state=PlannerState::DUNG; reason_=plan.reason="VX1_IMU_LOI";
+                plan.cmd={0,0}; rb_hold_spent_=true; rb_vx1_active_=false;
+                plan.debug.state="DUNG"; plan.debug.reason=reason_;
+                plan.debug.angle_deg=plan.debug.speed_cms=0;
+                sent_angle_=0; command_ms_=now_ms; return plan;
+            }
+            if(!rb_vx1_active_) {
+                rb_vx1_active_=true; rb_hold_ms_=rb_prog_ms_=now_ms; rb_prog_odo_=input.odo_cm;
+            }
+            if(std::abs(input.odo_cm-rb_prog_odo_)>=1) { rb_prog_odo_=input.odo_cm; rb_prog_ms_=now_ms; }
+            // Sai lệch ban đầu âm; tới (hoặc vượt) đích trong 3° là kết thúc, không quay ngược để tìm lại đích.
+            const double err=WrapDeg(WrapDeg(rb_yaw0_-kVx1TurnDeg)-input.yaw_deg);
+            if(err>=-3 || distance>=kRbArcMaxCm || now_ms-rb_hold_ms_>=params.turn_max_ms) {
+                rb_hold_spent_=true; rb_vx1_active_=false;
+            } else if(now_ms-rb_prog_ms_>=1500) {
+                state_=plan.state=PlannerState::DUNG; reason_=plan.reason="VX1_IMU_KET";
+                plan.cmd={0,0}; rb_hold_spent_=true; rb_vx1_active_=false;
+                plan.debug.state="DUNG"; plan.debug.reason=reason_;
+                plan.debug.angle_deg=plan.debug.speed_cms=0;
+                sent_angle_=0; command_ms_=now_ms; return plan;
+            } else {
+                const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+                const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,-std::min(kVx1SteerDeg,params.steer_max_deg)));
+                const double speed=std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle)));
+                plan.cmd={result.debug.state=="BAM_LAN" ? std::min(plan.cmd.cms,speed) : speed,angle};
+                plan.state=PlannerState::GIU_HUONG; plan.reason=plan.debug.reason="RE_VX1_IMU";
+                plan.debug.state="GIU_HUONG"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
+            }
+        }
+    }
+    if(!rb_vx1_imu_ && params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
        result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
        WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)>=rb_arc_delay && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
@@ -1136,7 +1193,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     rb_holding_=false;
     const bool rb_post=!rb_in_pass_ && rb_passes_>0 && std::isfinite(rb_after_odo_) && std::isfinite(input.odo_cm) &&
                        std::abs(input.odo_cm-rb_after_odo_)<=kRbPostHoldCm && std::isfinite(input.yaw_deg);
-    if((rb_in_pass_ || rb_post) && result.debug.state!="BAM_LAN" && result.debug.state!="MAT_NAN_CU" && mask_fresh && swerve_==Swerve::NONE &&
+    if(!rb_vx1_active_ && (rb_in_pass_ || rb_post) && result.debug.state!="BAM_LAN" && result.debug.state!="MAT_NAN_CU" && mask_fresh && swerve_==Swerve::NONE &&
        params.turn_enable && !turn_fault_ && !sensor_bad && (rb_in_pass_ ? std::isfinite(rb_yaw0_) : true) && !rb_hold_spent_) {
         if(!was_holding) {
             rb_hold_ms_=rb_prog_ms_=now_ms; rb_prog_odo_=input.odo_cm;
