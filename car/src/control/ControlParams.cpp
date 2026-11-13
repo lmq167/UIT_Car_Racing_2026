@@ -33,6 +33,8 @@ const Parameter table[] = {
     {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
     {"turn_steer_deg",36.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
+    {"route_t2_gap_cm",115.0,&ControlParams::route_t2_gap_cm,0,300,"cm","Quân 13/11: chặng vòng xuyến, bám làn chừng này cm sau khi hết cung rẽ trái ngã T thứ nhất rồi mới nhận ngã T thứ hai"},
+    {"sign_seq_next",0,&ControlParams::sign_seq_next,0,4,"1","Quân 13/11: biển rẽ kế tiếp trong chuỗi cố định (0 right, 1 đèn no_left/right, 2 left/no_right, 3 đèn no_right/left, 4 hết chuỗi = theo model); đổi giá trị rồi R để đặt lại sau khi chạy lỗi"},
     {"turn_left_delay_cm",0.0,&ControlParams::turn_left_delay_cm,0,60,"cm","Quân 12/11: rẽ TRÁI theo biển chờ thêm chừng này (tính từ lúc mặt nạ xác nhận ngã rẽ) rồi mới bắt đầu rẽ; 0 = như cũ. Log l25: rẽ trái vào hầm hơi sớm, va thành hầm"},
     {"turn_arm_cm",80.0,&ControlParams::turn_arm_cm,10,300,"cm","Quãng chờ ngã rẽ tối đa"},
     {"turn_start_cm",45.0,&ControlParams::turn_start_cm,0,150,"cm","Quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ"},

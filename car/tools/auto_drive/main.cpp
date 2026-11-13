@@ -359,10 +359,11 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         try {
                             // Chỉ đọc hộp thư có sẵn; nén/gửi ảnh nằm ngoài khóa và ngoài vòng an toàn.
                             detections.latest(yolo); commands.latest(latestCommand);
-                            // Quân 13/11: ngã đèn 1 luôn no_left/right, ngã đèn 2 luôn no_right/left -> sửa nhãn model nhầm (bản sao cục bộ).
+                            // Quân 13/11: theo chuỗi biển cố định, biển kế rẽ phải -> no_left/right, rẽ trái -> no_right/left (bản sao cục bộ).
                             const int signMap=telemetrySignMap.load(std::memory_order_relaxed);
                             for (auto& d:yolo.detections.items) {
                                 if (signMap==1 && d.class_name=="no_right") d.class_name="no_left";
+                                else if (signMap==1 && d.class_name=="left") d.class_name="right";
                                 else if (signMap==2 && d.class_name=="no_left") d.class_name="no_right";
                                 else if (signMap==2 && d.class_name=="right") d.class_name="left";
                             }

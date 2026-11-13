@@ -169,17 +169,18 @@ int ParkTofSlot(int map, int pos) {
 }
 // Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
 constexpr double kNarrowBarrierSteerScale=1.0;
-constexpr double kRouteT2GapCm=115;  // Quân 13/11 l16: 20 cm, sau đó +30 -> 50, +30 -> 80, +35 -> 115 cm; bám làn thêm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
 // Quân 13/11 sau l16: chặng cuối vòng xuyến (st7) phải đi THẲNG qua 2 ngã T sang chặng né vật cản; bám làn kéo rẽ phải nhầm ở ngã T cuối.
 // Quân báo trục neo VX1 sai -> hướng tham chiếu tự chốt trong st7: yaw đổi <= kSt7StableDeg suốt kSt7StableCm bám làn (đã hết cua L c6;
 // l16 215-220 s: -8,2..-9,0 trong 73 cm). Sau đó lệch quá kSt7DevDeg thì lái về hướng chốt bằng rb_yaw_kp, trong dải thì bám làn như cũ.
 // Tắt hẳn khi bắt đầu né vật cản, khi rẽ, hoặc sau kSt7HoldMaxCm. TẠM.
 constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500, kSt7StableDeg=2, kSt7StableCm=25;
-// Quân 13/11: ngã có đèn + biển thứ 2 luôn là no_right hoặc left -> rẽ trái. Đếm lượt rẽ theo biển có đèn (red/green/off) trong
-// kLightTurnMs trước lúc bắt đầu rẽ; sau lượt thứ nhất, biển rẽ nào thấy khi có đèn trong kLightTurnMs đều tính là trái
-// (l16: right 278 s không đèn -> rẽ phải 284 s; đèn 1 300 s; đèn 2 305-312 s no_right/no_left lẫn lộn).
-constexpr int64_t kLightTurnMs=4000;
+// Quân 13/11: chuỗi biển rẽ cố định trên sa bàn: right; (đèn) no_left/right; left/no_right; (đèn) no_right/left.
+// Biển rẽ thứ sign_idx_ tính theo hướng của chuỗi, bỏ qua lớp model đọc (t94 nhầm no_left/no_right cạnh đèn).
+// sign_idx_ không xóa khi Space/G; Space giữa cung đang rẽ trả lại lượt đó; yaml sign_seq_next đổi giá trị (R) đặt lại.
+constexpr int kSignSeqN=4;
+constexpr bool kSignSeqLeft[kSignSeqN]={false,false,true,true};
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
+constexpr double kT2SteerScale=0.9;   // Quân 13/11: cung ngã T thứ hai (c3) hơi gắt -> 25 -> 22,5°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -242,8 +243,7 @@ void Planner::ClearTurn() {
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
 int Planner::TelemetrySignMap(int64_t now_ms) const {
-    if(light_turns_==1 && light_ms_>=0 && now_ms-light_ms_<=kLightTurnMs) return 2;
-    return right_after_==2 ? 1 : 0;
+    return sign_idx_>=0 && sign_idx_<kSignSeqN ? (kSignSeqLeft[sign_idx_] ? 2 : 1) : 0;
 }
 void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
@@ -263,6 +263,7 @@ void Planner::Reset(bool preserve_lights) {
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=last_obstacle_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
 }
 Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params) {
+    if(params.sign_seq_next!=sign_seq_applied_) { sign_idx_=sign_seq_applied_=params.sign_seq_next; sign_turn_counted_=false; }
     params.Validate();
     Plan plan;
     const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=kStaleImageMs;
@@ -280,6 +281,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
+        if(turning_ && sign_turn_counted_) { --sign_idx_; sign_turn_counted_=false; }  // rẽ dở bị Space: đặt lại xe thì vẫn gặp lại biển đó
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN();
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=vote.round_bottom=false;  // phiếu đảo cũ không mở lại lần qua sau G
@@ -372,13 +374,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
         if(fresh) for(const auto &d:batch.items) {
-            // Quân 13/11 l16: sau biển right, biển kế luôn là no_left hoặc right (kèm đèn) -> rẽ phải. Model t94 nhầm no_left cạnh đèn
-            // thành no_right (9/12 lô, conf tới 0,99): khi đã qua lượt rẽ biển right (right_after_==2) thì no_right tính là rẽ phải.
-            const bool no_right_as_right=d.class_name=="no_right" && right_after_==2;
+            // Chuỗi biển cố định (kSignSeq*): biển rẽ trong chuỗi tính theo hướng của chuỗi, không theo lớp model.
             const bool turn_sign=d.class_name=="left" || d.class_name=="right" || d.class_name=="no_left" || d.class_name=="no_right";
-            const bool light2_left=turn_sign && light_turns_==1 && light_ms_>=0 && now_ms-light_ms_<=kLightTurnMs;
-            const bool signLeft=d.class_name=="left" || (d.class_name=="no_right" && !no_right_as_right) || light2_left;
-            const bool signRight=!light2_left && (d.class_name=="right" || d.class_name=="no_left" || no_right_as_right);
+            const bool seq=turn_sign && sign_idx_>=0 && sign_idx_<kSignSeqN;
+            const bool signLeft=seq ? kSignSeqLeft[sign_idx_] : d.class_name=="left" || d.class_name=="no_right";
+            const bool signRight=seq ? !kSignSeqLeft[sign_idx_] : d.class_name=="right" || d.class_name=="no_left";
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
             const bool parking_sign=params.park_enable && d.class_name=="parking";
@@ -399,8 +399,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
                b.x<0 || b.y<0 || b.width<=0 || b.height<=0 || double(b.x)+b.width>1280 || double(b.y)+b.height>720 ||
                double(b.width)*b.height/(1280.0*720.0)<area || ((signLeft || signRight) && b.width<kSignMinWidthFrac*1280)) continue;
-            if(d.class_name=="right" && right_after_==0) right_after_=1;  // đã thấy biển right hợp lệ (chưa rẽ)
-            if(d.class_name=="red" || d.class_name=="green" || d.class_name=="off") light_ms_=now_ms;
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
@@ -853,9 +851,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Log l15 (f3248-3901): ngã T thứ hai nằm ngay sau ngã T thứ nhất; ra khỏi cung thứ nhất là bên trái đã mở cả 4 hàng gần,
         // chưa từng có mép trái thật trong 2 s (đang rẽ không lấy phiếu) nên real_before không bao giờ đạt -> st3 không đòi real_before.
         const bool route_T2=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==3;
-        // Log l16 (151,0 s): rẽ ngã T thứ hai chỉ 1,4 cm sau khi hết cung thứ nhất -> phải bám làn thêm kRouteT2GapCm mới nhận (phiếu cũ thành false).
+        // Log l16 (151,0 s): rẽ ngã T thứ hai chỉ 1,4 cm sau khi hết cung thứ nhất -> phải bám làn thêm route_t2_gap_cm (yaml) mới nhận (phiếu cũ thành false).
         const bool t2_gap_ok=!route_T2 || !std::isfinite(turn_last_odo_) ||
-                             (std::isfinite(input.odo_cm) && std::abs(input.odo_cm-turn_last_odo_)>=kRouteT2GapCm);
+                             (std::isfinite(input.odo_cm) && std::abs(input.odo_cm-turn_last_odo_)>=params.route_t2_gap_cm);
         const bool junction=turn_direction_ && t2_gap_ok && (route_T ? G : ((opened>=2 && (real_before || route_T2)) || side_road));
         if(turn_direction_) junction_votes_.push_back(junction);
         if(corridor_turn_) {
@@ -944,9 +942,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
                 // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
                 if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
+                else if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==3) turn_steer_scale_=kT2SteerScale;
                 // Lượt rẽ theo biển: rẽ của biển right -> nhớ cho biển kế (2); rẽ của biển kế -> xóa (0).
-                if(!barrier_turn_ && !rb_turn_) right_after_=right_after_==1 && turn_direction_<0 ? 2 : 0;
-                if(!barrier_turn_ && !rb_turn_ && light_ms_>=0 && now_ms-light_ms_<=kLightTurnMs) ++light_turns_;
+                sign_turn_counted_=!barrier_turn_ && !rb_turn_ && sign_idx_>=0 && sign_idx_<kSignSeqN;
+                if(sign_turn_counted_) ++sign_idx_;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }

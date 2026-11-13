@@ -41,7 +41,7 @@ public:
     const std::string &RouteNote() const { return route_note_; }
     // Hướng rẽ đang giữ (0 không có, 1 phải, -1 trái; chỉ đọc, để ghi log chẩn đoán).
     int TurnDirection() const { return turn_direction_; }
-    // Nhãn biển cho telemetry (chỉ hiển thị): 1 = ngã đèn 1 (no_right -> no_left), 2 = ngã đèn 2 (no_left -> no_right, right -> left), 0 = giữ.
+    // Nhãn biển cho telemetry (chỉ hiển thị): 1 = biển kế là rẽ phải, 2 = biển kế là rẽ trái (theo chuỗi biển cố định), 0 = giữ lớp model.
     int TelemetrySignMap(int64_t now_ms) const;
     // Thông tin cua IMU để ghi log (chỉ đọc).
     struct TurnInfo { int active=0; double yaw0=0, target=0, err=0; std::string end; };
@@ -149,8 +149,7 @@ private:
     bool park_prefwd_=false, park_prefwd_done_=false;
     bool st7_hold_on_=false, st7_hold_done_=false; double st7_hold_odo_=0;  // giữ hướng trục st7 tới vật cản (kSt7* trong Planner.cpp)
     double st7_ref_=0, st7_cap_yaw_=0, st7_cap_odo_=std::numeric_limits<double>::quiet_NaN();  // hướng st7 tự chốt khi yaw ổn định
-    int64_t light_ms_=-1; int light_turns_=0;  // lần cuối thấy đèn; số lượt rẽ theo biển có đèn (không xóa khi Space/G)
-    int right_after_=0;  // 0: chưa; 1: thấy biển right; 2: đã rẽ theo biển right -> biển kế no_right tính là rẽ phải
+    int sign_idx_=0, sign_seq_applied_=-1; bool sign_turn_counted_=false;  // vị trí trong chuỗi biển cố định (kSignSeq*); không xóa khi Space/G
     double turn_last_odo_=std::numeric_limits<double>::quiet_NaN();  // odo cuối cùng còn trong lượt rẽ (khoảng cách tới ngã T thứ hai)  // đang tiến trước khi lùi; đã tiến trước trong lượt đỗ này
     int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
     // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
