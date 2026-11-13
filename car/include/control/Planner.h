@@ -126,6 +126,7 @@ private:
     // Cua L phải sau cầu trước VX1 (Quân duyệt 11/11): đảo thấy ở mép phải rồi các hàng gần phủ kín ảnh.
     bool l_armed_=false, l_done_=false, l_turning_=false;
     double l_seen_odo_=0;
+    std::deque<std::pair<double,double>> l_yaw_hist_; // (odo, yaw) trong cửa sổ kLArmCm trước cua L
     int l_right_run_=0, l_open_run_=0;
     // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11).
     // FSM đỗ theo ucr (Quân 11/11 18:54): CHO -> LUI_THANG -> LUI1 (cung về phía ô) -> LUI2 (cung ngược) -> TIEN_GIUA -> KIEM -> XONG.
