@@ -129,6 +129,8 @@ constexpr int kParkTofAgeMs=300;
 // lùi thẳng park_entry_cm; tiến căn giữa 6 cm/s một đoạn 21,43 + (park_entry_cm mod 50) cm (ucr: 31,4 với lối vào 10);
 // lỗi khi quay sai chiều > 10°, lệch hướng > 8° lúc tiến căn giữa; kiểm cuối |lệch| <= 3°.
 constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=21.43;
+// Log l06: R1 cuối bãi +113 cm; R2 mất làn tạm ở +48/+60 cm.
+constexpr double kParkEndLostCm=100;
 constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=8, kParkSteerHardDeg=45;
 constexpr int64_t kParkFixedMaxMs=20000, kParkCheckMs=400;
 // park_tof_map: 4 chữ số (khe+1) theo thứ tự trái-sau, trái-trước, phải-trước, phải-sau; 0 = chưa đo.
@@ -208,7 +210,7 @@ void Planner::Reset(bool preserve_lights) {
     park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0; park_ms0_=park_prog_ms_=-1;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
-    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=0;
+    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0;
     rb_hold_spent_=true; rb_holding_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -852,8 +854,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
     }
     // Đỗ xe (chặng 8). Cần turn_enable (yaw/encoder chỉ được đọc khi bật rẽ).
+    ControlResult park_lane_result;
+    bool park_lane_processed=false;
     auto park_go_fixed=[&](const std::string &why) {  // ô cố định cuối đường (ToF chưa hiệu chuẩn/quét mơ hồ)
-        park_phase_=ParkPhase::TIEN; park_fixed_=true; park_end_run_=0; park_fixed_ms0_=now_ms; park_last_mask_ms_=input.mask_ms;
+        park_phase_=ParkPhase::TIEN; park_fixed_=true; park_end_run_=park_lost_run_=0; park_fixed_ms0_=now_ms; park_last_mask_ms_=input.mask_ms;
         park_odo0_=input.odo_cm; park_step_cm_=0; park_cap_cms_=kParkFixedCms;
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
     };
@@ -886,14 +890,23 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // đường; mặt nạ trống toàn bộ (segmentation hụt) không tính (review P6 M-1).
             if(input.mask_ms!=park_last_mask_ms_ && mask_fresh && !input.mask.empty() && input.mask.type()==CV_8UC1) {
                 park_last_mask_ms_=input.mask_ms;
+                // Xử lý chính mặt nạ này sớm, rồi dùng lại bên dưới; không gọi Step hai lần.
+                const auto mode=swerve_!=Swerve::NONE ? TrajMode::AVOID_LEFT : returning ? TrajMode::RETURN_RIGHT : rb_in_pass_ ? TrajMode::ROUNDABOUT : TrajMode::LANE;
+                park_lane_result=lane_.Step(input.mask,input.mask_ms,now_ms,params,mode,turn_direction_==0);
+                park_lane_processed=true;
+                const auto &lost_reason=park_lane_result.debug.reason;
+                const bool lane_lost=lost_reason=="MAT_LAN_GIU" || lost_reason=="MAT_LAN_DUNG" || lost_reason=="MAT_LAN";
                 const int y=std::max(0,std::min(input.mask.rows-2,int(std::lround((input.mask.rows-1)*kParkEndRowFrac))));
                 const bool row_empty=cv::countNonZero(input.mask.row(y))==0;
                 const bool near_road=cv::countNonZero(input.mask.rowRange(y+1,input.mask.rows))>0;
                 park_end_run_=row_empty && near_road ? park_end_run_+1 : 0;
+                park_lost_run_=near_road && lane_lost && std::isfinite(input.odo_cm) && std::isfinite(park_odo0_) &&
+                    std::abs(input.odo_cm-park_odo0_)>=kParkEndLostCm ? park_lost_run_+1 : 0;
             }
-            if(park_end_run_>=std::max(1,params.vote_min)) {
+            if(input.mask_ms!=park_last_mask_ms_) park_lost_run_=0;
+            if(park_end_run_>=std::max(1,params.vote_min) || park_lost_run_>=std::max(1,params.vote_min)) {
                 ClearTurn(); park_ms0_=now_ms; state_=PlannerState::DO_XE; park_phase_=ParkPhase::CHO;
-                reason_="DO_XE_CHO"; park_note_+=" -> CUOI_DUONG";
+                reason_="DO_XE_CHO"; park_note_+=park_end_run_>=std::max(1,params.vote_min) ? " -> CUOI_DUONG" : " -> CUOI_DUONG_MAT_LAN";
             } else if(now_ms-park_fixed_ms0_>kParkFixedMaxMs) {
                 park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; ClearTurn();
                 state_=PlannerState::DUNG; reason_="DO_XE_KHONG_THAY_CUOI_DUONG";
@@ -1091,7 +1104,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         plan.reason=reason_; plan.debug.state=StateName(state_); plan.debug.reason=plan.reason; return plan;
     }
     plan.mode=swerve_!=Swerve::NONE ? TrajMode::AVOID_LEFT : returning ? TrajMode::RETURN_RIGHT : rb_in_pass_ ? TrajMode::ROUNDABOUT : TrajMode::LANE;
-    const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode,turn_direction_==0);
+    const auto result=park_lane_processed ? park_lane_result : lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode,turn_direction_==0);
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
     // Log 12/11 (l14, l17, l19): trong pha về làn phải, khi vật còn bên cạnh trái xe, bộ bám làn bẻ TRÁI (+5..+12°) vì e ở hàng nhìn xa ≈ 0
