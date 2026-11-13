@@ -139,6 +139,10 @@ private:
     double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
     double park_scan_yaw_=std::numeric_limits<double>::quiet_NaN();
     int64_t park_ms0_=-1, park_prog_ms_=-1;
+    // TIEN_GIUA: chỉ tiến sau khi lái về 0 VÀ xe đứng yên đủ lâu (mốc odo/thời điểm của cửa sổ đứng yên).
+    double park_still_odo_=0;
+    int64_t park_still_ms_=-1;
+    bool park_center_go_=false;
     int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
     // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
     int park_mode_=0, park_unknown_=0;

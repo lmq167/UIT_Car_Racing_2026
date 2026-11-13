@@ -6,6 +6,10 @@
 namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
+// Quân 13/11 l11: biển P nhận kém (l08/l09 nửa số hộp P có conf 0,3-0,5; l11 lần 1 có 0,48/0,91/0,59 không đủ 3/5) -> 0,35, vẫn cần 3/5 lô.
+constexpr double kParkConfMin=0.35;
+// Quân 13/11: hộp "right" lẻ conf 0,25-0,30 hiện ở chỗ biển P (l09 412-415 s, l10 424/429 s, l11 170 s); biển right thật phần lớn > 0,4.
+constexpr double kRightConfMin=0.40;
 constexpr double kObstacleConfMin=0.5;
 constexpr double kSwervePresentFrac=0.5; // TẠM: hộp hẹp hơn nửa bề rộng lớn nhất từ lúc bắt đầu né không giữ pha trái.
 // TẠM: tâm hộp vật làn phải. Log 10/11 (1794302164): vật làn phải khi xe lệch hướng có tâm 0,43-0,45 (ngưỡng 0,45 làm không né),
@@ -144,6 +148,10 @@ constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kPark
 constexpr double kParkEndLostCm=100;
 constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=8, kParkSteerHardDeg=45;
 constexpr int64_t kParkFixedMaxMs=20000, kParkCheckMs=400;
+// Log l10/l11: trôi lùi 9–11 cm sau lệnh tiến (lệnh +6 gửi ngay khi lái <= 1° lúc xe còn trôi lùi từ cung 2).
+// TIEN_GIUA chỉ tiến khi |odo đổi| < kParkStillCm suốt >= kParkStillMs; thời gian chờ vẫn tính vào hạn pha/hạn kẹt.
+constexpr double kParkStillCm=0.3;
+constexpr int64_t kParkStillMs=300;
 // park_tof_map: 4 chữ số (khe+1) theo thứ tự trái-sau, trái-trước, phải-trước, phải-sau; 0 = chưa đo.
 int ParkTofSlot(int map, int pos) {
     static const int div[4]={1000,100,10,1};
@@ -219,6 +227,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_yaw_hist_.clear(); l_seen_odo_=0; l_right_run_=l_open_run_=0;
     park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0; park_ms0_=park_prog_ms_=-1;
+    park_still_ms_=-1; park_center_go_=false;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0;
@@ -250,6 +259,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=vote.round_bottom=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
+        park_still_ms_=-1; park_center_go_=false;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
         state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN();
@@ -348,9 +358,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { conf=params.red_conf_min; area=params.red_box_min_area_frac; }
             else if(d.class_name=="green") { conf=params.green_conf_min; area=params.green_box_min_area_frac; }
             else if(d.class_name=="off") { conf=params.off_conf_min; area=params.off_box_min_area_frac; }
-            else if(barrier || roundabout || parking_sign) conf=kBarrierConfMin;
+            else if(barrier || roundabout) conf=kBarrierConfMin;
+            else if(parking_sign) conf=kParkConfMin;
             else if(person) conf=kPersonConfMin;
             else if(!(params.turn_enable && !turning_ && (!turn_fault_ || fallback) && (signLeft || signRight))) continue;
+            if(d.class_name=="right") conf=kRightConfMin;
             const auto &b=d.box;
             if(d.captured_ms!=batch.captured_ms || !std::isfinite(d.confidence) || d.confidence<conf || d.confidence>1 ||
                !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
@@ -961,6 +973,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         auto stop_park=[&](const char *why) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; state_=PlannerState::DUNG; reason_=why; };
         auto start_phase=[&](ParkPhase phase, const char *why) {
             park_phase_=phase; park_odo0_=park_prog_odo_=input.odo_cm; park_ms0_=park_prog_ms_=now_ms; reason_=why;
+            park_still_ms_=-1; park_center_go_=false;
         };
         const double entry_cm=park_fixed_ ? params.park_entry_cm : 0;
         const bool moving=park_phase_==ParkPhase::LUI_THANG || park_phase_==ParkPhase::LUI1 ||
@@ -1056,7 +1069,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(park_phase_==ParkPhase::LUI2 && turned<=kParkYawDoneDeg) start_phase(ParkPhase::TIEN_GIUA,"DO_XE_TIEN_GIUA");
             else if(park_phase_==ParkPhase::TIEN_GIUA) {
                 if(std::abs(turned)>kParkCenterYawMaxDeg) stop_park("DO_XE_LECH_HUONG");
-                else if(moved>=center_cm) start_phase(ParkPhase::KIEM,"DO_XE_KIEM");
+                // Mốc quãng giữ nguyên: park_odo0_ = odo lúc vào TIEN_GIUA; trôi lùi lúc chờ được bù lại khi tiến (|odo - mốc|).
+                else if(park_center_go_ && moved>=center_cm) start_phase(ParkPhase::KIEM,"DO_XE_KIEM");
             }
         }
         if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
@@ -1069,7 +1083,16 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 target=(park_phase_==ParkPhase::LUI1 ? 1 : -1)*params.park_side*std::min(params.park_steer_deg,lim);
             // Hết cung 2 bánh còn đang bẻ hết cỡ: tiến ngay trong lúc trả lái làm xe quay tiếp ~1° và hỏng kiểm cuối (<= 3°) -> DO_XE_LECH_HUONG thay vì DO_XE_XONG.
             // Đứng yên tới khi góc lái đã về gần 0 (thời gian đứng vẫn tính vào hạn pha và hạn kẹt) rồi mới tiến căn giữa.
-            } else if(park_phase_==ParkPhase::TIEN_GIUA) cms=std::abs(sent_angle_)>1.0 ? 0.0 : std::min(kParkCenterCms,params.max_speed_cms);
+            } else if(park_phase_==ParkPhase::TIEN_GIUA) {
+                // Thêm (V39): còn phải đứng yên kParkStillMs; odo NaN/mẫu hỏng/lái chưa về thì cửa sổ đứng yên bắt đầu lại.
+                const bool steer_ok=std::abs(sent_angle_)<=1.0;
+                if(!park_center_go_) {
+                    if(park_glitch || !std::isfinite(input.odo_cm) || !steer_ok) park_still_ms_=-1;
+                    else if(park_still_ms_<0 || std::abs(input.odo_cm-park_still_odo_)>=kParkStillCm) { park_still_odo_=input.odo_cm; park_still_ms_=now_ms; }
+                    else if(now_ms-park_still_ms_>=kParkStillMs) park_center_go_=true;
+                }
+                cms=park_center_go_ && steer_ok ? std::min(kParkCenterCms,params.max_speed_cms) : 0.0;
+            }
             if(person_stop_ || park_glitch) { cms=0; target=sent_angle_; }
             const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             sent_angle_=std::max(-lim,std::min(lim,std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
