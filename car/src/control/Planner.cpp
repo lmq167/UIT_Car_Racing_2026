@@ -180,7 +180,6 @@ constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500, kSt7StableDeg=2, kSt7StableCm=
 constexpr int kSignSeqN=4;
 constexpr bool kSignSeqLeft[kSignSeqN]={false,false,true,true};
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
-constexpr double kT2SteerScale=0.9;   // Quân 13/11: cung ngã T thứ hai (c3) hơi gắt -> 25 -> 22,5°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -942,7 +941,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
                 // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
                 if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
-                else if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==3) turn_steer_scale_=kT2SteerScale;
+                else if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==3) turn_steer_scale_=params.route_t2_steer_scale;
                 // Lượt rẽ theo biển: rẽ của biển right -> nhớ cho biển kế (2); rẽ của biển kế -> xóa (0).
                 sign_turn_counted_=!barrier_turn_ && !rb_turn_ && sign_idx_>=0 && sign_idx_<kSignSeqN;
                 if(sign_turn_counted_) ++sign_idx_;

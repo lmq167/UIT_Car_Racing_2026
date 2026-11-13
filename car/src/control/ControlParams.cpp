@@ -34,6 +34,7 @@ const Parameter table[] = {
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
     {"turn_steer_deg",36.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
     {"route_t2_gap_cm",115.0,&ControlParams::route_t2_gap_cm,0,300,"cm","Quân 13/11: chặng vòng xuyến, bám làn chừng này cm sau khi hết cung rẽ trái ngã T thứ nhất rồi mới nhận ngã T thứ hai"},
+    {"route_t2_steer_scale",0.85,&ControlParams::route_t2_steer_scale,0.5,1.2,"x","Quân 13/11: hệ số góc lái cung rẽ trái ngã T thứ hai chặng vòng xuyến (nhân turn_steer_deg; nhỏ hơn = cung rộng hơn)"},
     {"st7_left_bias_deg",3.0,&ControlParams::st7_left_bias_deg,0,10,"deg","Quân 13/11: chặng cuối vòng xuyến (qua 2 ngã T tới vật cản), hướng đi thẳng chốt bằng IMU cộng thêm chừng này độ sang trái (chốt lúc bám làn phải nên hơi chếch phải)"},
     {"sign_seq_next",0,&ControlParams::sign_seq_next,0,4,"1","Quân 13/11: biển rẽ kế tiếp trong chuỗi cố định (0 right, 1 đèn no_left/right, 2 left/no_right, 3 đèn no_right/left, 4 hết chuỗi = theo model); đổi giá trị rồi R để đặt lại sau khi chạy lỗi"},
     {"turn_left_delay_cm",0.0,&ControlParams::turn_left_delay_cm,0,60,"cm","Quân 12/11: rẽ TRÁI theo biển chờ thêm chừng này (tính từ lúc mặt nạ xác nhận ngã rẽ) rồi mới bắt đầu rẽ; 0 = như cũ. Log l25: rẽ trái vào hầm hơi sớm, va thành hầm"},
