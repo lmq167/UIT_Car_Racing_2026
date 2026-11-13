@@ -205,7 +205,7 @@ void Planner::Reset(bool preserve_lights) {
     obstacle_votes_.clear(); last_mask_ms_=-1; obstacle_clear_run_=0; ahead_clear_lots_=-1;
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_yaw_hist_.clear(); l_seen_odo_=0; l_right_run_=l_open_run_=0;
-    park_phase_=ParkPhase::NONE; park_run_=0; park_ms0_=park_prog_ms_=-1;
+    park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0; park_ms0_=park_prog_ms_=-1;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=0;
@@ -236,10 +236,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false;
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
-        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_run_=0;
+        state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
-        state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE;
+        state_=PlannerState::DUNG; reason_=kMissingImageReason; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN();
     } else if(input.go && (state_==PlannerState::CHO_SAN_SANG || state_==PlannerState::DUNG)) {
         if(!image_fresh || !mask_fresh) {
             if(params.turn_enable && sensor_bad) { ClearTurn(); turn_fault_=true; rb_pending_=0; sensor_good_ms_=-1; }
@@ -856,10 +856,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
     };
     if(!params.park_enable || !params.turn_enable) {
-        if(park_phase_==ParkPhase::TIEN) { park_phase_=ParkPhase::NONE; park_fixed_=false; }
+        if(park_phase_==ParkPhase::TIEN) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; }
     } else {
         if(park_phase_==ParkPhase::NONE && state_==PlannerState::BAM_LAN && !turning_ && !turn_direction_ &&
            swerve_==Swerve::NONE && !returning && !rb_in_pass_ && !rb_holding_ && !sensor_bad && park_run_>=params.vote_min) {
+            park_scan_yaw_=input.yaw_deg;
             park_mode_=0; park_unknown_=0; park_scan_cm_=park_creep_cm_=0; park_fixed_=false;
             if(params.park_tof_map==0) park_go_fixed("BIEN_P TOF_CHUA_HIEU_CHUAN");
             else {
@@ -873,10 +874,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const bool park_tien_bad=sensor_bad && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
         // Hỏng từ kSensorGlitchMs lúc đang tiến quét/dò mép (không còn biết quãng): DỪNG có lý do như pha quét/lùi, không hủy ngầm rồi bám làn tốc độ thường trong bãi.
         if(park_phase_==ParkPhase::TIEN && park_tien_bad && state_==PlannerState::BAM_LAN) {
-            park_phase_=ParkPhase::NONE; park_fixed_=false; ClearTurn(); state_=PlannerState::DUNG; reason_="DO_XE_CAM_BIEN"; lane_.Reset();
+            park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; ClearTurn(); state_=PlannerState::DUNG; reason_="DO_XE_CAM_BIEN"; lane_.Reset();
         }
         if(park_phase_==ParkPhase::TIEN && (state_!=PlannerState::BAM_LAN || turning_ || turn_direction_ || park_tien_bad ||
-                                            rb_in_pass_ || rb_holding_)) { park_phase_=ParkPhase::NONE; park_fixed_=false; }
+                                            rb_in_pass_ || rb_holding_)) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; }
         if(park_phase_==ParkPhase::TIEN && park_fixed_) {
             if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) park_fixed_ms0_+=now_ms-command_ms_;  // đứng vì người không tính
             // Cuối đường: vote_min mặt nạ MỚI liên tiếp có hàng 90% trống VÀ các hàng sát đầu xe (dưới hàng đó) vẫn có
@@ -892,7 +893,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 ClearTurn(); park_ms0_=now_ms; state_=PlannerState::DO_XE; park_phase_=ParkPhase::CHO;
                 reason_="DO_XE_CHO"; park_note_+=" -> CUOI_DUONG";
             } else if(now_ms-park_fixed_ms0_>kParkFixedMaxMs) {
-                park_phase_=ParkPhase::NONE; park_fixed_=false; ClearTurn();
+                park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; ClearTurn();
                 state_=PlannerState::DUNG; reason_="DO_XE_KHONG_THAY_CUOI_DUONG";
             }
         } else if(park_phase_==ParkPhase::TIEN && std::abs(input.odo_cm-park_odo0_)>=park_step_cm_) {
@@ -902,7 +903,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
     }
     if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
-        auto stop_park=[&](const char *why) { park_phase_=ParkPhase::NONE; park_fixed_=false; state_=PlannerState::DUNG; reason_=why; };
+        auto stop_park=[&](const char *why) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; state_=PlannerState::DUNG; reason_=why; };
         auto start_phase=[&](ParkPhase phase, const char *why) {
             park_phase_=phase; park_odo0_=park_prog_odo_=input.odo_cm; park_ms0_=park_prog_ms_=now_ms; reason_=why;
         };
@@ -976,7 +977,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         } else if(park_phase_==ParkPhase::KIEM) {
             if(now_ms-park_ms0_>=kParkCheckMs) {
                 if(std::abs(WrapDeg(input.yaw_deg-park_yaw0_))<=kParkYawDoneDeg) {
-                    park_phase_=ParkPhase::XONG; state_=PlannerState::DO_XE_XONG; reason_="DO_XE_XONG";
+                    park_phase_=ParkPhase::XONG; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); state_=PlannerState::DO_XE_XONG; reason_="DO_XE_XONG";
                 } else stop_park("DO_XE_LECH_HUONG");
             }
         } else if(moving) {
@@ -1176,6 +1177,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
         }
         plan.debug.speed_cms=plan.cmd.cms;
+    }
+    // Log 13/11 l04: mask bãi đỗ nhiễu, yaw lệch 13,5° (phần lớn ở pha tìm cuối bãi); mọi pha TIẾN trong bãi giữ trục lúc nhận P.
+    // Mask vẫn dùng để nhận cuối bãi/mất làn; chỉ góc lái theo IMU.
+    if(park_phase_==ParkPhase::TIEN && std::isfinite(park_scan_yaw_) && !sensor_bad) {
+        const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,
+            params.rb_yaw_kp*WrapDeg(park_scan_yaw_-input.yaw_deg)));
+        const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+        const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
+        sent_angle_=angle; plan.cmd.deg=angle; plan.debug.angle_deg=angle;
     }
     if(park_phase_==ParkPhase::TIEN && park_cap_cms_>0) {  // tiến từng bước quét ô: chậm để dừng đúng vị trí
         plan.cmd.cms=std::min(plan.cmd.cms,park_cap_cms_); plan.debug.speed_cms=plan.cmd.cms;
