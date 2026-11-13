@@ -55,6 +55,7 @@ struct ControlInput {
     std::shared_ptr<const control::ControlParams> params;
     YoloResult yolo;
     SensorSample sensor;
+    uint64_t sign_jumps=0;  // số lần bấm N (đếm dồn, luồng điều khiển áp phần chênh)
 };
 struct CommandStamped {
     control::Plan plan;
@@ -278,7 +279,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 control::Planner planner;
                 std::string lastParkNote;
                 ControlInput input;
-                uint64_t epoch=~uint64_t(0),id=0;
+                uint64_t epoch=~uint64_t(0),id=0,signJumps=0;
                 bool goPending=false;
                 auto previous=Clock::now();
                 while (!quit) {
@@ -306,6 +307,11 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         pi.encoder_ok=std::isfinite(pi.odo_cm) && pi.sensor_ms>=0 &&
                             pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
+                        for (; signJumps<input.sign_jumps; ++signJumps) {
+                            static const char* const kSignNames[]={"0 right","1 den: no_left/right","2 left/no_right","3 den: no_right/left","4 het chuoi (theo model)"};
+                            const int next=planner.NextSign();
+                            std::cout<<"BIEN KE TIEP: "<<kSignNames[next>=0 && next<=4 ? next : 4]<<std::endl; trace("sign_jump",std::to_string(next));
+                        }
                         auto plan=planner.Step(pi,now,*input.params);
                         telemetrySignMap.store(planner.TelemetrySignMap(now),std::memory_order_relaxed);
                         if (planner.ParkNote()!=lastParkNote) {  // log quá trình đỗ: biển P, quét ToF, chọn ô, quyết định
@@ -397,7 +403,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         double safetyPeakMs=0;
         auto safetyPrevious=Clock::now();
         std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
-        uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0;
+        uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0,signJumps=0;
         int every=params->record_every_n;
         int64_t nextStats=boot+2000,statsStart=boot,highSince=0,lastAdapt=boot,lastRowMs=boot;
         Statistics stats;
@@ -458,6 +464,9 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
                     else if (!imageFresh || !maskFresh) trace("go",imageFresh ? "ignored MAT_NAN_CU" : "ignored MAT_ANH");
                     else if (!enabled) { enabled=true; latch.clear(); reason="BAM_LAN"; ++epoch; }
+                } else if (key=='n' || key=='N') {
+                    // Quân 13/11: nhảy sang biển kế trong chuỗi biển cố định; chỉ khi dừng như R.
+                    if (enabled) trace("sign_jump","ignored"); else ++signJumps;
                 } else if (key=='r' || key=='R') {
                     if (enabled) trace("reload","ignored");
                     else {
@@ -510,7 +519,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true;
                 }
             } else { sensor=plannerSensor=SensorSample{}; sensorFaultPending=false; }
-            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor});
+            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor,signJumps});
             double speed=0; int angle=0; bool parkSteer=false;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
@@ -695,7 +704,7 @@ int main(int argc,char** argv) {
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
     if (options.help) {
         std::cout<<"ucr_auto [--control control.yaml] [--model-dir $HOME/ucr_models] [--no-yolo] [--debug-windows] [--out-root runs_auto]\n"
-                 <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
+                 <<"G chạy; Space dừng; R nạp khi dừng; N nhảy biển kế khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
         return 0;
     }
     struct sigaction action{}; action.sa_handler=signalStop; sigemptyset(&action.sa_mask);

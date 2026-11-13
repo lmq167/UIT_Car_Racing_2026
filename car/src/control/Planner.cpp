@@ -244,6 +244,10 @@ void Planner::ClearTurn() {
 int Planner::TelemetrySignMap(int64_t /*now_ms*/) const {
     return sign_idx_>=0 && sign_idx_<kSignSeqN ? (kSignSeqLeft[sign_idx_] ? 2 : 1) : 0;
 }
+int Planner::NextSign() {
+    sign_idx_=sign_idx_>=0 && sign_idx_<kSignSeqN ? sign_idx_+1 : 0; sign_turn_counted_=false;
+    return sign_idx_;
+}
 void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;

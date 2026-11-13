@@ -43,6 +43,8 @@ public:
     int TurnDirection() const { return turn_direction_; }
     // Nhãn biển cho telemetry (chỉ hiển thị): 1 = biển kế là rẽ phải, 2 = biển kế là rẽ trái (theo chuỗi biển cố định), 0 = giữ lớp model.
     int TelemetrySignMap(int64_t now_ms) const;
+    // Quân 13/11: phím N (khi dừng) nhảy sang biển kế trong chuỗi cố định; 4 = hết chuỗi, bấm tiếp quay về 0. Trả vị trí mới.
+    int NextSign();
     // Thông tin cua IMU để ghi log (chỉ đọc).
     struct TurnInfo { int active=0; double yaw0=0, target=0, err=0; std::string end; };
     TurnInfo Turn() const { return {turning_ ? 1 : 0,yaw0_,turning_ ? turn_target_deg_ : 0.0,turning_ ? turn_err_deg_ : 0.0,turn_end_note_}; }
