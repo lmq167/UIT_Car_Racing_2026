@@ -56,7 +56,7 @@ private:
     bool rb_hold_check_=false; // G-sau-Space: lần qua đảo kế tiếp (chỉ một lần) không giữ hướng theo yaw lúc mở
     std::string route_note_;
     void RouteStable(int q);
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false, parking=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     std::deque<bool> junction_votes_;
@@ -134,7 +134,7 @@ private:
     ParkPhase park_phase_=ParkPhase::NONE;
     double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
     int64_t park_ms0_=-1, park_prog_ms_=-1;
-    int park_run_=0;  // số lô YOLO tươi liên tiếp có biển parking
+    int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
     // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
     int park_mode_=0, park_unknown_=0;
     double park_step_cm_=0, park_scan_cm_=0, park_creep_cm_=0, park_cap_cms_=0;

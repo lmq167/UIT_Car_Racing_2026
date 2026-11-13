@@ -360,9 +360,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big,parking});
                 l_right_run_=round_right ? l_right_run_+1 : 0;
-                park_run_=parking ? park_run_+1 : 0;
                 if(l_right_run_>=params.vote_min && !route_anchored_ && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
@@ -375,11 +374,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             return vote.ms>now_ms || now_ms-newest>params.det_max_age_ms || newest-vote.ms>params.det_max_age_ms;
         }),votes_.end());
         while(votes_.size()>size_t(params.vote_window)) votes_.pop_front();
-        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_wide=0,barriers_seen=0,rounds=0,rounds_big=0,persons=0;
+        int reds=0,greens=0,lefts=0,rights=0,barriers=0,barriers_wide=0,barriers_seen=0,rounds=0,rounds_big=0,persons=0,parkings=0;
         for(const auto &v:votes_) {
             reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_wide+=v.barrier_wide; barriers_seen+=v.barrier_seen;
-            rounds+=v.round; rounds_big+=v.round_big; persons+=v.person;
+            rounds+=v.round; rounds_big+=v.round_big; persons+=v.person; parkings+=v.parking;
         }
+        // Log 13/11 lần 1: một lô conf thấp cắt chuỗi liên tiếp, nên parking đếm phiếu trong cửa sổ.
+        park_run_=parkings;
         if(fresh && person_present) person_seen_ms_=std::max(person_seen_ms_,batch.captured_ms);
         if(persons>=params.vote_min) person_latched_=true;
         if(person_latched_ && fresh && !person_present && person_seen_ms_>=0 &&
