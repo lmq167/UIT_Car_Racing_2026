@@ -106,6 +106,8 @@ constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
 // Log l27 12/11: Quân báo xe rẽ phải ở vòng xuyến 1 hơi SỚM. Cung phải chỉ bắt đầu sau khi đã đi kRbArcDelayCm kể từ lúc mở lần qua. TẠM, CHƯA ĐO.
 constexpr double kRbArcDelayCm=15;
+// Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
+constexpr double kRb2ArcDelayCm=40;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
 // Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
 // giữ hướng bằng IMU theo hướng lúc mất làn (cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua). TẠM, CHƯA ĐO.
@@ -805,7 +807,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
     if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // review LOW-1: không dùng đếm cũ
-    if(l_armed_ && (!l_rearm_ok || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
+    // Log l08: odo trống 51 ms xóa chờ cua L, xe qua góc bằng bám làn. Mẫu hỏng ngắn hơn kSensorGlitchMs giữ chờ (bắt đầu cua vẫn cần cảm biến tốt).
+    const bool l_odo_lost=!std::isfinite(input.odo_cm) && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
+    if(l_armed_ && (!l_rearm_ok || rb_in_pass_ || l_odo_lost || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
     if(params.turn_enable && l_armed_ && !l_done_ && !turning_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
        swerve_==Swerve::NONE && !returning && !rb_holding_ && !sensor_bad && mask_fresh && !input.stop &&
        !turn_fault_ && l_mask_counted && std::isfinite(input.yaw_deg) && l_open_run_>=params.vote_min) {
@@ -1117,9 +1121,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     // Log l27 12/11 (16925, dòng 1088-1096): hộp đảo rời khung (VX_THOAT) khi cung phải mới quay 23°/57 cm; bỏ cung ở đó thì bám làn lái TRÁI +16° về phía đảo
     // (mặt nạ lối ra tách mảnh, hành lang được chọn nằm bên trái). Cung phải giữ cả khi đang mất phiếu đảo, tới khi đủ kRbArcDeg/kRbArcMaxCm hoặc hết lần qua (rb_lost_cm).
+    const double rb_arc_delay=route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==4 && rb_passes_==1 ? kRb2ArcDelayCm : kRbArcDelayCm;
     if(params.turn_enable && rb_in_pass_ && !rb_arc_off_ && !rb_hold_spent_ && swerve_==Swerve::NONE && !returning && !turning_ && !sensor_bad &&
        result.debug.state=="BAM_LAN" && std::isfinite(rb_yaw0_) && std::isfinite(rb_hold_odo_) && std::isfinite(input.yaw_deg) && std::isfinite(input.odo_cm) &&
-       WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)>=kRbArcDelayCm && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
+       WrapDeg(input.yaw_deg-rb_yaw0_)>-kRbArcDeg && std::abs(input.odo_cm-rb_hold_odo_)>=rb_arc_delay && std::abs(input.odo_cm-rb_hold_odo_)<kRbArcMaxCm && plan.cmd.deg>-kRbArcSteerDeg) {
         const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
         const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,-kRbArcSteerDeg));  // đổi góc không quá steer_rate_dps
         if(angle<plan.cmd.deg) {
