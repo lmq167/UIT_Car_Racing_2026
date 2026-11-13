@@ -5,6 +5,10 @@
 #include "tui_runtime.h"
 #include "control/Planner.h"
 #include "telemetry_state.h"
+#include <iomanip>
+#include <locale>
+#include <sstream>
+#include <opencv2/imgproc.hpp>
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
 #include "common/TelemetryClient.h"
 #endif
@@ -17,6 +21,31 @@ constexpr const char* kTelemetryIp="192.168.1.100";
 constexpr int kTelemetryPort=9999;
 constexpr const char* kTelemetryCarId="HDQT_No1";
 constexpr int kTelemetryPeriodMs=100;
+// Quân 13/11: video telemetry vẽ CHỈ hộp YOLO (khung, lớp, conf) trên BẢN SAO; hộp Decode ở hệ 1280x720; chỉ vẽ khi lô hộp đúng khung này.
+inline cv::Mat telemetryYoloOverlay(const cv::Mat& image,uint64_t frameId,int64_t capturedMs,const control::Detections& detections) {
+    if (image.empty() || capturedMs<0 || detections.frame_id!=frameId ||
+        detections.captured_ms!=capturedMs || detections.items.empty()) return image;
+    cv::Mat overlay=image.clone();
+    const float sx=image.cols/1280.0f,sy=image.rows/720.0f;
+    for (const auto& item:detections.items) {
+        const auto& b=item.box;
+        if (item.captured_ms!=capturedMs || !std::isfinite(item.confidence) || item.confidence<0 ||
+            !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
+            b.width<=0 || b.height<=0) continue;
+        const auto clipped=b & cv::Rect2f(0,0,1280,720);
+        if (clipped.empty()) continue;
+        const cv::Point first(cvRound(clipped.x*sx),cvRound(clipped.y*sy));
+        const cv::Point last(std::min(image.cols-1,cvRound((clipped.x+clipped.width)*sx)),
+                             std::min(image.rows-1,cvRound((clipped.y+clipped.height)*sy)));
+        cv::rectangle(overlay,first,last,cv::Scalar(0,255,0),2);
+        std::ostringstream label;
+        label.imbue(std::locale::classic());
+        label<<item.class_name<<' '<<std::fixed<<std::setprecision(2)<<item.confidence;
+        cv::putText(overlay,label.str(),cv::Point(first.x,std::max(15,first.y-5)),
+                    cv::FONT_HERSHEY_SIMPLEX,0.5,cv::Scalar(0,255,0),1,cv::LINE_AA);
+    }
+    return overlay;
+}
 struct ControlInput {
     ModelResult model;
     int64_t image_ms=-1;
@@ -127,6 +156,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     Mailbox<Frame> frames;
     Mailbox<ModelResult> models;
     Mailbox<YoloResult> detections;
+    Mailbox<Frame> yoloFrames;  // khung YOLO vừa chạy (chung dữ liệu, không chép ảnh), chỉ để telemetry vẽ hộp đúng khung
     std::atomic<int> yoloEvery{params->yolo_every_n};
     Mailbox<ControlInput> inputs;
     Mailbox<CommandStamped> commands;
@@ -226,6 +256,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                                 for (const auto& d:found) result.detections.items.push_back({d.class_name,d.box,d.confidence,frame.captured_ms});
                                 result.yolo_ms=std::chrono::duration<double,std::milli>(Clock::now()-yoloStart).count();
                                 if (detections.offer(result)) {
+                                    yoloFrames.offer(frame);
                                     writer->offerDetections(result.detections);
                                     trace("detections",std::to_string(frame.id)+" "+std::to_string(frame.captured_ms));
                                 }
@@ -329,7 +360,15 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             const auto plan=telemetryPlanActive.load(std::memory_order_relaxed)
                                 ? latestCommand.plan : control::Plan{};
                             const auto states=telemetryStates(yolo.detections,frame.captured_ms,plan,sent);
-                            client.SendFrameAndTelemetry(frame.bgr,static_cast<float>(sent.cms),int(sent.deg),states);
+                            // Khung YOLO mới (≤ 500 ms so với khung camera mới nhất): gửi CHÍNH khung đó kèm hộp của nó; không thì khung mới nhất, không hộp.
+                            // Hộp chỉ vẽ khi khung YOLO trùng id + thời điểm với lô hộp (telemetryYoloOverlay tự kiểm).
+                            Frame yoloFrame;
+                            const bool yoloFresh=yoloFrames.latest(yoloFrame) && !yoloFrame.bgr.empty() && yoloFrame.captured_ms>=0 &&
+                                frame.captured_ms-yoloFrame.captured_ms<=500;
+                            const auto video=yoloFresh
+                                ? telemetryYoloOverlay(yoloFrame.bgr,yoloFrame.id,yoloFrame.captured_ms,yolo.detections)
+                                : frame.bgr;
+                            client.SendFrameAndTelemetry(video,static_cast<float>(sent.cms),int(sent.deg),states);
                         } catch (...) {}
                     }
                     while (!quit && Clock::now()<next) ::poll(nullptr,0,2);
