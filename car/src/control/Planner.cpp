@@ -118,7 +118,7 @@ constexpr double kVx1TurnDeg=40, kVx1SteerDeg=28;
 // Quân 13/11 l11: đáy 0,84 còn xa; chờ >= 0,98 trên ảnh YOLO gốc 720 hàng.
 constexpr double kVx1BoxBottomFrac=0.98;
 // Quân 13/11 l13: vẫn rẽ sớm -> sau khi hộp chạm đáy đi thêm 5 cm; tới đích rồi giữ cung thêm 25 cm (trần 100 cm/turn_max_ms giữ nguyên).
-constexpr double kVx1BoxExtraCm=5, kVx1TailCm=25;
+constexpr double kVx1BoxExtraCm=5, kVx1TailCm=45;  // l14: giữ cung thêm 25 -> 45 cm (Quân)
 // l10: ảnh +9 cm đảo còn trước-trái, +34 cm thấy rõ lối ra.
 constexpr double kVx1LaneCm=20;
 // Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
@@ -146,10 +146,13 @@ constexpr int kParkTofAgeMs=300;
 // ô cố định: bám làn <= 10 cm/s tới khi hàng 90% chiều cao mặt nạ không còn pixel đường (1 mặt nạ mới), hạn 20 s;
 // lùi thẳng park_entry_cm; tiến căn giữa 6 cm/s một đoạn 21,43 + (park_entry_cm mod 50) cm (ucr: 31,4 với lối vào 10);
 // lỗi khi quay sai chiều > 10°, lệch hướng > 8° lúc tiến căn giữa; kiểm cuối |lệch| <= 3°.
-constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=21.43;
+// Log l14 (75,1-77,1 s): sau lệnh 0 cuối cung 2 xe còn trôi lùi 10,4 cm và quay thêm 6,3° (l10 ~4°). Dừng cung 2 sớm 5°
+// (~7 cm ở 3,2°/s x 6 cm/s) để điểm lùi sâu nhất nông hơn; tiến căn giữa bớt tương ứng 21,43 -> 14,5 để giữ vị trí cuối.
+constexpr double kParkLui2LeadDeg=5;
+constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=14.5;
 // Log l06: R1 cuối bãi +113 cm; R2 mất làn tạm ở +48/+60 cm.
 constexpr double kParkEndLostCm=100;
-constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=8, kParkSteerHardDeg=45;
+constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=12, kParkSteerHardDeg=45;  // 8 -> 12: cung 2 nay dừng ở <= 8°
 constexpr int64_t kParkFixedMaxMs=20000, kParkCheckMs=400;
 // Log l10/l11: trôi lùi 9–11 cm sau lệnh tiến (lệnh +6 gửi ngay khi lái <= 1° lúc xe còn trôi lùi từ cung 2).
 // TIEN_GIUA chỉ tiến khi |odo đổi| < kParkStillCm suốt >= kParkStillMs; thời gian chờ vẫn tính vào hạn pha/hạn kẹt.
@@ -819,8 +822,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             side_R=r>=(1-kSideRoadEdgeFrac)*input.mask.cols;
         }
         const bool side_road=turn_direction_>0 ? side_L : side_R;
-        const bool route_T=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ &&
-                           (route_step_==2 || route_step_==3);
+        // Chỉ ngã T thứ nhất (c2, ngay sau ngã L trái) cần hình hai phía; log l14: ngã T thứ hai (c3) chỉ mở trái (phải là mép sa bàn) -> luật cũ.
+        const bool route_T=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==2;
         const bool G=route_wide>=kRouteTWideRows || (side_L && side_R);
         const bool junction=turn_direction_ && (route_T ? G : ((opened>=2 && real_before) || side_road));
         if(turn_direction_) junction_votes_.push_back(junction);
@@ -1076,7 +1079,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(park_phase_==ParkPhase::LUI1 && turned<-kParkWrongDirDeg) stop_park("DO_XE_SAI_CHIEU");
             else if(park_phase_==ParkPhase::LUI2 && turned>params.park_arc_deg+kParkWrongDirDeg) stop_park("DO_XE_SAI_CHIEU");
             else if(park_phase_==ParkPhase::LUI1 && turned>=params.park_arc_deg) start_phase(ParkPhase::LUI2,"DO_XE_LUI_2");
-            else if(park_phase_==ParkPhase::LUI2 && turned<=kParkYawDoneDeg) start_phase(ParkPhase::TIEN_GIUA,"DO_XE_TIEN_GIUA");
+            else if(park_phase_==ParkPhase::LUI2 && turned<=kParkYawDoneDeg+kParkLui2LeadDeg) start_phase(ParkPhase::TIEN_GIUA,"DO_XE_TIEN_GIUA");
             else if(park_phase_==ParkPhase::TIEN_GIUA) {
                 if(std::abs(turned)>kParkCenterYawMaxDeg) stop_park("DO_XE_LECH_HUONG");
                 // Mốc quãng giữ nguyên: park_odo0_ = odo lúc vào TIEN_GIUA; trôi lùi lúc chờ được bù lại khi tiến (|odo - mốc|).
