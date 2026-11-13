@@ -237,7 +237,7 @@ void Planner::RouteStable(int q) {
 void Planner::ClearTurn() {
     junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0; last_exit_mask_ms_=-1;
     corridor_turn_=false; corridor_clear_=0; junction_odo_set_=false;
-    turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false;
+    turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false; sign_turn_counted_=false;  // lượt rẽ biển đã xong/hủy: Space sau đó không trả lại lượt
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     pre_turn_.clear(); turn_steer_scale_=1; l_turning_=false;
     for(auto &vote:votes_) vote.left=vote.right=false;
