@@ -146,6 +146,8 @@ private:
     bool park_center_go_=false;
     bool park_prefwd_=false, park_prefwd_done_=false;
     bool st7_hold_on_=false, st7_hold_done_=false; double st7_hold_odo_=0;  // giữ hướng trục st7 tới vật cản (kSt7* trong Planner.cpp)
+    double st7_ref_=0, st7_cap_yaw_=0, st7_cap_odo_=std::numeric_limits<double>::quiet_NaN();  // hướng st7 tự chốt khi yaw ổn định
+    int64_t light_ms_=-1; int light_turns_=0;  // lần cuối thấy đèn; số lượt rẽ theo biển có đèn (không xóa khi Space/G)
     int right_after_=0;  // 0: chưa; 1: thấy biển right; 2: đã rẽ theo biển right -> biển kế no_right tính là rẽ phải
     double turn_last_odo_=std::numeric_limits<double>::quiet_NaN();  // odo cuối cùng còn trong lượt rẽ (khoảng cách tới ngã T thứ hai)  // đang tiến trước khi lùi; đã tiến trước trong lượt đỗ này
     int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
