@@ -85,12 +85,10 @@ void ArcThroughExit() {
     Check(q.last.reason=="VX_THOAT" && q.last.cmd.deg>-15,"Đã quay 41°: bám làn tự lái, không ép cung phải; "+Seen(q.last));
 }
 
-// Xe giả cho pha đỗ: nhịp 50 ms, quãng = lệnh tốc độ, yaw theo góc lái đã gửi; ToF theo ô (50 cm) kể từ lần quét đầu.
+// Xe giả cho pha đỗ: nhịp 50 ms, quãng = lệnh tốc độ, yaw theo góc lái đã gửi; mặt nạ cuối bãi ở 30 cm.
 struct ParkSim {
     Rig r;
-    double pos=0;            // vị trí dọc bãi (cm), chỉ để tra ô cho ToF
-    double s0=0; bool lot=false;  // mép đầu ô 0 (đặt khi quét lần đầu: lần quét đầu ở giữa ô 0)
-    bool occ[3]={false,true,true};
+    double pos=0; // Cuối bãi ở 30 cm.
     bool odo_nan=false, sensor_off=false;
     double reverse_cm=0;
     int ticks=0;
@@ -98,11 +96,6 @@ struct ParkSim {
     explicit ParkSim(int side=-1) {
         r.p.steer_rate_dps=200; r.p.park_enable=1; r.p.park_tof_map=1234; r.p.park_side=side;
         r.in.yaw_deg=0; r.in.odo_cm=0;
-    }
-    int cell_mm(double x) const {
-        if(!lot || x<s0) return 150;  // trước bãi: coi như có vật (không nhận nhầm ô trống)
-        const int i=int((x-s0)/50.0);
-        return i<3 && occ[i] ? 150 : 700;
     }
     Plan step(bool sign=false) {
         const double dt=0.05;
@@ -118,15 +111,14 @@ struct ParkSim {
         r.in.image_ms=r.in.sensor_ms=r.in.mask_ms=r.now;
         r.in.detections={{},r.now,++r.frame};
         if(sign) r.in.detections.items.push_back({"parking",cv::Rect2f(576,200,128,128),0.9f,r.now});
-        const bool left=r.p.park_side==1;
+        r.lane(60,140);
+        if(pos>=30) r.in.mask.rowRange(0,90).setTo(0);
         for(int i=0;i<4;++i) {
             auto &t=r.in.tof[i];
-            const bool front=i==1 || i==2, mine=left ? i<2 : i>=2;
-            const int mm=mine ? cell_mm(pos+(front ? 8 : -8)) : 700;
-            t.initialized=t.has_sample=true; t.api_error=0; t.valid=true; t.range_status=0; t.mm=mm; t.sample_ms=r.now;
+            t.initialized=t.has_sample=t.valid=true; t.api_error=t.range_status=0; t.mm=150+i*200; t.sample_ms=r.now;
         }
         r.last=r.planner.Step(r.in,r.now,r.p);
-        if(!lot && r.last.reason=="DO_XE_QUET") { lot=true; s0=pos-25; }
+        Check(r.last.reason!="DO_XE_QUET","Biển P luôn chọn ô cố định, không QUÉT");
         invariants(prev);
         return r.last;
     }
@@ -144,7 +136,7 @@ struct ParkSim {
         if(a.state==PlannerState::DO_XE_XONG) { xong_seen=xong_ever=true; Check(a.cmd.cms==0,"DO_XE_XONG phải đứng yên"+at); }
         if(a.state==PlannerState::DUNG) Check(a.cmd.cms==0,"DUNG phải đứng yên"+at);
         if(xong_seen && !r.in.stop && !r.in.go) Check(a.state==PlannerState::DO_XE_XONG || a.state==PlannerState::DUNG,"Đã đỗ xong thì không tự chạy lại"+at);
-        Check(reverse_cm<=10+80+80+5,"Tổng quãng lùi vượt hạn các pha"+at);
+        Check(reverse_cm<=r.p.park_entry_cm+80+80+5,"Tổng quãng lùi vượt hạn các pha"+at);
         (void)prev;
     }
     // Biển P đủ phiếu rồi chạy tới khi kết thúc (đỗ xong/dừng) hoặc hết nhịp.
@@ -152,39 +144,42 @@ struct ParkSim {
     bool done() const { return r.last.state==PlannerState::DO_XE_XONG || r.last.state==PlannerState::DUNG; }
 };
 
-// 3) Chuỗi đỗ vòng kín đủ pha: ô 0 trống, ô 1 có xe -> phải kết thúc DO_XE_XONG, motor 0 (hai phía).
+// 3) Chuỗi đỗ vòng kín đủ pha: P -> ô cố định -> cuối bãi -> lùi -> phải kết thúc DO_XE_XONG, motor 0 (hai phía).
 void ParkClosedLoop() {
     for(int side : {-1,1}) {
         ParkSim s(side);
         s.arm();
         std::string trail;
+        const char* phases[]={"DO_XE_CHO","DO_XE_LUI_THANG","DO_XE_LUI_1","DO_XE_LUI_2","DO_XE_TIEN_GIUA","DO_XE_KIEM","DO_XE_XONG"};
+        unsigned phase=0;
         std::string note;
         for(int i=0;i<4000 && !s.done();++i) {
             s.step();
+            if(phase<7 && s.r.last.reason==phases[phase]) ++phase;
             if(trail.empty() || trail.substr(trail.rfind(' ')+1)!=s.r.last.reason) trail+=" "+s.r.last.reason;
             if(note!=s.r.planner.ParkNote()) { note=s.r.planner.ParkNote(); trail+=" {"+note+"}"; }
         }
         Check(s.r.last.state==PlannerState::DO_XE_XONG && s.r.last.cmd.cms==0,
-              "Ô trống rồi ô có xe: phải đỗ xong (DO_XE_XONG, motor 0); phía="+std::to_string(side)+" kết thúc "+Seen(s.r.last)+" note="+s.r.planner.ParkNote()+" chuỗi:"+trail);
+              "Đến cuối bãi cố định: phải đỗ xong (DO_XE_XONG, motor 0); phía="+std::to_string(side)+" kết thúc "+Seen(s.r.last)+" note="+s.r.planner.ParkNote()+" chuỗi:"+trail);
+        Check(phase==7,"Phải đi đủ thứ tự CHỜ, LÙI THẲNG, hai cung, TIẾN GIỮA, KIỂM, XONG; "+trail);
         Check(std::abs(s.r.in.yaw_deg)<=3+1e-9,"Đỗ xong hướng lệch <= 3°; yaw="+std::to_string(s.r.in.yaw_deg));
         for(int i=0;i<100;++i) s.step();
     }
 }
 
-// 4) Log l27 12/11 (16656): pha TIẾN bị hủy ngầm rồi xe chạy thẳng 15 cm/s trong bãi. Mẫu hỏng DÀI (>= 250 ms) lúc tiến quét/dò mép
+// 4) Log l27 12/11 (16656): pha TIẾN bị hủy ngầm rồi xe chạy thẳng 15 cm/s trong bãi. Mẫu hỏng DÀI (>= 250 ms) lúc TIẾN ô cố định
 //    phải DỪNG có lý do (DO_XE_CAM_BIEN), không quay về bám làn tốc độ thường; mẫu hỏng ngắn vẫn giữ pha.
 void ParkTienLongFault() {
     for(int kind=0;kind<2;++kind) {
         ParkSim s; s.arm();
-        for(int i=0;i<400 && s.r.last.reason!="DO_XE_QUET";++i) s.step();
-        for(int i=0;i<60 && s.r.last.reason=="DO_XE_QUET";++i) s.step();
-        Check(s.r.last.state==PlannerState::BAM_LAN && s.r.last.cmd.cms>0 && s.r.last.cmd.cms<=5+1e-9,"Thiết lập: đang TIẾN dò mép <= 5 cm/s; "+Seen(s.r.last));
+        for(int i=0;i<10;++i) s.step();
+        Check(s.r.last.state==PlannerState::BAM_LAN && s.r.last.cmd.cms>0 && s.r.last.cmd.cms<=10+1e-9,"Thiết lập: đang TIẾN ô cố định <= 10 cm/s; "+Seen(s.r.last));
         (kind ? s.sensor_off : s.odo_nan)=true;
         s.step();
-        Check(s.r.last.state==PlannerState::BAM_LAN && s.r.last.cmd.cms<=5+1e-9,"Mẫu hỏng ngắn: giữ pha TIẾN, không tăng tốc; "+Seen(s.r.last));
+        Check(s.r.last.state==PlannerState::BAM_LAN && s.r.last.cmd.cms<=10+1e-9,"Mẫu hỏng ngắn: giữ pha TIẾN, không tăng tốc; "+Seen(s.r.last));
         for(int i=0;i<6;++i) {
             s.step();
-            Check(s.r.last.cmd.cms<=5+1e-9,"Mẫu hỏng kéo dài lúc TIẾN: không được về tốc độ bám làn thường; "+Seen(s.r.last));
+            Check(s.r.last.cmd.cms<=10+1e-9,"Mẫu hỏng kéo dài lúc TIẾN: không được về tốc độ bám làn thường; "+Seen(s.r.last));
         }
         Check(s.r.last.state==PlannerState::DUNG && s.r.last.reason=="DO_XE_CAM_BIEN" && s.r.last.cmd.cms==0,
               "Mẫu hỏng >= 250 ms lúc TIẾN: phải dừng DO_XE_CAM_BIEN; "+Seen(s.r.last));
@@ -193,16 +188,15 @@ void ParkTienLongFault() {
     }
 }
 
-// 5) Nhiễu ngẫu nhiên có seed: mẫu odo/IMU hỏng ngắn và dài ở mọi pha, Space/G, mẫu ô ngẫu nhiên; mọi nhịp kiểm ranh giới cứng.
+// 5) Nhiễu ngẫu nhiên có seed: mẫu odo/IMU hỏng ngắn và dài ở mọi pha, Space/G, mặt nạ cuối bãi; mọi nhịp kiểm ranh giới cứng.
 void ParkFuzz() {
     int xong=0, total=0;
     for(unsigned seed=1;seed<=36;++seed) {
         std::mt19937 rng(seed);
         auto chance=[&](double p) { return std::uniform_real_distribution<double>(0,1)(rng)<p; };
         ParkSim s(seed%2 ? -1 : 1);
-        for(bool &o:s.occ) o=chance(0.6);
         const bool faults=seed%3!=0;
-        const bool solvable=(!s.occ[0] && s.occ[1]) || (s.occ[0] && !s.occ[1] && s.occ[2]);
+        const bool solvable=true; // Luôn có mặt nạ cuối bãi.
         try {
             s.arm();
             int bad_left=0, space_left=0; bool faulted=false, spaced=false;
@@ -216,7 +210,7 @@ void ParkFuzz() {
             }
             ++total; xong+=s.xong_ever;
             if(!faulted && !spaced && solvable)
-                Check(s.r.last.state==PlannerState::DO_XE_XONG,"Không nhiễu, có ô trống trước ô có xe: phải đỗ xong; "+Seen(s.r.last)+" note="+s.r.planner.ParkNote());
+                Check(s.r.last.state==PlannerState::DO_XE_XONG,"Không nhiễu, có cuối bãi: phải đỗ xong; "+Seen(s.r.last)+" note="+s.r.planner.ParkNote());
             if(!spaced) Check(s.r.last.cmd.cms==0 || s.r.last.state==PlannerState::BAM_LAN,"Cuối lượt: đứng yên hoặc còn bám làn; "+Seen(s.r.last));
         } catch(const std::exception &e) {
             throw std::runtime_error("seed "+std::to_string(seed)+": "+e.what());
