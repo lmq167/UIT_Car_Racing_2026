@@ -241,6 +241,10 @@ void Planner::ClearTurn() {
     pre_turn_.clear(); turn_steer_scale_=1; l_turning_=false;
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
+int Planner::TelemetrySignMap(int64_t now_ms) const {
+    if(light_turns_==1 && light_ms_>=0 && now_ms-light_ms_<=kLightTurnMs) return 2;
+    return right_after_==2 ? 1 : 0;
+}
 void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
     lane_.Reset(); state_=PlannerState::CHO_SAN_SANG; reason_="CHO_G"; green_run_=0; wait_since_ms_=-1;

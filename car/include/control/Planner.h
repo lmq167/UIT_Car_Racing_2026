@@ -41,6 +41,8 @@ public:
     const std::string &RouteNote() const { return route_note_; }
     // Hướng rẽ đang giữ (0 không có, 1 phải, -1 trái; chỉ đọc, để ghi log chẩn đoán).
     int TurnDirection() const { return turn_direction_; }
+    // Nhãn biển cho telemetry (chỉ hiển thị): 1 = ngã đèn 1 (no_right -> no_left), 2 = ngã đèn 2 (no_left -> no_right, right -> left), 0 = giữ.
+    int TelemetrySignMap(int64_t now_ms) const;
     // Thông tin cua IMU để ghi log (chỉ đọc).
     struct TurnInfo { int active=0; double yaw0=0, target=0, err=0; std::string end; };
     TurnInfo Turn() const { return {turning_ ? 1 : 0,yaw0_,turning_ ? turn_target_deg_ : 0.0,turning_ ? turn_err_deg_ : 0.0,turn_end_note_}; }

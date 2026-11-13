@@ -163,6 +163,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     Mailbox<CommandStamped> commands;
     static_assert(std::atomic<uint64_t>::is_always_lock_free,"Lenh telemetry phai khong khoa");
     std::atomic<uint64_t> sentTelemetry{0};
+    std::atomic<int> telemetrySignMap{0};  // Planner::TelemetrySignMap: sửa nhãn biển nhận nhầm ở 2 ngã đèn, chỉ cho telemetry
     std::atomic<bool> telemetryPlanActive{false};
     std::thread cameraThread,modelThread,controllerThread,telemetryThread;
     int code=0; std::string error;
@@ -306,6 +307,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         auto plan=planner.Step(pi,now,*input.params);
+                        telemetrySignMap.store(planner.TelemetrySignMap(now),std::memory_order_relaxed);
                         if (planner.ParkNote()!=lastParkNote) {  // log quá trình đỗ: biển P, quét ToF, chọn ô, quyết định
                             lastParkNote=planner.ParkNote();
                             if (!lastParkNote.empty()) { std::cout<<"PARK: "<<lastParkNote<<std::endl; trace("park",lastParkNote); }
@@ -357,6 +359,13 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         try {
                             // Chỉ đọc hộp thư có sẵn; nén/gửi ảnh nằm ngoài khóa và ngoài vòng an toàn.
                             detections.latest(yolo); commands.latest(latestCommand);
+                            // Quân 13/11: ngã đèn 1 luôn no_left/right, ngã đèn 2 luôn no_right/left -> sửa nhãn model nhầm (bản sao cục bộ).
+                            const int signMap=telemetrySignMap.load(std::memory_order_relaxed);
+                            for (auto& d:yolo.detections.items) {
+                                if (signMap==1 && d.class_name=="no_right") d.class_name="no_left";
+                                else if (signMap==2 && d.class_name=="no_left") d.class_name="no_right";
+                                else if (signMap==2 && d.class_name=="right") d.class_name="left";
+                            }
                             const auto sent=unpackTelemetryCommand(sentTelemetry.load(std::memory_order_relaxed));
                             const auto plan=telemetryPlanActive.load(std::memory_order_relaxed)
                                 ? latestCommand.plan : control::Plan{};
