@@ -169,7 +169,7 @@ int ParkTofSlot(int map, int pos) {
 }
 // Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
 constexpr double kNarrowBarrierSteerScale=1.0;
-constexpr double kRouteT2GapCm=20;   // Quân 13/11 l16: bám làn thêm 20 cm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
+constexpr double kRouteT2GapCm=50;   // Quân 13/11 l16: 20 cm, sau đó +30 -> 50 cm; bám làn thêm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
