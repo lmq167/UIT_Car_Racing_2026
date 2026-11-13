@@ -165,6 +165,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     static_assert(std::atomic<uint64_t>::is_always_lock_free,"Lenh telemetry phai khong khoa");
     std::atomic<uint64_t> sentTelemetry{0};
     std::atomic<int> telemetrySignMap{0};  // Planner::TelemetrySignMap: sửa nhãn biển nhận nhầm ở 2 ngã đèn, chỉ cho telemetry
+    std::atomic<int> telemetrySignsPassed{-1};  // Planner::SignIndex: số biển đã qua (x/5) vẽ lên video telemetry
     std::atomic<bool> telemetryPlanActive{false};
     std::thread cameraThread,modelThread,controllerThread,telemetryThread;
     int code=0; std::string error;
@@ -308,12 +309,13 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
                         for (; signJumps<input.sign_jumps; ++signJumps) {
-                            static const char* const kSignNames[]={"0 right","1 den: no_left/right","2 left/no_right","3 den: no_right/left","4 het chuoi (theo model)"};
+                            static const char* const kSignNames[]={"0 right","1 den: no_left/right","2 left/no_right","3 den: no_right/left","4 P","5 het chuoi (theo model)"};
                             const int next=planner.NextSign();
-                            std::cout<<"BIEN KE TIEP: "<<kSignNames[next>=0 && next<=4 ? next : 4]<<std::endl; trace("sign_jump",std::to_string(next));
+                            std::cout<<"BIEN KE TIEP: "<<kSignNames[next>=0 && next<=5 ? next : 5]<<std::endl; trace("sign_jump",std::to_string(next));
                         }
                         auto plan=planner.Step(pi,now,*input.params);
                         telemetrySignMap.store(planner.TelemetrySignMap(now),std::memory_order_relaxed);
+                        telemetrySignsPassed.store(planner.SignIndex(),std::memory_order_relaxed);
                         if (planner.ParkNote()!=lastParkNote) {  // log quá trình đỗ: biển P, quét ToF, chọn ô, quyết định
                             lastParkNote=planner.ParkNote();
                             if (!lastParkNote.empty()) { std::cout<<"PARK: "<<lastParkNote<<std::endl; trace("park",lastParkNote); }
@@ -382,9 +384,16 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             Frame yoloFrame;
                             const bool yoloFresh=yoloFrames.latest(yoloFrame) && !yoloFrame.bgr.empty() && yoloFrame.captured_ms>=0 &&
                                 frame.captured_ms-yoloFrame.captured_ms<=500;
-                            const auto video=yoloFresh
+                            cv::Mat video=yoloFresh
                                 ? telemetryYoloOverlay(yoloFrame.bgr,yoloFrame.id,yoloFrame.captured_ms,yolo.detections)
                                 : frame.bgr;
+                            // Quân 13/11: số biển đã qua trong chuỗi 5 biển; vẽ trên bản sao, không đụng khung dùng chung.
+                            const int passed=telemetrySignsPassed.load(std::memory_order_relaxed);
+                            if (passed>=0 && !video.empty()) {
+                                if (video.data==frame.bgr.data || video.data==yoloFrame.bgr.data) video=video.clone();
+                                cv::putText(video,"BIEN DA QUA: "+std::to_string(std::min(passed,5))+"/5",cv::Point(20,60),
+                                            cv::FONT_HERSHEY_SIMPLEX,1.6,cv::Scalar(0,255,255),4,cv::LINE_AA);
+                            }
                             client.SendFrameAndTelemetry(video,static_cast<float>(sent.cms),int(sent.deg),states);
                         } catch (...) {}
                     }

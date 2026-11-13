@@ -179,6 +179,7 @@ constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500, kSt7StableDeg=2, kSt7StableCm=
 // sign_idx_ không xóa khi Space/G; Space giữa cung đang rẽ trả lại lượt đó; yaml sign_seq_next đổi giá trị (R) đặt lại.
 constexpr int kSignSeqN=4;
 constexpr bool kSignSeqLeft[kSignSeqN]={false,false,true,true};
+constexpr int kSignSeqTotal=kSignSeqN+1;  // Quân 13/11: biển P là biển thứ 5 (chỉ đếm/hiển thị, không đổi đỗ xe)
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
@@ -245,7 +246,7 @@ int Planner::TelemetrySignMap(int64_t /*now_ms*/) const {
     return sign_idx_>=0 && sign_idx_<kSignSeqN ? (kSignSeqLeft[sign_idx_] ? 2 : 1) : 0;
 }
 int Planner::NextSign() {
-    sign_idx_=sign_idx_>=0 && sign_idx_<kSignSeqN ? sign_idx_+1 : 0; sign_turn_counted_=false;
+    sign_idx_=sign_idx_>=0 && sign_idx_<kSignSeqTotal ? sign_idx_+1 : 0; sign_turn_counted_=false;
     return sign_idx_;
 }
 void Planner::Reset(bool preserve_lights) {
@@ -962,6 +963,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         park_prefwd_=park_prefwd_done_=false;
         park_odo0_=input.odo_cm; park_step_cm_=0; park_cap_cms_=kParkFixedCms;
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
+        sign_idx_=kSignSeqTotal;  // đã qua biển P (biển thứ 5); chỉ để đếm/hiển thị
     };
     if(!params.park_enable || !params.turn_enable) {
         if(park_phase_==ParkPhase::TIEN) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; }
