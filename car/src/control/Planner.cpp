@@ -167,6 +167,7 @@ int ParkTofSlot(int map, int pos) {
 }
 // Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
 constexpr double kNarrowBarrierSteerScale=1.0;
+constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
     return std::min(s,p.steer_max_deg);
@@ -825,7 +826,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Chỉ ngã T thứ nhất (c2, ngay sau ngã L trái) cần hình hai phía; log l14: ngã T thứ hai (c3) chỉ mở trái (phải là mép sa bàn) -> luật cũ.
         const bool route_T=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==2;
         const bool G=route_wide>=kRouteTWideRows || (side_L && side_R);
-        const bool junction=turn_direction_ && (route_T ? G : ((opened>=2 && real_before) || side_road));
+        // Log l15 (f3248-3901): ngã T thứ hai nằm ngay sau ngã T thứ nhất; ra khỏi cung thứ nhất là bên trái đã mở cả 4 hàng gần,
+        // chưa từng có mép trái thật trong 2 s (đang rẽ không lấy phiếu) nên real_before không bao giờ đạt -> st3 không đòi real_before.
+        const bool route_T2=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==3;
+        const bool junction=turn_direction_ && (route_T ? G : ((opened>=2 && (real_before || route_T2)) || side_road));
         if(turn_direction_) junction_votes_.push_back(junction);
         if(corridor_turn_) {
             const auto selected=ExtractCorridor(input.mask,params,turn_direction_>0 ? TrajMode::TURN_LEFT : TrajMode::TURN_RIGHT);
@@ -911,6 +915,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 // Chỉ rẽ phải theo biển/giao lộ có bằng chứng (6 lượt); rẽ trái, rào, vòng xuyến giữ góc cũ (review 11/11 MEDIUM-1).
                 turn_steer_scale_=turn_direction_<0 && !barrier_turn_ && !rb_turn_ ?
                     std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
+                // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
+                if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
