@@ -37,12 +37,13 @@ inline cv::Mat telemetryYoloOverlay(const cv::Mat& image,uint64_t frameId,int64_
         const cv::Point first(cvRound(clipped.x*sx),cvRound(clipped.y*sy));
         const cv::Point last(std::min(image.cols-1,cvRound((clipped.x+clipped.width)*sx)),
                              std::min(image.rows-1,cvRound((clipped.y+clipped.height)*sy)));
-        cv::rectangle(overlay,first,last,cv::Scalar(0,255,0),2);
+        // Server nhận ảnh thu còn 480x288 (≈0,375 lần): nét/chữ to để còn đọc được sau khi thu nhỏ.
+        cv::rectangle(overlay,first,last,cv::Scalar(0,255,0),5);
         std::ostringstream label;
         label.imbue(std::locale::classic());
         label<<item.class_name<<' '<<std::fixed<<std::setprecision(2)<<item.confidence;
-        cv::putText(overlay,label.str(),cv::Point(first.x,std::max(15,first.y-5)),
-                    cv::FONT_HERSHEY_SIMPLEX,0.5,cv::Scalar(0,255,0),1,cv::LINE_AA);
+        cv::putText(overlay,label.str(),cv::Point(first.x,std::max(35,first.y-8)),
+                    cv::FONT_HERSHEY_SIMPLEX,1.2,cv::Scalar(0,255,0),3,cv::LINE_AA);
     }
     return overlay;
 }
@@ -255,8 +256,8 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                                 result.detections.frame_id=frame.id; result.detections.captured_ms=frame.captured_ms;
                                 for (const auto& d:found) result.detections.items.push_back({d.class_name,d.box,d.confidence,frame.captured_ms});
                                 result.yolo_ms=std::chrono::duration<double,std::milli>(Clock::now()-yoloStart).count();
+                                yoloFrames.offer(frame);  // khung trước hộp: telemetry ít gặp hộp mới với khung cũ
                                 if (detections.offer(result)) {
-                                    yoloFrames.offer(frame);
                                     writer->offerDetections(result.detections);
                                     trace("detections",std::to_string(frame.id)+" "+std::to_string(frame.captured_ms));
                                 }
