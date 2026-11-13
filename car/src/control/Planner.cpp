@@ -413,6 +413,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 rb_yaw0_=entry_yaw; rb_hold_odo_=input.odo_cm;
                 // LOW L2: chỉ lần qua ĐẦU TIÊN mở sau G-sau-Space bỏ giữ hướng; route_check_rb_ còn treo (chưa đồng bộ được) không tắt GIU_HUONG các lần qua sau.
                 rb_hold_spent_=rb_hold_check_; rb_hold_check_=false;
+                // Log l07: G-sau-Space TRƯỚC cầu làm khóa cung B1/giữ hướng ở VX1 dù hướng vào lấy từ cua L đang chạy (tin được) → mất làn, đứng.
+                if(l_turning_ && turning_ && !sensor_bad && std::isfinite(entry_yaw)) rb_hold_spent_=false;
                 if(!sensor_bad && !route_anchored_) {  // Bắc = hướng xe lúc vào đảo lần đầu (xuất phát chặng trước VX1)
                     // Đảo mở khi đang rẽ cua L sau cầu: Bắc = hướng sau cua (yaw lúc bắt đầu cua − 90°), không phải yaw giữa cua.
                     route_anchored_=true; l_yaw_hist_.clear(); route_yaw_ref_=entry_yaw; route_step_=route_q_=0;
