@@ -129,6 +129,31 @@ void Run(const std::string &name) {
         Rig b; b.reach(3); b.tee(true);
         for(int c: {1,4,5,6,7}) { Rig x; x.reach(c); x.tee(false); }
     } else if(name=="lane_l") {
+        // V36: st2 chờ ngã T thật, không lấy nhánh trái của cua L làm giao lộ.
+        Rig t; t.reach(2);
+        Check(t.planner.TurnDirection()==1,"st2 phải có ý định trái trước cua L");
+        t.mask(true); t.in.mask.colRange(141,200).setTo(0);
+        for(int i=0;i<2*t.p.vote_window;++i) {
+            const auto a=t.tick();
+            Check(a.reason!="RE_GIAO_LO" && a.state!=control::PlannerState::RE_TRAI,
+                  "V36: cua L chỉ mở trái không được kích rẽ st2: "+a.reason);
+        }
+        t.expect(2); t.mask(true);
+        for(int i=1;i<=t.p.vote_min;++i) {
+            const auto a=t.tick();
+            if(i<t.p.vote_min) Check(a.state==control::PlannerState::BAM_LAN,"T chưa đủ phiếu phải chờ");
+            else Check(a.reason=="RE_GIAO_LO" && a.state==control::PlannerState::RE_TRAI,
+                       "V36: sau cua L, T mở cả hai phía phải rẽ trái: "+a.reason);
+        }
+        // Biển và work ngoài route_T vẫn dùng nhánh mở một phía theo luật cũ.
+        for(bool work:{false,true}) {
+            Rig x; const std::string label=work?"work_barrier":"left";
+            x.votes(label,work?130:80);
+            x.mask(true); x.in.mask.colRange(141,200).setTo(0);
+            for(int i=0;i<x.p.vote_min;++i) x.sample(label,work?130:80);
+            Check(x.last.reason=="RE_GIAO_LO" && x.last.state==control::PlannerState::RE_TRAI,
+                  "V36: biển/work vẫn rẽ ở nhánh một phía: "+x.last.reason);
+        }
         r.anchor(); r.hold(0,20,false,true); r.expect(2,"BUOC");
         Rig b; b.reach(5); b.hold(0,20,false,true); b.expect(6,"BUOC");
         b.hold(-90,20,false,true); b.expect(7,"BUOC");
@@ -316,9 +341,10 @@ void Run(const std::string &name) {
         r.reach(2); r.tee(true); r.opening(); r.hold(90,20); r.expect(3,"BUOC");
         Check(r.last.state==control::PlannerState::BAM_LAN,"Lượt c2 phải kết thúc");
         for(int i=0;i<20;++i) Check(r.tick().state!=control::PlannerState::RE_TRAI,"Chưa thấy lại cạnh thật vẫn rẽ lần hai");
-        r.mask(false); r.hold(90,8); r.opening(); bool seen=false;
+        // V36: sau cạnh thật mới, st3 cần ngã T mở hai phía để nhận giao lộ.
+        r.mask(false); r.hold(90,8); r.mask(true); bool seen=false;
         for(int i=0;i<20;++i) seen=r.tick().state==control::PlannerState::RE_TRAI || seen;
-        Check(seen,"Có cạnh thật mới rồi mở trái phải RE_TRAI ở c3");
+        Check(seen,"Có cạnh thật mới rồi ngã T mở hai phía phải RE_TRAI ở c3");
     } else if(name=="m1_far_island") {
         r.reach(3); r.votes("round_barrier",150); r.mask(true);
         for(int i=0;i<20;++i) Check(r.sample("round_barrier",150).state!=control::PlannerState::RE_TRAI,"Đảo nhỏ phải bỏ ý định");
