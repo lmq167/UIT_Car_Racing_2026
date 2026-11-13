@@ -149,7 +149,9 @@ constexpr int kParkTofAgeMs=300;
 // Log l14 (75,1-77,1 s): sau lệnh 0 cuối cung 2 xe còn trôi lùi 10,4 cm và quay thêm 6,3° (l10 ~4°). Dừng cung 2 sớm 5°
 // (~7 cm ở 3,2°/s x 6 cm/s) để điểm lùi sâu nhất nông hơn; tiến căn giữa bớt tương ứng 21,43 -> 14,5 để giữ vị trí cuối.
 constexpr double kParkLui2LeadDeg=5;
-constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=14.5;
+// Log l16: lùi vẫn lấn ô sau ~5 cm (trôi lùi 10,6 cm sau cung 2) -> tiến trước 5 cm; tiến căn giữa 14,5 -> 9 (5 cm + ~1-2 cm trôi tiến) giữ vị trí cuối.
+constexpr double kParkPreFwdCm=5;
+constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=9;
 // Log l06: R1 cuối bãi +113 cm; R2 mất làn tạm ở +48/+60 cm.
 constexpr double kParkEndLostCm=100;
 constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=12, kParkSteerHardDeg=45;  // 8 -> 12: cung 2 nay dừng ở <= 8°
@@ -167,6 +169,7 @@ int ParkTofSlot(int map, int pos) {
 }
 // Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
 constexpr double kNarrowBarrierSteerScale=1.0;
+constexpr double kRouteT2GapCm=20;   // Quân 13/11 l16: bám làn thêm 20 cm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
@@ -239,7 +242,7 @@ void Planner::Reset(bool preserve_lights) {
     park_still_ms_=-1; park_center_go_=false;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
-    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0;
+    park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0; park_prefwd_=park_prefwd_done_=false;
     rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN();  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
@@ -292,6 +295,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         state_=PlannerState::DUNG; reason_="VX1_IMU_LOI";
         rb_hold_spent_=true; rb_vx1_active_=false; rb_holding_=false; lane_.Reset();
     }
+    if(turning_ && std::isfinite(input.odo_cm)) turn_last_odo_=input.odo_cm;  // odo cuối cùng còn trong lượt rẽ
     const bool l_rearm_ok=!route_anchored_ || (route_check_rb_ && route_step_==0);
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
     bool round_bottom=false, vx1_box_ready=false;
@@ -829,7 +833,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Log l15 (f3248-3901): ngã T thứ hai nằm ngay sau ngã T thứ nhất; ra khỏi cung thứ nhất là bên trái đã mở cả 4 hàng gần,
         // chưa từng có mép trái thật trong 2 s (đang rẽ không lấy phiếu) nên real_before không bao giờ đạt -> st3 không đòi real_before.
         const bool route_T2=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==3;
-        const bool junction=turn_direction_ && (route_T ? G : ((opened>=2 && (real_before || route_T2)) || side_road));
+        // Log l16 (151,0 s): rẽ ngã T thứ hai chỉ 1,4 cm sau khi hết cung thứ nhất -> phải bám làn thêm kRouteT2GapCm mới nhận (phiếu cũ thành false).
+        const bool t2_gap_ok=!route_T2 || !std::isfinite(turn_last_odo_) ||
+                             (std::isfinite(input.odo_cm) && std::abs(input.odo_cm-turn_last_odo_)>=kRouteT2GapCm);
+        const bool junction=turn_direction_ && t2_gap_ok && (route_T ? G : ((opened>=2 && (real_before || route_T2)) || side_road));
         if(turn_direction_) junction_votes_.push_back(junction);
         if(corridor_turn_) {
             const auto selected=ExtractCorridor(input.mask,params,turn_direction_>0 ? TrajMode::TURN_LEFT : TrajMode::TURN_RIGHT);
@@ -927,6 +934,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     bool park_lane_processed=false;
     auto park_go_fixed=[&](const std::string &why) {  // ô cố định cuối đường (ToF chưa hiệu chuẩn/quét mơ hồ)
         park_phase_=ParkPhase::TIEN; park_fixed_=true; park_end_run_=park_lost_run_=0; park_fixed_ms0_=now_ms; park_last_mask_ms_=input.mask_ms;
+        park_prefwd_=park_prefwd_done_=false;
         park_odo0_=input.odo_cm; park_step_cm_=0; park_cap_cms_=kParkFixedCms;
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
     };
@@ -1051,7 +1059,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 }
             }
         } else if(park_phase_==ParkPhase::CHO) {
-            if(now_ms-park_ms0_>=kParkWaitMs) {
+            if(now_ms-park_ms0_>=kParkWaitMs && entry_cm<=0 && !park_prefwd_done_) {
+                // Log l16: dời cả thao tác lên kParkPreFwdCm (tiến trước rồi đứng chờ lại) để điểm lùi sâu nhất bớt lấn ô sau.
+                park_prefwd_=park_prefwd_done_=true; start_phase(ParkPhase::LUI_THANG,"DO_XE_TIEN_TRUOC");
+            } else if(now_ms-park_ms0_>=kParkWaitMs) {
                 park_yaw0_=input.yaw_deg;
                 if(entry_cm>0) start_phase(ParkPhase::LUI_THANG,"DO_XE_LUI_THANG");
                 else start_phase(ParkPhase::LUI1,"DO_XE_LUI_1");
@@ -1081,6 +1092,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             else if(!person_stop_ && now_ms-park_prog_ms_>=kParkStallMs && park_phase_==ParkPhase::LUI2 && std::abs(turned)<=kParkStallDoneDeg)
                 start_phase(ParkPhase::TIEN_GIUA,"DO_XE_TIEN_GIUA");
             else if(!person_stop_ && now_ms-park_prog_ms_>=kParkStallMs) stop_park("DO_XE_KET");
+            else if(park_phase_==ParkPhase::LUI_THANG && park_prefwd_) {
+                if(moved>=kParkPreFwdCm) { park_prefwd_=false; park_phase_=ParkPhase::CHO; park_ms0_=now_ms; reason_="DO_XE_CHO"; }
+            }
             else if(park_phase_==ParkPhase::LUI_THANG) { if(moved>=entry_cm) start_phase(ParkPhase::LUI1,"DO_XE_LUI_1"); }
             else if(park_phase_==ParkPhase::LUI1 && turned<-kParkWrongDirDeg) stop_park("DO_XE_SAI_CHIEU");
             else if(park_phase_==ParkPhase::LUI2 && turned>params.park_arc_deg+kParkWrongDirDeg) stop_park("DO_XE_SAI_CHIEU");
@@ -1096,7 +1110,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Riêng pha đỗ (Quân 11/11 18:54): lái tới 45°, lùi tới 6 cm/s, tiến căn giữa 6 cm/s; chặng khác giữ steer_max_deg.
             const double lim=std::min(kParkSteerHardDeg,std::max(params.steer_max_deg,params.park_steer_deg));
             double cms=0, target=0;
-            if(park_phase_==ParkPhase::LUI_THANG) cms=-std::min(params.park_rev_cms,params.max_speed_cms);
+            if(park_phase_==ParkPhase::LUI_THANG) cms=park_prefwd_ ? std::min(kParkCenterCms,params.max_speed_cms) : -std::min(params.park_rev_cms,params.max_speed_cms);
             else if(park_phase_==ParkPhase::LUI1 || park_phase_==ParkPhase::LUI2) {
                 cms=-std::min(params.park_rev_cms,params.max_speed_cms);
                 target=(park_phase_==ParkPhase::LUI1 ? 1 : -1)*params.park_side*std::min(params.park_steer_deg,lim);

@@ -144,6 +144,8 @@ private:
     double park_still_odo_=0;
     int64_t park_still_ms_=-1;
     bool park_center_go_=false;
+    bool park_prefwd_=false, park_prefwd_done_=false;
+    double turn_last_odo_=std::numeric_limits<double>::quiet_NaN();  // odo cuối cùng còn trong lượt rẽ (khoảng cách tới ngã T thứ hai)  // đang tiến trước khi lùi; đã tiến trước trong lượt đỗ này
     int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
     // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
     int park_mode_=0, park_unknown_=0;
