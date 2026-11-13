@@ -69,6 +69,44 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
                 const double distance=std::max(0.0,std::max(s.l-axis,axis-s.r));
                 if(distance<=best) { best=distance; pick={s}; if(distance==0) break; }
             }
+            if(mode==TrajMode::ROUNDABOUT && !pick.empty() && segs.size()>1) {
+                int look_row=0;
+                double nearest=H;
+                for(int j=0;j<n;++j) {
+                    const double f=params.corridor_bottom_frac+(params.corridor_top_frac-params.corridor_bottom_frac)*j/std::max(1,n-1);
+                    const int y=int(Clamp(std::lround(f*H),0,H-1));
+                    const double distance=std::abs(y-params.lookahead_frac*H);
+                    if(distance<nearest) { nearest=distance; look_row=j; }
+                }
+                const int last=std::max(look_row,i+std::max(2,params.min_valid_rows)-1);
+                // Lối ra phải tách hẳn ở hàng gần và nối liên tục tới hàng sát điểm nhìn.
+                // Chỉ đổi điểm bắt đầu; các hàng trên vẫn chọn overlap.back(), không nối qua hàng đứt.
+                // Bề rộng dùng miền đã có: qua lọc kNoiseFrac và không vượt ngưỡng rộng bất thường.
+                if(i<=look_row && last<n) for(const auto &candidate:segs) {
+                    if(candidate.l<=pick.back().r) continue;
+                    Seg tracked=candidate;
+                    int count=0;
+                    for(int j=i;j<=last;++j) {
+                        const double f=params.corridor_bottom_frac+(params.corridor_top_frac-params.corridor_bottom_frac)*j/std::max(1,n-1);
+                        const int y=int(Clamp(std::lround(f*H),0,H-1));
+                        const double t2=y_near>y_far ? Clamp((y_near-y)/(y_near-y_far),0,1) : 0;
+                        const double expected=W*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t2);
+                        const auto *scan=mask.ptr<unsigned char>(y);
+                        Seg next{0,-1};
+                        for(int x=0;x<W;) {
+                            if(!scan[x]) { ++x; continue; }
+                            const int a=x;
+                            while(x<W && scan[x]) ++x;
+                            if(x-a>=kNoiseFrac*expected && x-1>=tracked.l && a<=tracked.r) next={a,x-1};
+                        }
+                        if(next.r<next.l || next.r-next.l>params.two_lane_ratio*kMergeFactor*expected) break;
+                        tracked=next;
+                        ++count;
+                    }
+                    // Không đổi phép khớp hay kẹp giữa hai Step: cần nhiều khung để tới mảnh mới.
+                    if(count==last-i+1) { pick={candidate}; break; }
+                }
+            }
             // Khe chứa trục ở hàng gần: giữ hai đoạn đã qua lọc nhiễu để truy vết vật cản.
             if(!branch) for(size_t k=1;k<segs.size();++k) {
                 if(segs[k-1].r<axis && segs[k].l>axis &&
