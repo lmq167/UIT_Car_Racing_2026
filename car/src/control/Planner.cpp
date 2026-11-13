@@ -13,8 +13,8 @@ constexpr double kSwervePresentFrac=0.5; // TẠM: hộp hẹp hơn nửa bề r
 constexpr double kObstacleRightLaneCx=0.30;
 constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
 // Đáy hộp người kích dừng. Log 10/11: 0,98 dừng khi hình nộm cách ~14 cm; 0,85 dừng ~22 cm (sớm 0,5 s), thử xe dừng được;
-// Quân chọn 0,83 cho an toàn hơn (10/11).
-constexpr double kPersonStopBottom=0.83;
+// Quân chọn 0,83 cho an toàn hơn (10/11); 13/11 Quân hạ tiếp 0,81 (dừng xa người hơn).
+constexpr double kPersonStopBottom=0.81;
 constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
 constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
 // Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).
@@ -874,11 +874,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            swerve_==Swerve::NONE && !returning && !rb_in_pass_ && !rb_holding_ && !sensor_bad && park_run_>=params.vote_min) {
             park_scan_yaw_=input.yaw_deg;
             park_mode_=0; park_unknown_=0; park_scan_cm_=park_creep_cm_=0; park_fixed_=false;
-            if(params.park_tof_map==0) park_go_fixed("BIEN_P TOF_CHUA_HIEU_CHUAN");
-            else {
-                park_phase_=ParkPhase::TIEN; park_odo0_=input.odo_cm; park_step_cm_=params.park_forward_cm; park_cap_cms_=0;
-                park_note_="BIEN_P_VAO_BAI";
-            }
+            // Quân 13/11: bỏ ToF khỏi đỗ xe; sau biển P luôn vào ô cố định cuối bãi (logic ucr), park_tof_map không còn tác dụng.
+            park_go_fixed("BIEN_P O_CO_DINH");
         }
         // Có ý định rẽ trong lúc tiến (biển/lộ trình): bỏ đỗ, để rẽ chạy như thường (review MEDIUM-2).
         // Log l27 12/11 (16656, dòng 4497): MỘT mẫu odo trống lúc đang tiến dò mép hủy đỗ ngầm, xe quay về bám làn và chạy thẳng. Mẫu hỏng ngắn hơn

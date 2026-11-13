@@ -134,6 +134,15 @@ void Unit() {
         Check(plan.cmd.cms==0 && plan.reason=="NGUOI_DI_BO","Đáy 0,84 đủ phiếu phải dừng");
     }
     {
+        // Quân 13/11: ngưỡng 0,81; đáy 0,82 (dưới ngưỡng cũ 0,83) đủ phiếu cũng phải dừng.
+        Rig r; r.moving(); auto plan=r.send({});
+        for(int i=0;i<r.p.vote_window+1;++i) {
+            auto d=r.light("people",700); d.box.y=0.82f*720-d.box.height;
+            plan=r.send({d});
+        }
+        Check(plan.cmd.cms==0 && plan.reason=="NGUOI_DI_BO","Đáy 0,82 đủ phiếu phải dừng");
+    }
+    {
         // Người sát đáy đủ phiếu thì chốt; chỉ nhả khi lô tươi xác nhận vắng đủ 2 s.
         Rig r; r.moving();
         for(int i=0;i<3;++i) Check(r.send({r.light("person",700,0.4f)}).cmd.cms>0,"Tin cậy thấp không dừng");
