@@ -110,7 +110,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
               const perception::YoloInfo* yoloInfo,std::unique_ptr<perception::IInferEngine>& yoloEngine) {
     DriveMotor motor(kReverseMotor); DriveServo servo;
     DriveImu imu;
-    DriveTof tof;
+    // Quân 13/11: TẮT HẲN ToF trong ucr_auto (đỗ ô cố định sau biển P): không khởi tạo, không đọc, không in; ô ToF gửi Planner luôn "chưa khởi tạo".
     terminateMotor=&motor; terminateServo=&servo;
     std::unique_ptr<Camera> camera;
     drive::PreviewOptions previewOptions;
@@ -159,7 +159,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 trace("imu_error",e.what());
             }
         }
-        try { tof.init(imu); } catch (const std::exception& e) { std::cerr<<"TOF LOI: "<<e.what()<<'\n'; }
         trace("state","CHO_SAN_SANG");
         if (!motor.init()) throw Failure(1,"Motor::Init thất bại");
         if (!motor.SetSpeedCms(0)) throw Failure(1,"Không xác nhận motor 0 sau Init");
@@ -431,7 +430,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 }
             }
             if (exit || stopping) break;
-            if (!enabled && !eventStop) tof.pollAndPrint();  // chỉ khi xe đứng (trước G / sau Space); không đọc ToF lúc đang chạy
             if (params->turn_enable) {
                 if (sensorFaultPending && command.epoch==epoch && command.sensor.fault_id==plannerSensor.fault_id)
                     sensorFaultPending=false;
@@ -503,9 +501,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
             }
             sentTelemetry.store(packTelemetryCommand(static_cast<float>(speed),angle),std::memory_order_relaxed);
             telemetryPlanActive=enabled && commandFresh && commandMaskFresh && maskFresh && latch.empty();
-            // Quét ô đỗ: đọc ToF SAU khi lệnh tốc độ 0 của bước này đã gửi (đọc I2C không được trễ lệnh dừng).
-            if (enabled && !eventStop && speed==0 && command.epoch==epoch && command.plan.state==control::PlannerState::DO_XE &&
-                command.plan.reason=="DO_XE_QUET") tof.sample(lastTof);
             if (state!=lastState) { trace("state",state); lastState=state; }
             if (reason!=lastReason) { trace("reason",reason); lastReason=reason; }
             if (!ready && imageFresh && maskFresh && preview.wasShown() && writer->ready) {
@@ -583,8 +578,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     t.frame_age_ms=image<0 ? -1 : int(now-image);
                     t.camera_fps=stats.camera_fps; t.road_ms=model.road_ms; t.loop_p95_ms=stats.loop_p95_ms;
                     t.tof.clear();
-                    if (!enabled) for (int i=0;i<4;++i)
-                        t.tof+="["+std::to_string(i)+"] "+(lastTof[i].valid ? std::to_string(lastTof[i].mm) : std::string("x"))+" ";
                 });
             }
             if (debugData) {
