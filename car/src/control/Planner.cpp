@@ -32,6 +32,8 @@ constexpr double kTurnCms=8.0, kHandoverTolDeg=10.0, kExitOffsetFrac=0.15;
 // Quân 11/11: IMU là phản hồi chính của cua. Mặt nạ chỉ giao lại khi yaw đã tới (đích - kHandoverTolDeg); trong cua, góc lái được
 // tăng khi chậm tiến độ yaw so với quãng còn lại (mô hình xe: dyaw = d·tan(lái)/L_eff, L_eff 31 cm đo từ log m4), không vượt steer_max_deg.
 constexpr double kTurnLeffCm=31.0, kTurnPaceMargin=0.85, kTurnLagFrac=0.10;
+// Log 13/11 trong hầm: hết giờ ở 70°; chỉ bù 1/4 cung trái cuối theo cả quãng và thời gian còn lại.
+constexpr double kLeftTurnFinalFrac=0.75, kLeftTurnRemainMargin=0.85;
 constexpr double kSwerveCms=8.0;  // Quân 10/11: tốc độ pha né (NE_TRAI/NE_QUA/VE_PHAI), trước đó dùng approach_cms 5; vẫn bị chặn bởi max_speed_cms và tốc độ bám làn.
 constexpr int kExitRealRows=3;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
 constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
@@ -1059,6 +1061,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(done<(1.0-kTurnLagFrac)*nominal) {
                 const double rem_cm=std::max(5.0,kTurnPaceMargin*(params.turn_max_cm-traveled));
                 need=std::atan(kTurnLeffCm*(turn_err_deg_*3.14159265358979323846/180.0)/rem_cm)*180.0/3.14159265358979323846;
+            }
+            if(turn_direction_>0 && !barrier_turn_ && !rb_turn_ && !rb_in_pass_ && !corridor_turn_ &&
+               !sensor_bad && done>=kLeftTurnFinalFrac*params.turn_yaw_deg) {
+                const double cms=std::min(params.max_speed_cms,std::max(params.min_cms,kTurnCms));
+                const double rem_ms=static_cast<double>(std::max<int64_t>(0,params.turn_max_ms-(now_ms-turn_ms_)));
+                const double rem_cm=std::max(5.0,kLeftTurnRemainMargin*
+                    std::min(params.turn_max_cm-traveled,cms*rem_ms/1000.0));
+                const double need2=std::atan(kTurnLeffCm*(turn_err_deg_*3.14159265358979323846/180.0)/rem_cm)*180.0/3.14159265358979323846;
+                need=std::max(need,need2);
             }
         }
         const double target=turn_direction_*std::min(params.steer_max_deg,std::max(base,need));
