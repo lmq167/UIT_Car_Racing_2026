@@ -359,8 +359,11 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
         if(fresh) for(const auto &d:batch.items) {
-            const bool signLeft=d.class_name=="left" || d.class_name=="no_right";
-            const bool signRight=d.class_name=="right" || d.class_name=="no_left";
+            // Quân 13/11 l16: sau biển right, biển kế luôn là no_left hoặc right (kèm đèn) -> rẽ phải. Model t94 nhầm no_left cạnh đèn
+            // thành no_right (9/12 lô, conf tới 0,99): khi đã qua lượt rẽ biển right (right_after_==2) thì no_right tính là rẽ phải.
+            const bool no_right_as_right=d.class_name=="no_right" && right_after_==2;
+            const bool signLeft=d.class_name=="left" || (d.class_name=="no_right" && !no_right_as_right);
+            const bool signRight=d.class_name=="right" || d.class_name=="no_left" || no_right_as_right;
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
             const bool parking_sign=params.park_enable && d.class_name=="parking";
@@ -381,6 +384,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                !std::isfinite(b.x) || !std::isfinite(b.y) || !std::isfinite(b.width) || !std::isfinite(b.height) ||
                b.x<0 || b.y<0 || b.width<=0 || b.height<=0 || double(b.x)+b.width>1280 || double(b.y)+b.height>720 ||
                double(b.width)*b.height/(1280.0*720.0)<area || ((signLeft || signRight) && b.width<kSignMinWidthFrac*1280)) continue;
+            if(d.class_name=="right" && right_after_==0) right_after_=1;  // đã thấy biển right hợp lệ (chưa rẽ)
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
@@ -924,6 +928,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
                 // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
                 if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
+                // Lượt rẽ theo biển: rẽ của biển right -> nhớ cho biển kế (2); rẽ của biển kế -> xóa (0).
+                if(!barrier_turn_ && !rb_turn_) right_after_=right_after_==1 && turn_direction_<0 ? 2 : 0;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
