@@ -26,6 +26,9 @@ constexpr double kNarrowBarrierSlowW=100, kWideBarrierSlowW=80;
 constexpr double kRoadEndFrac=0.69;
 constexpr double kSideRoadEdgeFrac=0.10;  // đường ngang ở ngã T chạm vùng 10 % mép ảnh phía rẽ
 constexpr int64_t kRealSideMs=2000;
+// V34/V36, log l10: G loại cua L f6476, nhận ngã T từ f6700.
+constexpr int kRouteTWideRows=2;
+constexpr double kRouteTEdgeFrac=0.10;
 // Lượt rẽ IMU (log 09/11 chiều tối): 4 cm/s x 8 s chỉ quay 18-32° rồi hết hạn → bám làn nhận khi mới quay một phần.
 // Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi IMU đã quay >= (đích - 10°) VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
 constexpr double kTurnCms=8.0, kHandoverTolDeg=10.0, kExitOffsetFrac=0.15;
@@ -109,6 +112,8 @@ constexpr double kRbArcDelayCm=15;
 // Quân 13/11: VX1 rẽ phải bằng IMU. Log l04/l09: hướng ra ổn định ≈ hướng vào −52,3/−52,7°; lái −38° cho R≈31/tan38°≈40 cm
 // (cung −15° cũ R≈116 cm chỉ quay ~16° qua neo trong 100 cm).
 constexpr double kVx1TurnDeg=53, kVx1SteerDeg=38;
+// l10: ảnh +9 cm đảo còn trước-trái, +34 cm thấy rõ lối ra.
+constexpr double kVx1LaneCm=20;
 // Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
 constexpr double kRb2ArcDelayCm=40;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
@@ -216,7 +221,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0;
-    rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false;  // sau Space/G/R không giữ hướng bằng yaw0 cũ
+    rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();  // sau Space/G/R không giữ hướng bằng yaw0 cũ
     sensor_good_ms_=-1;
     // Epoch đổi phải xoá lịch sử làn, nhưng Space/G/R không xoá pha đèn P2.
     if(preserve_lights) return;
@@ -240,7 +245,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
-        ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false;
+        ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
@@ -259,7 +264,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         reason_=StateName(state_); lane_.Reset(); green_run_=0; wait_since_ms_=now_ms; entered_wait=true;
         // G sau Space/reset (không phải G đầu chương trình): đồng bộ lại chặng khi hướng ổn định (R1-R6).
         if(route_g_seen_) { route_sync_=route_check_rb_=rb_hold_check_=true; route_cand_ms_=-1; }
-        route_g_seen_=true; rb_vx1_imu_=rb_vx1_active_=false;
+        route_g_seen_=true; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
     }
     // Cảm biến hỏng từ kSensorGlitchMs trong pha rẽ IMU VX1: khóa dừng tới G, không tự rơi về bám làn khi cảm biến hồi.
     // Hỏng ngắn hơn (log l08: odo trống 51 ms) chỉ dừng tạm ở khối rẽ IMU bên dưới.
@@ -448,7 +453,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 rb_vx1_imu_=!sensor_bad && route_anchored_ && !route_sync_ && !route_ambig_ &&
                     route_step_==0 && rb_passes_==0 && !rb_arc_off_ && !rb_hold_spent_ &&
                     (route_note_=="NEO_VX1" || route_note_=="SYNC_R5");
-                rb_vx1_active_=false;
+                rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
                 route_pass_seen_=true; }
             rb_losing_=false;
         } else if(rb_in_pass_ && (!params.imu_fallback || encoder_good)) {
@@ -741,12 +746,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // (a) Cạnh phía rẽ ở nửa hàng gần chuyển từ cạnh thật sang mở (nhánh rẽ đã tới sát xe);
         //     đường 2 làn có cạnh trái ngoài khung từ đầu thì không tính (chưa từng thấy cạnh thật).
         // (b) Đường phía trước kết thúc gần (ngã T). Log 09/11: cả hai đến muộn hơn lúc rẽ sớm 40-60 cm.
-        int real_left=0, real_right=0, valid_near=0;
+        int real_left=0, real_right=0, valid_near=0, route_wide=0;
         const size_t near_rows=std::min(corridor.rows.size(),size_t(params.corridor_rows/2));
         for(size_t i=0;i<near_rows;++i) {
             const auto &row=corridor.rows[i];
             if(!row.valid) continue;
             ++valid_near; real_left+=row.flag_left=="THAT"; real_right+=row.flag_right=="THAT";
+            // Dùng đoạn thô đã chọn, không dùng biên dựng của hành lang.
+            route_wide+=row.raw_l<=kRouteTEdgeFrac*input.mask.cols &&
+                        row.raw_r>=(1-kRouteTEdgeFrac)*input.mask.cols;
         }
         int open_both=0;
         for(size_t i=0;i<near_rows;++i) open_both+=corridor.rows[i].valid && corridor.rows[i].flag_left=="MEP_ANH" && corridor.rows[i].flag_right=="MEP_ANH";
@@ -773,15 +781,21 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         // Ngã T: ngay trước chỗ đường kết thúc, đường ngang phải kéo dài về phía rẽ tới gần mép ảnh.
         // Cua chữ L chỉ mở một phía: ý định rẽ ngược phía cua thì không tính (lộ trình sau vòng xuyến lần 2 có cua L trước ngã T).
-        bool side_road=false;
+        bool side_L=false, side_R=false;
         if(turn_direction_ && road_end>=0 && road_end>=kRoadEndFrac*input.mask.rows) {
             const int yc=std::min(input.mask.rows-1,road_end+3);
             const auto *px=input.mask.ptr<unsigned char>(yc);
-            int x=cx;
-            if(turn_direction_>0) { while(x>0 && px[x-1]) --x; side_road=x<=kSideRoadEdgeFrac*input.mask.cols; }
-            else { while(x<input.mask.cols-1 && px[x+1]) ++x; side_road=x>=(1-kSideRoadEdgeFrac)*input.mask.cols; }
+            int l=cx, r=cx;
+            while(l>0 && px[l-1]) --l;
+            while(r<input.mask.cols-1 && px[r+1]) ++r;
+            side_L=l<=kSideRoadEdgeFrac*input.mask.cols;
+            side_R=r>=(1-kSideRoadEdgeFrac)*input.mask.cols;
         }
-        const bool junction=turn_direction_ && ((opened>=2 && real_before) || side_road);
+        const bool side_road=turn_direction_>0 ? side_L : side_R;
+        const bool route_T=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ &&
+                           (route_step_==2 || route_step_==3);
+        const bool G=route_wide>=kRouteTWideRows || (side_L && side_R);
+        const bool junction=turn_direction_ && (route_T ? G : ((opened>=2 && real_before) || side_road));
         if(turn_direction_) junction_votes_.push_back(junction);
         if(corridor_turn_) {
             const auto selected=ExtractCorridor(input.mask,params,turn_direction_>0 ? TrajMode::TURN_LEFT : TrajMode::TURN_RIGHT);
@@ -1064,6 +1078,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         state_=PlannerState::DUNG_DEN_DO; reason_="DUNG_DEN_DO";
     }
     plan.state=state_;
+    if(turning_ || state_!=PlannerState::BAM_LAN) rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
     if(params.turn_enable && corridor_turn_ && turning_ && (state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI)) {
         plan.mode=turn_direction_>0 ? TrajMode::TURN_LEFT : TrajMode::TURN_RIGHT;
         const auto result=lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode);
@@ -1131,6 +1146,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     // Log l27 12/11 (16925, dòng 1088-1096): hộp đảo rời khung (VX_THOAT) khi cung phải mới quay 23°/57 cm; bỏ cung ở đó thì bám làn lái TRÁI +16° về phía đảo
     // (mặt nạ lối ra tách mảnh, hành lang được chọn nằm bên trái). Cung phải giữ cả khi đang mất phiếu đảo, tới khi đủ kRbArcDeg/kRbArcMaxCm hoặc hết lần qua (rb_lost_cm).
+    if(!rb_vx1_active_) {
+        if(rb_vx1_imu_ && rb_in_pass_ && !turning_ && !sensor_bad &&
+           swerve_==Swerve::NONE && !returning && mask_fresh && result.debug.state=="BAM_LAN") {
+            if(!std::isfinite(rb_vx1_lane_odo_)) rb_vx1_lane_odo_=input.odo_cm;
+        } else rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
+    }
     const double rb_arc_delay=route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==4 && rb_passes_==1 ? kRb2ArcDelayCm : kRbArcDelayCm;
     if(params.turn_enable && rb_vx1_imu_ && rb_in_pass_ && !rb_hold_spent_ && !rb_arc_off_ &&
        !turning_ && swerve_==Swerve::NONE && !returning && mask_fresh && result.debug.state!="MAT_NAN_CU") {
@@ -1138,7 +1159,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Người đi bộ giữ xe đứng: thời gian đứng không tính vào hạn pha/kẹt (như lượt rẽ thường).
         if(rb_vx1_active_ && person_stop_ && command_ms_>=0 && now_ms>command_ms_) { rb_hold_ms_+=now_ms-command_ms_; rb_prog_ms_+=now_ms-command_ms_; }
         // Pha chưa bắt đầu mà cảm biến hỏng: chưa bắt đầu (bám làn như cũ), không khóa dừng.
-        if(rb_vx1_active_ || (distance>=kRbArcDelayCm && !sensor_bad)) {
+        if(rb_vx1_active_ || (distance>=kRbArcDelayCm && !sensor_bad && std::isfinite(rb_vx1_lane_odo_) &&
+                                input.odo_cm-rb_vx1_lane_odo_>=kVx1LaneCm)) {
             if(rb_vx1_active_ && sensor_bad && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs) {
                 // Mẫu hỏng ngắn: dừng tạm, giữ góc và pha (thời gian vẫn tính vào turn_max_ms/kẹt 1500 ms).
                 plan.cmd={0,sent_angle_}; plan.state=PlannerState::GIU_HUONG; plan.reason=plan.debug.reason="RE_VX1_IMU_CHO";
@@ -1153,12 +1175,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 sent_angle_=0; command_ms_=now_ms; return plan;
             }
             if(!rb_vx1_active_) {
+                rb_hold_odo_=input.odo_cm;  // trần quãng pha tính từ lúc bắt đầu, không từ lúc mở lần qua
                 rb_vx1_active_=true; rb_hold_ms_=rb_prog_ms_=now_ms; rb_prog_odo_=input.odo_cm;
             }
             if(std::abs(input.odo_cm-rb_prog_odo_)>=1) { rb_prog_odo_=input.odo_cm; rb_prog_ms_=now_ms; }
             // Sai lệch ban đầu âm; tới (hoặc vượt) đích trong 3° là kết thúc, không quay ngược để tìm lại đích.
             const double err=WrapDeg(WrapDeg(rb_yaw0_-kVx1TurnDeg)-input.yaw_deg);
-            if(err>=-3 || distance>=kRbArcMaxCm || now_ms-rb_hold_ms_>=params.turn_max_ms) {
+            if(err>=-3 || std::abs(input.odo_cm-rb_hold_odo_)>=kRbArcMaxCm || now_ms-rb_hold_ms_>=params.turn_max_ms) {
                 rb_hold_spent_=true; rb_vx1_active_=false;
             } else if(now_ms-rb_prog_ms_>=1500) {
                 state_=plan.state=PlannerState::DUNG; reason_=plan.reason="VX1_IMU_KET";

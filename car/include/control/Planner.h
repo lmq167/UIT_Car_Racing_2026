@@ -93,6 +93,7 @@ private:
     bool rb_in_pass_=false, rb_losing_=false, rb_hold_spent_=false;
     bool rb_vx1_imu_=false, rb_vx1_active_=false; // chốt VX1 tin cậy lúc mở lần qua; pha rẽ IMU đang chạy (bắt đầu sau cua L)
     int rb_passes_=0, rb_pending_=0;
+    double rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
     bool junction_odo_set_=false; double junction_odo0_=0;  // odo lúc mặt nạ xác nhận ngã rẽ lần đầu (cho turn_left_delay_cm)
