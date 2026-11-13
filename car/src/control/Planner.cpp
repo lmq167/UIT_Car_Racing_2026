@@ -169,7 +169,12 @@ int ParkTofSlot(int map, int pos) {
 }
 // Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
 constexpr double kNarrowBarrierSteerScale=1.0;
-constexpr double kRouteT2GapCm=50;   // Quân 13/11 l16: 20 cm, sau đó +30 -> 50 cm; bám làn thêm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
+constexpr double kRouteT2GapCm=80;   // Quân 13/11 l16: 20 cm, sau đó +30 -> 50, +30 -> 80 cm; bám làn thêm sau ngã T thứ nhất rồi mới nhận ngã T thứ hai
+// Quân 13/11 sau l16: chặng cuối vòng xuyến (st7) phải đi THẲNG qua 2 ngã T sang chặng né vật cản; bám làn kéo xe rẽ phải nhầm ở ngã T cuối.
+// Trục thẳng = route_yaw_ref_ (yaw neo ở VX1) + 90*kRouteHeading[7]. Bật khi |lệch| <= kSt7DevDeg lần đầu (đã hết cua L c6); lệch quá
+// kSt7DevDeg thì lái về trục bằng rb_yaw_kp, trong dải thì bám làn như cũ. Tắt hẳn khi bắt đầu né vật cản, khi rẽ, hoặc sau kSt7HoldMaxCm. TẠM.
+// l16: hết cua c6 yaw -8,5 so với trục -3,8 (lệch 4,7 < 8).
+constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500;
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
@@ -239,7 +244,7 @@ void Planner::Reset(bool preserve_lights) {
     swerve_=Swerve::NONE; pass_cm_=0; sent_cms_=0; swerve_ms_=-1; swerve_odo_valid_=false; approach_=false; person_stop_=false; person_latched_=false; person_seen_ms_=-1; return_cm_=-1;
     l_armed_=l_done_=false; l_yaw_hist_.clear(); l_seen_odo_=0; l_right_run_=l_open_run_=0;
     park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0; park_ms0_=park_prog_ms_=-1;
-    park_still_ms_=-1; park_center_go_=false;
+    park_still_ms_=-1; park_center_go_=false; st7_hold_on_=st7_hold_done_=false;
     swerve_peak_w_=0; swerve_right_seen_=false;
     park_mode_=0; park_unknown_=0; park_step_cm_=park_scan_cm_=park_creep_cm_=park_cap_cms_=0; park_scan_ms0_=-1; park_note_.clear();
     park_fixed_=false; park_fixed_ms0_=park_last_mask_ms_=-1; park_end_run_=park_lost_run_=0; park_prefwd_=park_prefwd_done_=false;
@@ -1344,6 +1349,25 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG_CAU";
                     plan.debug.state=plan.debug.reason="GIU_HUONG_CAU"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
                 }
+            }
+        }
+    }
+    {   // Giữ hướng trục st7 tới vật cản (xem kSt7*).
+        if(!route_anchored_ || route_step_!=kRouteSteps-1) st7_hold_on_=st7_hold_done_=false;
+        else if(!st7_hold_done_ && (swerve_!=Swerve::NONE || turning_ || returning)) { st7_hold_on_=false; st7_hold_done_=true; }
+        if(params.turn_enable && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==kRouteSteps-1 && !st7_hold_done_ &&
+           !rb_in_pass_ && !sensor_bad && mask_fresh && !input.stop && state_==PlannerState::BAM_LAN && plan.state==PlannerState::BAM_LAN &&
+           result.debug.state=="BAM_LAN" && std::isfinite(input.odo_cm) && std::isfinite(input.yaw_deg)) {
+            const double err=WrapDeg(route_yaw_ref_+90.0*kRouteHeading[kRouteSteps-1]-input.yaw_deg);
+            if(!st7_hold_on_ && std::abs(err)<=kSt7DevDeg) { st7_hold_on_=true; st7_hold_odo_=input.odo_cm; }
+            if(st7_hold_on_ && std::abs(input.odo_cm-st7_hold_odo_)>kSt7HoldMaxCm) { st7_hold_on_=false; st7_hold_done_=true; }
+            if(st7_hold_on_ && std::abs(err)>kSt7DevDeg) {
+                const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,params.rb_yaw_kp*err));
+                const double step=params.steer_rate_dps*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
+                const double angle=std::max(sent_angle_-step,std::min(sent_angle_+step,target));
+                plan.cmd={std::min(plan.cmd.cms,std::min(params.max_speed_cms,std::max(params.min_cms,params.cruise_cms-params.slow_per_deg*std::abs(angle)))),angle};
+                plan.state=PlannerState::GIU_HUONG; plan.reason="GIU_HUONG_ST7";
+                plan.debug.state=plan.debug.reason="GIU_HUONG_ST7"; plan.debug.angle_deg=angle; plan.debug.speed_cms=plan.cmd.cms;
             }
         }
     }
