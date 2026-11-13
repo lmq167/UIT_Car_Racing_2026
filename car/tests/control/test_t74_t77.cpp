@@ -147,6 +147,50 @@ struct Rig {
 };
 // V28/V29: đặc tả Quân 13/11, VX1 tin cậy rẽ IMU; VX2 giữ B1 cũ.
 void V28() {
+    // V38: đủ quãng chưa đủ; hộp phải chạm đáy qua các lô YOLO mới.
+    {
+        Rig r; r.enter(); r.in.odo_cm=20;
+        auto plan=r.votes({"round_barrier"},r.p.vote_window,.9f,.5f,.84f);
+        Expect(plan.reason!="RE_VX1_IMU",plan,"V38a: đáy 0,84 chưa được rẽ dù đủ 20 cm");
+        plan=r.send({"round_barrier"},.9f,.5f,.98f);
+        Expect(plan.reason!="RE_VX1_IMU",plan,"V38c: một lô chạm đáy chưa đủ");
+        for(int i=0;i<r.p.vote_window;++i) { r.now+=1; plan=r.step(); }
+        Expect(plan.reason!="RE_VX1_IMU",plan,"V38: lô lặp không thêm phiếu");
+        for(int i=1;i<r.p.vote_min;++i) plan=r.send({"round_barrier"},.9f,.5f,.98f);
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28),plan,"V38b: đủ phiếu chạm đáy rẽ -28 độ");
+    }
+    {
+        Rig r; r.enter(); r.in.odo_cm=20;
+        Plan plan;
+        for(int i=0;i<r.p.vote_window-1;++i) {
+            plan=r.send();
+            Expect(plan.reason!="RE_VX1_IMU",plan,"V38d: chưa đủ cửa sổ vắng hộp");
+        }
+        for(int i=0;i<r.p.vote_window;++i) { r.now+=1; plan=r.step(); }
+        Expect(plan.reason!="RE_VX1_IMU",plan,"V38d: lô rỗng lặp không tăng chuỗi");
+        plan=r.send();
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28),plan,"V38d: từng thấy đảo, vắng đủ lô tươi thì rẽ");
+    }
+    for(bool stale_item:{false,true}) {
+        Rig r; r.enter(); r.in.odo_cm=20;
+        Plan plan;
+        for(int i=0;i<r.p.vote_window;++i) {
+            r.now+=40;
+            const auto old=r.now-r.p.det_max_age_ms-1;
+            r.in.detections={{{"round_barrier",cv::Rect2f(490,660,300,60),.9f,stale_item ? old : r.now}},
+                             stale_item ? r.now : old,++r.frame};
+            if(stale_item) r.in.detections.items.push_back({"round_barrier",cv::Rect2f(490,500,300,60),.9f,r.now});
+            plan=r.step();
+        }
+        Expect(plan.reason!="RE_VX1_IMU",plan,"V38: hộp/lô cũ không đủ phiếu chạm đáy");
+    }
+    for(double yaw:{-36.99,-37.0,-40.0,-43.0}) {
+        Rig r; r.enter(); r.in.odo_cm=20;
+        auto plan=r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
+        r.in.yaw_deg=yaw; plan=r.send({"round_barrier"});
+        Expect((plan.reason=="RE_VX1_IMU")== (yaw>-37),plan,"V38e: trả làn tại đích -40 trong 3 độ");
+    }
+
     // V33: mở lần qua trong cua L, chỉ bắt đầu cung sau 20 cm bám làn.
     for(bool timeout:{false,true}) {
         Rig r; r.p.steer_max_deg=40;
@@ -161,7 +205,7 @@ void V28() {
             r.in.odo_cm+=1; plan=r.send();
         }
         Expect(plan.reason=="RE_L_CAU" && r.planner.Turn().active,plan,"V33: thiết lập cua L");
-        r.mask(); r.enter();
+        r.mask(); r.enter(); r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
         r.in.odo_cm=45; r.in.yaw_deg=timeout ? -45 : -90;
         if(timeout) {
             // Tiến đều để chỉ hủy vì hết giờ, không vì kẹt.
@@ -176,29 +220,30 @@ void V28() {
         plan=r.at(lane0+19.9,{"round_barrier"});
         Expect(plan.state!=PlannerState::GIU_HUONG && plan.reason!="RE_VX1_IMU",plan,"V33a/b: dưới 20 cm vẫn bám làn");
         plan=r.at(lane0+20,{"round_barrier"});
-        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-38),plan,"V33a/b: đủ 20 cm mới rẽ -38 độ");
+        plan=r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28),plan,"V33a/b: đủ 20 cm mới rẽ -28 độ");
     }
     {
-        Rig r; r.p.steer_max_deg=40; r.enter();
+        Rig r; r.p.steer_max_deg=40; r.enter(); r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
         auto plan=r.at(45,{"round_barrier"});
         Expect(plan.reason=="RE_VX1_IMU",plan,"V33c: bắt đầu pha ở 45 cm");
         plan=r.at(105,{"round_barrier"});
-        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-38),plan,"V33c: sau 60 cm pha vẫn chạy");
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28),plan,"V33c: sau 60 cm pha vẫn chạy");
         plan=r.at(145,{"round_barrier"});
         Expect(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_VX1_IMU",plan,"V33c: đủ 100 cm từ đầu pha trả bám làn");
     }
 
     for(int mode=0;mode<6;++mode) {
-        Rig r; r.p.steer_max_deg=40; r.enter();
+        Rig r; r.p.steer_max_deg=40; r.enter(); r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
         Check(r.planner.RouteNote()=="NEO_VX1","V28: chưa neo VX1");
         r.in.odo_cm=20;
         auto plan=r.send({"round_barrier"});
-        Expect(plan.reason=="RE_VX1_IMU" && plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-38),plan,"VX1 sau cua L và 20 cm lái -38°");
+        Expect(plan.reason=="RE_VX1_IMU" && plan.state==PlannerState::GIU_HUONG && Near(plan.cmd.deg,-28),plan,"VX1 sau cua L và 20 cm lái -28°");
         r.mask(10,90); r.in.odo_cm=21;
         plan=r.send({"round_barrier"});
-        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-38),plan,"Làn đòi trái không ghi đè IMU VX1");
+        Expect(plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28),plan,"Làn đòi trái không ghi đè IMU VX1");
         if(mode==0) {
-            r.in.yaw_deg=-53; r.in.odo_cm=50; plan=r.send({"round_barrier"});
+            r.in.yaw_deg=-40; r.in.odo_cm=50; plan=r.send({"round_barrier"});
             Expect(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_VX1_IMU",plan,"Tới hướng đích trả quyền bám làn");
             r.in.yaw_deg=-20; plan=r.send({"round_barrier"});
             Expect(plan.reason!="RE_VX1_IMU",plan,"Không bật lại pha đã kết thúc");
@@ -222,7 +267,7 @@ void V28() {
             }
             r.in.yaw_deg=0; plan=sample(1);
             if(mode==1)
-                Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && plan.cmd.cms>0 && Near(plan.cmd.deg,-38),plan,"Yaw hồi sau lỗi ngắn: tiếp tục pha IMU");
+                Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && plan.cmd.cms>0 && Near(plan.cmd.deg,-28),plan,"Yaw hồi sau lỗi ngắn: tiếp tục pha IMU");
             else {
                 Expect(plan.state==PlannerState::DUNG && plan.reason=="VX1_IMU_LOI" && plan.cmd.cms==0,plan,"Yaw hồi không tự nhả khóa");
                 r.in.odo_cm+=2; plan=sample(1000);
@@ -235,7 +280,7 @@ void V28() {
             r.in.odo_cm=120; plan=r.send({"round_barrier"});
             Expect(plan.state==PlannerState::BAM_LAN && plan.reason!="RE_VX1_IMU",plan,"Đủ 100 cm trả quyền bám làn");
         } else {
-            r.in.yaw_deg=-53; r.send({"round_barrier"}); r.leave();
+            r.in.yaw_deg=-40; r.send({"round_barrier"}); r.leave();
             r.in.yaw_deg=-180; r.at(r.in.odo_cm+5); r.enter();
             const double entry=r.in.odo_cm;
             r.mask(); plan=r.at(entry+40,{"round_barrier"});
@@ -657,10 +702,10 @@ void T68b(const std::string& name) {
         for (const std::string other:{"","left","work_barrier"}) {
             Rig r; r.enter();
             // VX1 bắt đầu sau 20 cm bám làn; 100 cm tính từ đầu pha, lớp kèm không đổi pha.
-            r.at(20,{"round_barrier"});
+            r.at(20,{"round_barrier"}); r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
             for (int i=1;i<=10;++i) {
                 const auto plan=r.at(20+30*i,other.empty()?std::vector<std::string>{"round_barrier"}:std::vector<std::string>{"round_barrier",other});
-                if(i<=3) Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-30) && plan.cmd.cms>0,plan,"VX1 rẽ IMU, kẹp trần 30°, lớp kèm="+other);
+                if(i<=3) Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-28) && plan.cmd.cms>0,plan,"VX1 rẽ IMU, lái -28°, lớp kèm="+other);
                 else Lane(plan,"VX1 đủ 100 cm về làn, lớp kèm="+other);
             }
         }
@@ -710,8 +755,9 @@ void T77(const std::string& name) {
             Expect(plan.state==PlannerState::BAM_LAN && Near(plan.cmd.deg,0),plan,"Chưa đủ 20 cm bám làn: chưa rẽ VX1");
         }
         for (double cm:{20.0,25.0}) {
-            const auto plan=r.at(odo0+cm,{"round_barrier"});
-            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-std::min(38.0,r.p.steer_max_deg)),plan,"VX1 đủ 20 cm bám làn mới rẽ IMU, kẹp trần góc");
+            r.in.odo_cm=odo0+cm;
+            const auto plan=r.votes({"round_barrier"},r.p.vote_min,.9f,.5f,1.f);
+            Expect(plan.state==PlannerState::GIU_HUONG && plan.reason=="RE_VX1_IMU" && Near(plan.cmd.deg,-std::min(28.0,r.p.steer_max_deg)),plan,"VX1 đủ 20 cm bám làn mới rẽ IMU, kẹp trần góc");
         }
     } else if (name=="yaw_sign" || name=="wrap") {
         for (double sign:{-1.,1.}) {

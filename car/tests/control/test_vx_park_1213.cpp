@@ -40,7 +40,7 @@ struct Rig {
         now+=40; if(std::isfinite(in.odo_cm)) in.odo_cm+=cm;
         in.image_ms=in.sensor_ms=in.mask_ms=now;
         in.detections={{},now,++frame};
-        if(!label.empty()) in.detections.items.push_back({label,cv::Rect2f(float(cx*1280-w/2),100,w,80),0.9f,now});
+        if(!label.empty()) in.detections.items.push_back({label,cv::Rect2f(float(cx*1280-w/2),label=="round_barrier" ? 640 : 100,w,80),0.9f,now});
         last=planner.Step(in,now,p);
         return last;
     }
@@ -60,7 +60,7 @@ void ArcThroughExit() {
     for(int i=0;i<r.p.vote_window+4;++i) r.tick("round_barrier");
     Check(r.last.reason=="VX_QUANH_DAO","Thiết lập: đảo lớn mở lần qua; "+Seen(r.last));
     for(int i=0;i<20;++i) r.tick("round_barrier");
-    Check(r.last.state==PlannerState::GIU_HUONG && r.last.reason=="RE_VX1_IMU" && std::abs(r.last.cmd.deg+38)<1e-6,"Quân 13/11: sau 15 cm VX1 rẽ IMU -38°; "+Seen(r.last));
+    Check(r.last.state==PlannerState::GIU_HUONG && r.last.reason=="RE_VX1_IMU" && std::abs(r.last.cmd.deg+28)<1e-6,"Quân 13/11: đủ 20 cm bám làn và phiếu chạm đáy VX1 rẽ IMU -28°; "+Seen(r.last));
     // Xe đã quay phải 20°; hành lang trôi dần sang trái ảnh (bám làn muốn lái trái), hộp đảo còn thấy.
     r.in.yaw_deg=-20;
     for(int s=4;s<=40;s+=4) { r.lane(60-s,140-s); r.tick("round_barrier"); }
@@ -73,17 +73,17 @@ void ArcThroughExit() {
         Check(std::abs(r.last.cmd.deg)<=r.p.steer_max_deg,"Góc lái trong trần; "+Seen(r.last));
         if(i<r.p.vote_window) continue;
         ++exit_ticks;
-        Check(r.last.state==PlannerState::GIU_HUONG && r.last.reason=="RE_VX1_IMU" && std::abs(r.last.cmd.deg+38)<1e-6,
-              "Hết phiếu đảo khi mới quay 20°: giữ IMU -38°, không lái trái về đảo; "+Seen(r.last));
+        Check(r.last.state==PlannerState::GIU_HUONG && r.last.reason=="RE_VX1_IMU" && std::abs(r.last.cmd.deg+28)<1e-6,
+              "Hết phiếu đảo khi mới quay 20°: giữ IMU -28°, không lái trái về đảo; "+Seen(r.last));
     }
     Check(exit_ticks>=5,"Thiết lập: phải kiểm ít nhất 5 nhịp sau khi hết phiếu đảo; số nhịp="+std::to_string(exit_ticks));
-    // Quân 13/11: tới hướng đích -53° thì trả quyền cho bám làn.
+    // Quân 13/11: tới hướng đích -40° thì trả quyền cho bám làn.
     Rig q; q.in.yaw_deg=0;
     for(int i=0;i<q.p.vote_window+24;++i) q.tick("round_barrier");
-    q.in.yaw_deg=-53;
+    q.in.yaw_deg=-40;
     for(int s=4;s<=40;s+=4) { q.lane(60-s,140-s); q.tick("round_barrier"); }
     for(int i=0;i<12;++i) q.tick();
-    Check(q.last.state==PlannerState::BAM_LAN && q.last.reason=="VX_THOAT" && q.last.cmd.deg>-15,"Đã quay 53°: bám làn tự lái, không ép cung phải; "+Seen(q.last));
+    Check(q.last.state==PlannerState::BAM_LAN && q.last.reason=="VX_THOAT" && q.last.cmd.deg>-15,"Đã quay 40°: bám làn tự lái, không ép cung phải; "+Seen(q.last));
 }
 
 // Xe giả cho pha đỗ: nhịp 50 ms, quãng = lệnh tốc độ, yaw theo góc lái đã gửi; mặt nạ cuối bãi ở 30 cm.
