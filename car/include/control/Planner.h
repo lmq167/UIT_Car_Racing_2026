@@ -95,6 +95,7 @@ private:
     int rb_passes_=0, rb_pending_=0;
     int rb_vx1_absent_=0;
     double rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
+    double rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN(), rb_vx1_tail_odo_=std::numeric_limits<double>::quiet_NaN(); // odo lúc hộp đảo chạm đáy; odo lúc tới đích (giữ cung thêm)
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;
     bool junction_odo_set_=false; double junction_odo0_=0;  // odo lúc mặt nạ xác nhận ngã rẽ lần đầu (cho turn_left_delay_cm)
