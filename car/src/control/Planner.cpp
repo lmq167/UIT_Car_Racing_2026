@@ -242,7 +242,7 @@ void Planner::ClearTurn() {
     pre_turn_.clear(); turn_steer_scale_=1; l_turning_=false;
     for(auto &vote:votes_) vote.left=vote.right=false;
 }
-int Planner::TelemetrySignMap(int64_t now_ms) const {
+int Planner::TelemetrySignMap(int64_t /*now_ms*/) const {
     return sign_idx_>=0 && sign_idx_<kSignSeqN ? (kSignSeqLeft[sign_idx_] ? 2 : 1) : 0;
 }
 void Planner::Reset(bool preserve_lights) {
