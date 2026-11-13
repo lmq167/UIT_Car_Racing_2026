@@ -254,6 +254,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(route_g_seen_) { route_sync_=route_check_rb_=rb_hold_check_=true; route_cand_ms_=-1; }
         route_g_seen_=true;
     }
+    const bool l_rearm_ok=!route_anchored_ || (route_check_rb_ && route_step_==0);
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
     bool round_right=false;  // đảo ở mép phải ảnh (cua L sau cầu)
     bool l_mask_counted=false;  // mặt nạ mới được đếm cho cua L ở bước này
@@ -364,7 +365,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
                 votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big,parking});
                 l_right_run_=round_right ? l_right_run_+1 : 0;
-                if(l_right_run_>=params.vote_min && !route_anchored_ && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
+                if(l_right_run_>=params.vote_min && l_rearm_ok && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
@@ -416,7 +417,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     route_sync_=route_ambig_=false; route_note_="NEO_VX1";
                 } else if(!sensor_bad && (route_check_rb_ || route_ambig_)) {
                     // Đảo phía trước sau G: hướng Bắc chỉ có thể là đầu cả chặng (R5), hướng Nam là c4.
-                    const int q=int(std::lround((input.yaw_deg-route_yaw_ref_)/90.0));
+                    // Cua L nạp lại sau G có thể còn đang rẽ khi lần qua mở: dùng hướng sau cua (entry_yaw) như lần neo đầu.
+                    const int q=int(std::lround((entry_yaw-route_yaw_ref_)/90.0));
                     if(Mod4(q)==0 || Mod4(q)==2) {
                         // Log xe 11/11 (m4): 5/5 lần qua mở sau G-sau-Space không giữ hướng nên mất làn ở lối ra rồi dừng;
                         // lần qua đầu sau G thường (có giữ hướng) thoát bình thường. Nếu xe đang chỉnh theo trục lộ trình
@@ -424,7 +426,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                         if(rb_hold_spent_ && std::abs(WrapDeg(input.yaw_deg-route_yaw_ref_-90.0*q))<=kRbHoldAlignDeg) rb_hold_spent_=false;
                         route_sync_=route_ambig_=route_check_rb_=false;
                         if(rb_turn_ && !turning_) ClearTurn();
-                        if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=input.yaw_deg; rb_passes_=0; route_note_="SYNC_R5"; }
+                        if(Mod4(q)==0) { route_step_=0; route_q_=0; route_yaw_ref_=entry_yaw; rb_passes_=0; route_note_="SYNC_R5"; }
                         else { route_step_=4; route_q_=q; route_note_="SYNC_R4"; }
                     }
                 }
@@ -799,7 +801,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
     if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // review LOW-1: không dùng đếm cũ
-    if(l_armed_ && (route_anchored_ || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
+    if(l_armed_ && (!l_rearm_ok || rb_in_pass_ || !std::isfinite(input.odo_cm) || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
     if(params.turn_enable && l_armed_ && !l_done_ && !turning_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
        swerve_==Swerve::NONE && !returning && !rb_holding_ && !sensor_bad && mask_fresh && !input.stop &&
        !turn_fault_ && l_mask_counted && std::isfinite(input.yaw_deg) && l_open_run_>=params.vote_min) {
