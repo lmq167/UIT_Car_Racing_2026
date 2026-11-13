@@ -1373,7 +1373,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(!st7_hold_on_) {
                 if(!std::isfinite(st7_cap_odo_) || std::abs(input.yaw_deg-st7_cap_yaw_)>kSt7StableDeg) { st7_cap_odo_=input.odo_cm; st7_cap_yaw_=input.yaw_deg; }
                 else if(std::abs(input.odo_cm-st7_cap_odo_)>=kSt7StableCm) {
-                    st7_hold_on_=true; st7_ref_=(st7_cap_yaw_+input.yaw_deg)/2; st7_hold_odo_=input.odo_cm;
+                    st7_hold_on_=true; st7_ref_=(st7_cap_yaw_+input.yaw_deg)/2+params.st7_left_bias_deg; st7_hold_odo_=input.odo_cm;  // chốt lúc bám làn phải nên lệch phải: bù sang trái (yaw + là trái)
                 }
             } else if(std::abs(input.odo_cm-st7_hold_odo_)>kSt7HoldMaxCm) { st7_hold_on_=false; st7_hold_done_=true; }
             const double err=WrapDeg(st7_ref_-input.yaw_deg);
