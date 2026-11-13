@@ -57,7 +57,7 @@ private:
     bool rb_hold_check_=false; // G-sau-Space: lần qua đảo kế tiếp (chỉ một lần) không giữ hướng theo yaw lúc mở
     std::string route_note_;
     void RouteStable(int q);
-    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false, parking=false; };
+    struct Vote { int64_t ms; bool red, green, left=false, right=false, barrier_near=false, barrier_seen=false, round=false, person=false, barrier_wide=false, round_big=false, parking=false, round_bottom=false; };
     std::deque<Vote> votes_;
     std::deque<bool> obstacle_votes_;
     std::deque<bool> junction_votes_;
@@ -93,6 +93,7 @@ private:
     bool rb_in_pass_=false, rb_losing_=false, rb_hold_spent_=false;
     bool rb_vx1_imu_=false, rb_vx1_active_=false; // chốt VX1 tin cậy lúc mở lần qua; pha rẽ IMU đang chạy (bắt đầu sau cua L)
     int rb_passes_=0, rb_pending_=0;
+    int rb_vx1_absent_=0;
     double rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
     double rb_lost_odo_=0, rb_after_odo_=0, rb_yaw0_=0, rb_hold_odo_=0, rb_prog_odo_=0;
     int64_t rb_hold_ms_=-1, rb_prog_ms_=-1;

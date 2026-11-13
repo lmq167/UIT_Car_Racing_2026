@@ -109,9 +109,10 @@ constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
 // Log l27 12/11: Quân báo xe rẽ phải ở vòng xuyến 1 hơi SỚM. Cung phải chỉ bắt đầu sau khi đã đi kRbArcDelayCm kể từ lúc mở lần qua. TẠM, CHƯA ĐO.
 constexpr double kRbArcDelayCm=15;
-// Quân 13/11: VX1 rẽ phải bằng IMU. Log l04/l09: hướng ra ổn định ≈ hướng vào −52,3/−52,7°; lái −38° cho R≈31/tan38°≈40 cm
-// (cung −15° cũ R≈116 cm chỉ quay ~16° qua neo trong 100 cm).
-constexpr double kVx1TurnDeg=53, kVx1SteerDeg=38;
+// Quân 13/11 l11: cung quá gắt, quay tổng khoảng 68°; giảm riêng cung VX1.
+constexpr double kVx1TurnDeg=40, kVx1SteerDeg=28;
+// Quân 13/11 l11: đáy 0,84 còn xa; chờ >= 0,98 trên ảnh YOLO gốc 720 hàng.
+constexpr double kVx1BoxBottomFrac=0.98;
 // l10: ảnh +9 cm đảo còn trước-trái, +34 cm thấy rõ lối ra.
 constexpr double kVx1LaneCm=20;
 // Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
@@ -247,7 +248,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
-        for(auto &vote:votes_) vote.round=vote.round_big=false;  // phiếu đảo cũ không mở lại lần qua sau G
+        for(auto &vote:votes_) vote.round=vote.round_big=vote.round_bottom=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
     } else if(state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG && !image_fresh) {
         ClearTurn();
@@ -274,6 +275,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     const bool l_rearm_ok=!route_anchored_ || (route_check_rb_ && route_step_==0);
     bool red=false,green=false,off=false,left=false,right=false,barrier_near=false,barrier_wide=false,barrier_seen=false,round=false,round_big=false,people=false; double red_x=0;
+    bool round_bottom=false, vx1_box_ready=false;
     bool round_right=false;  // đảo ở mép phải ảnh (cua L sau cầu)
     bool l_mask_counted=false;  // mặt nạ mới được đếm cho cua L ở bước này
     bool parking=false;  // biển parking đủ lớn trong lô này
@@ -357,7 +359,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(d.class_name=="red") { red=true; red_x=std::max(red_x,(double(b.x)+b.width)/1280.0); }
             else if(d.class_name=="green") green=true;
             else if(d.class_name=="off") off=true;
-            else if(roundabout) { round=true; round_big=round_big || b.width>=kRoundMinW;  // đảo xa (hộp nhỏ) chưa mở lần qua
+            else if(roundabout) {
+                round_bottom=round_bottom || (double(b.y)+b.height)/720.0+kFracEps>=kVx1BoxBottomFrac;
+                round=true; round_big=round_big || b.width>=kRoundMinW;  // đảo xa (hộp nhỏ) chưa mở lần qua
                 round_right=round_right || (double(b.x)+b.width/2)/1280.0>=kLBarrierCx; }
             else if(person) people=people || (double(b.y)+b.height)/720.0>=kPersonStopBottom;
             else if(barrier) {
@@ -381,7 +385,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             last_frame_=batch.frame_id;
             if(fresh) {
                 if(red) { red_ms_=batch.captured_ms; red_x_=red_x; }
-                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big,parking});
+                votes_.push_back({batch.captured_ms,red,green && !red && !off,left,right,barrier_near,barrier_seen,round,people,barrier_wide,round_big,parking,round_bottom});
                 l_right_run_=round_right ? l_right_run_+1 : 0;
                 if(l_right_run_>=params.vote_min && l_rearm_ok && !l_done_ && std::isfinite(input.odo_cm)) { l_armed_=true; l_seen_odo_=input.odo_cm; }
                 if(!entered_wait && !input.stop && image_fresh && batch.captured_ms>wait_since_ms_ && green && !red && !off &&
@@ -453,7 +457,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 rb_vx1_imu_=!sensor_bad && route_anchored_ && !route_sync_ && !route_ambig_ &&
                     route_step_==0 && rb_passes_==0 && !rb_arc_off_ && !rb_hold_spent_ &&
                     (route_note_=="NEO_VX1" || route_note_=="SYNC_R5");
-                rb_vx1_active_=false; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
+                rb_vx1_active_=false; rb_vx1_absent_=0; rb_vx1_lane_odo_=std::numeric_limits<double>::quiet_NaN();
                 route_pass_seen_=true; }
             rb_losing_=false;
         } else if(rb_in_pass_ && (!params.imu_fallback || encoder_good)) {
@@ -463,6 +467,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 // Lộ trình cũ (rb_pending_: lần 1 trái, lần 2 phải) đã tắt: ý định lấy từ chặng (T94). Gỡ hẳn ở giai đoạn 2.
             }
         }
+        // Lần qua đã thấy đảo: chỉ lô mới, tươi mới tăng chuỗi vắng hộp.
+        if(rb_vx1_imu_ && rb_in_pass_ && fresh && new_obstacle_batch)
+            rb_vx1_absent_=round ? 0 : std::min(params.vote_window,rb_vx1_absent_+1);
+        int bottom_votes=0;
+        for(const auto &v:votes_) bottom_votes+=v.round_bottom;
+        vx1_box_ready=fresh && (bottom_votes>=params.vote_min || rb_vx1_absent_>=params.vote_window);
         if(params.imu_fallback && !encoder_good) rb_losing_=false;
         // Bỏ ý định lộ trình chưa rẽ, KHÔNG xóa phiếu biển/rào (khác ClearTurn) để luật biển/rào bên dưới chạy như cũ.
         auto drop_route_intent=[&]() {
@@ -1160,7 +1170,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(rb_vx1_active_ && person_stop_ && command_ms_>=0 && now_ms>command_ms_) { rb_hold_ms_+=now_ms-command_ms_; rb_prog_ms_+=now_ms-command_ms_; }
         // Pha chưa bắt đầu mà cảm biến hỏng: chưa bắt đầu (bám làn như cũ), không khóa dừng.
         if(rb_vx1_active_ || (distance>=kRbArcDelayCm && !sensor_bad && std::isfinite(rb_vx1_lane_odo_) &&
-                                input.odo_cm-rb_vx1_lane_odo_>=kVx1LaneCm)) {
+                                input.odo_cm-rb_vx1_lane_odo_>=kVx1LaneCm && vx1_box_ready)) {
             if(rb_vx1_active_ && sensor_bad && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs) {
                 // Mẫu hỏng ngắn: dừng tạm, giữ góc và pha (thời gian vẫn tính vào turn_max_ms/kẹt 1500 ms).
                 plan.cmd={0,sent_angle_}; plan.state=PlannerState::GIU_HUONG; plan.reason=plan.debug.reason="RE_VX1_IMU_CHO";
