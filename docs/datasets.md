@@ -1,48 +1,41 @@
 # Bộ dữ liệu
 
+Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi UIT Car Racing 2026. Nhóm không cấp giấy phép: chỉ xem, không dùng lại khi chưa được nhóm đồng ý.
+
+[Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final)
+
 ## Phân vùng đường: ucr_roadfinal-2
 
-| Mục | Nội dung |
-|---|---|
-| Nguồn | Bản export Roboflow ucr_roadfinal-2 dùng huấn luyện TwinLiteNet+; workspace/project/version đầy đủ: TODO |
-| Zip phát hành | TODO |
-| Số ảnh / nhãn train, val, test | TODO |
-| Chia tập | TODO |
-| Lớp đầu ra mô hình | `background`, `road` (nền, mặt đường); mã mặt nạ tương ứng 0, 1 |
-| Lớp và mã trong dataset gốc | TODO — chưa có zip để đối chiếu |
-| Kích thước ảnh trong dataset | TODO |
-| Ảnh nguồn theo JSON mô hình | Cao × rộng 720 × 1280 |
-| Đầu vào mô hình | Cao × rộng 192 × 320, RGB, chuẩn hóa ImageNet, thu toàn ảnh |
-| Giấy phép | TODO |
-| Quyền công khai | TODO |
-| Link Release (bản phát hành) | TODO |
+Nguồn: export từ Roboflow, định dạng COCO segmentation (phân vùng bằng đa giác).
 
-Chưa có zip để đếm hoặc kiểm nhãn. Thông tin mô hình lấy từ `models/twinlitenetplus_192x320_road_info.json`, không thay thế thống kê dataset.
+- Tệp đính kèm: `road_UCR_RoadFinal_2.v5i.coco-segmentation_public.zip`, `road_manifest.json`, `road_SHA256SUMS.txt`.
+- Zip: 62496590 byte, nhỏ hơn 2 GB; 898 ảnh, 3 JSON nhãn, 921 annotation (đối tượng gắn nhãn).
+- Mask (mặt nạ): polygon COCO; toàn bộ annotation dùng đa giác, không có RLE hay mask raster riêng.
+- Category (lớp) gốc: ID 0 `UCR-Road-zXwd-r2fc` là lớp cha, không có annotation; ID 1 `road` là mặt đường.
+- Model xuất `background` (nền) = 0 và `road` (mặt đường) = 1. Không đồng nhất ID category COCO với mã mask model.
+- Theo JSON model: ảnh nguồn cao × rộng 720 × 1280; đầu vào 192 × 320, RGB, chuẩn hóa ImageNet, thu toàn ảnh.
+
+| Split (tập) | Ảnh | JSON nhãn | Annotation | ID 0 | ID 1 | Kích thước rộng × cao (số ảnh), từ JSON | Ảnh không annotation |
+|---|---:|---:|---:|---:|---:|---|---:|
+| train | 721 | 1 | 738 | 0 | 738 | 1280x720 (613), 640x384 (108) | 0 |
+| valid | 165 | 1 | 171 | 0 | 171 | 1280x720 (134), 640x384 (31) | 0 |
+| test | 12 | 1 | 12 | 0 | 12 | 640x384 (12) | 0 |
+
+Số ảnh JSON đã đối chiếu với số mục ảnh thực trong từng thư mục zip.
 
 ## Phát hiện đối tượng: car6_det_b4
 
-Nguồn trong `data.yaml`: Roboflow workspace `<roboflow-workspace>`, project `car6_det-tmy0d`, version 9.
-Địa chỉ nguồn được lưu trong gói: https://app.roboflow.com/<roboflow-workspace>/car6_det-tmy0d/9 (chưa kiểm truy cập công khai).
-`README_det_b4.txt` mô tả bộ dữ liệu kết hợp ảnh cũ và ảnh bổ sung ngày 09/11, giữ cách chia theo lượt.
+Nguồn: export từ Roboflow, định dạng YOLO detection (phát hiện bằng hộp giới hạn). `README_det_b4.txt` mô tả kết hợp ảnh cũ và ảnh bổ sung ngày 09/11, giữ cách chia theo lượt.
 
-| Mục | Nội dung |
-|---|---|
-| Tệp | `car6_det_b4.zip` |
-| Kích thước | 102.550.079 byte; nhỏ hơn 2 GB |
-| Tổng ảnh / tệp nhãn thực tế | 1.488 / 1.488 |
-| Kích thước ảnh đọc từ nội dung zip | Rộng × cao 1280 × 720 cho mọi ảnh |
-| Định dạng nhãn | YOLO: mã lớp và hộp tâm/rộng/cao theo tỉ lệ |
-| Đầu vào model D6 | Cao × rộng 192 × 320; giữ tỉ lệ, thêm đệm |
-| Giấy phép phát hành | TODO — metadata nguồn ghi `Private`, chưa phải giấy phép phân phối |
-| Quyền công khai | TODO |
-| Link Release | TODO |
-
-Số liệu dưới đây đếm trực tiếp bằng `zipfile`, đọc ảnh/nhãn trong bộ nhớ, không giải nén.
-README export ghi 1.818 ảnh, khác nội dung zip hiện có; dùng số đếm thực tế 1.488.
+- Tệp đính kèm: `yolo_car6_det_b4_public.zip`, `yolo_manifest.json`, `yolo_SHA256SUMS.txt`.
+- Zip: 102554563 byte, nhỏ hơn 2 GB; 1.488 ảnh, 1.488 tệp nhãn, 12 lớp.
+- Ảnh rộng × cao 1280 × 720; nhãn gồm mã lớp, hộp tâm/rộng/cao theo tỉ lệ.
+- Đầu vào model D6 cao × rộng 192 × 320; giữ tỉ lệ, thêm đệm.
+- README export ghi 1.818 ảnh, khác nội dung zip; dùng số đếm thực tế 1.488. Metadata `Private` không phải giấy phép sử dụng lại.
 
 ### Chia theo thư mục vật lý
 
-`data.yaml` trỏ đến `train/images`, `valid/images`, `test/images`.
+`data.yaml` trỏ tới `train/images`, `valid/images`, `test/images`.
 
 | Thư mục | Ảnh | Tệp nhãn |
 |---|---:|---:|
@@ -52,21 +45,20 @@ README export ghi 1.818 ảnh, khác nội dung zip hiện có; dùng số đế
 
 ### Chia theo danh sách huấn luyện
 
-`train.txt` và `val.txt` trỏ đến ảnh nằm xuyên các thư mục vật lý; không lấy tên thư mục để suy ra tập huấn luyện cuối.
+`train.txt` và `val.txt` trỏ xuyên các thư mục vật lý; không suy ra tập huấn luyện cuối từ tên thư mục.
 
 | Danh sách | Ảnh | Tệp nhãn |
 |---|---:|---:|
 | train.txt | 1027 | 1027 |
 | val.txt | 461 | 461 |
 
-Không có `test.txt` trong zip. Tập `test/` vật lý không được coi là tập đánh giá độc lập khi dùng hai danh sách trên.
-Thứ tự lớp dataset lấy đúng `data.yaml`, khác `yolo_info.json` của D6; cần ánh xạ theo tên khi huấn luyện/đối chiếu.
+Không có `test.txt`. Không coi thư mục `test/` là tập đánh giá độc lập khi dùng hai danh sách trên. Thứ tự lớp dataset theo `data.yaml`, khác thứ tự D6; cần ánh xạ theo tên.
 
 ### Số hộp mỗi lớp
 
-Các cột thư mục và cột danh sách là hai cách chia cùng bộ dữ liệu, không cộng chúng với nhau.
+Hai cách chia cùng bộ dữ liệu, không cộng các cột với nhau.
 
-| ID | Class | train/ | valid/ | test/ | train.txt | val.txt |
+| ID | Lớp | train/ | valid/ | test/ | train.txt | val.txt |
 |---:|---|---:|---:|---:|---:|---:|
 | 0 | green | 85 | 18 | 4 | 71 | 36 |
 | 1 | left | 95 | 22 | 4 | 96 | 25 |
@@ -80,3 +72,7 @@ Các cột thư mục và cột danh sách là hai cách chia cùng bộ dữ li
 | 9 | right | 148 | 34 | 7 | 111 | 78 |
 | 10 | round_barrier | 34 | 7 | 1 | 33 | 9 |
 | 11 | work_barrier | 175 | 37 | 10 | 184 | 38 |
+
+## Kiểm tra SHA256
+
+Tải zip và SHA256SUMS cùng bộ từ Release vào một thư mục. SHA256SUMS ghi đúng tên tệp đính kèm (có tiền tố `road_`/`yolo_`), nên trên Linux chạy được `sha256sum -c road_SHA256SUMS.txt`; trên PowerShell chạy `Get-FileHash -Algorithm SHA256 -LiteralPath <đường_dẫn_zip>` rồi đối chiếu. `manifest.json` ghi tên zip trước khi thêm tiền tố.
