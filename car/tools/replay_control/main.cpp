@@ -5,7 +5,7 @@
    mask_file là đường tương đối masks/<frame_id>.png; để trống khi không lưu mặt nạ.
    Cột tùy chọn: mask_ms (mặc định t_ms ở dòng có mask, thời điểm ảnh gốc),
    image_ms (mặc định t_ms nếu không có cột; thiếu cột thì không tái hiện mất ảnh), go,stop (0/1),
-   lane_ref (RIGHT/LEFT; từ T79 chỉ kiểm hợp lệ, không dùng), planner_state (CHO_SAN_SANG/BAM_LAN/DUNG).
+   lane_ref (RIGHT/LEFT; chỉ kiểm hợp lệ, không dùng), planner_state (CHO_SAN_SANG/BAM_LAN/DUNG).
    Có go/stop thì ghi cả hai ở MỌI dòng; stop thắng go. G ở dòng không lưu mask
    cần mask_ms để biết mặt nạ có tồn tại và tươi; G cũ bị bỏ ngay theo L7.
    Không có sự kiện thì

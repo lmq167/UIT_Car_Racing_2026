@@ -22,7 +22,7 @@ constexpr const char* kTelemetryIp="192.168.1.100";
 constexpr int kTelemetryPort=9999;
 constexpr const char* kTelemetryCarId="HDQT_No1";
 constexpr int kTelemetryPeriodMs=100;
-// Quân 13/11: video telemetry vẽ CHỈ hộp YOLO (khung, lớp, conf) trên BẢN SAO; hộp Decode ở hệ 1280x720; chỉ vẽ khi lô hộp đúng khung này.
+// Video telemetry chỉ vẽ hộp YOLO (khung, lớp, tin cậy) trên bản sao ảnh 1280×720, khi lô hộp đúng khung.
 inline cv::Mat telemetryYoloOverlay(const cv::Mat& image,uint64_t frameId,int64_t capturedMs,const control::Detections& detections) {
     if (image.empty() || capturedMs<0 || detections.frame_id!=frameId ||
         detections.captured_ms!=capturedMs || detections.items.empty()) return image;
@@ -141,7 +141,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
               const perception::YoloInfo* yoloInfo,std::unique_ptr<perception::IInferEngine>& yoloEngine) {
     DriveMotor motor(kReverseMotor); DriveServo servo;
     DriveImu imu;
-    // Quân 13/11: TẮT HẲN ToF trong ucr_auto (đỗ ô cố định sau biển P): không khởi tạo, không đọc, không in; ô ToF gửi Planner luôn "chưa khởi tạo".
+    // ucr_auto đỗ ô cố định sau biển P: không khởi tạo/đọc/in ToF; ô ToF gửi Planner luôn chưa khởi tạo.
     terminateMotor=&motor; terminateServo=&servo;
     std::unique_ptr<Camera> camera;
     drive::PreviewOptions previewOptions;
@@ -747,8 +747,8 @@ int main(int argc,char** argv) {
 #endif
         VehicleLock lock;
 #if !defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS
-        // Thay lời gọi dừng ngoài lúc khởi động (đã bỏ ucr_stop): lần chạy trước bị kill khi xe đang chạy thì
-        // gửi motor 0 ngay (chỉ "N1 v0", không lệnh cấu hình); servo 0 gửi sau Init như cũ.
+        // Nếu lần chạy trước bị kill khi xe đang chạy, lúc khởi động
+        // gửi motor 0 ngay (chỉ "N1 v0", không lệnh cấu hình); servo 0 gửi sau Init.
         { const Motor boot; if (!boot.EmergencyStop()) std::cerr<<"CANH BAO: khong gui duoc motor 0 luc khoi dong\n"; }
 #endif
         std::cout<<"KHÔNG CÓ PHANH CHỐNG VẬT CẢN; chạy <=20 cm/s, người giám sát đứng sát xe\n"<<std::flush;

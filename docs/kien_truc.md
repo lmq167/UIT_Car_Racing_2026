@@ -31,7 +31,7 @@ Planner tổ chức hành vi theo các nhóm: chờ chạy/đèn xanh, bám đư
 Ý định rẽ được tích lũy qua nhiều khung ảnh thay vì quyết định từ một lần phát hiện.
 Khi vào pha rẽ, IMU hỗ trợ xác định góc quay; encoder và giới hạn thời gian/quãng đường chặn hành vi kéo dài.
 Né vật cản phân biệt pha né ngang và pha vượt, rồi trở lại bám đường khi điều kiện cho phép.
-Đỗ xe gồm tiến/quét, chọn ô, chờ và các pha lùi/căn chỉnh. ToF đo khi xe đứng, không phải phanh tránh va chạm.
+ucr_auto đỗ vào ô cố định sau biển P: tìm cuối bãi, chờ, lùi theo cung và tiến căn giữa. ToF không được khởi tạo trong chương trình này.
 
 ## An toàn
 

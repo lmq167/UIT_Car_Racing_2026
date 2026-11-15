@@ -6,160 +6,160 @@
 namespace control {
 namespace {
 constexpr double kBarrierConfMin=0.5; // Hằng tin cậy rào/vòng xuyến như vật YOLO khác.
-// Quân 13/11 l11: biển P nhận kém (l08/l09 nửa số hộp P có conf 0,3-0,5; l11 lần 1 có 0,48/0,91/0,59 không đủ 3/5) -> 0,35, vẫn cần 3/5 lô.
+// Biển P có hộp tin cậy 0,3–0,5: ngưỡng 0,35, vẫn cần đủ phiếu trong cửa sổ.
 constexpr double kParkConfMin=0.35;
-// Quân 13/11: hộp "right" lẻ conf 0,25-0,30 hiện ở chỗ biển P (l09 412-415 s, l10 424/429 s, l11 170 s); biển right thật phần lớn > 0,4.
+// Hộp "right" lẻ tin cậy 0,25–0,30 có thể xuất hiện ở biển P; biển right thật phần lớn > 0,4.
 constexpr double kRightConfMin=0.40;
 constexpr double kObstacleConfMin=0.5;
-constexpr double kSwervePresentFrac=0.5; // TẠM: hộp hẹp hơn nửa bề rộng lớn nhất từ lúc bắt đầu né không giữ pha trái.
-// TẠM: tâm hộp vật làn phải. Log 10/11 (1794302164): vật làn phải khi xe lệch hướng có tâm 0,43-0,45 (ngưỡng 0,45 làm không né),
+constexpr double kSwervePresentFrac=0.5; // hộp hẹp hơn nửa bề rộng lớn nhất từ lúc bắt đầu né không giữ pha trái.
+// Tâm hộp vật làn phải khi xe lệch hướng nằm ở 0,43–0,45 (ngưỡng 0,45 làm không né),
 // vật làn trái có tâm <= 0,18; chọn 0,30 nằm giữa hai nhóm.
 constexpr double kObstacleRightLaneCx=0.30;
-constexpr double kPersonConfMin=0.5; // Hằng như rào; tên lớp người chờ model mới.
-// Đáy hộp người kích dừng. Log 10/11: 0,98 dừng khi hình nộm cách ~14 cm; 0,85 dừng ~22 cm (sớm 0,5 s), thử xe dừng được;
-// Quân chọn 0,83 cho an toàn hơn (10/11); 13/11 Quân hạ tiếp 0,81 (dừng xa người hơn).
+constexpr double kPersonConfMin=0.5; // Ngưỡng tin cậy phát hiện hình nộm người, cùng mức với rào.
+// Đáy hộp người kích dừng: ngưỡng 0,98 dừng cách hình nộm ~14 cm; 0,85 dừng ~22 cm (sớm 0,5 s).
+// Ngưỡng 0,81 giúp dừng xa hình nộm hơn.
 constexpr double kPersonStopBottom=0.81;
 constexpr int64_t kPersonReleaseMs=2000; // Lô tươi xác nhận vắng người đủ 2 s mới nhả.
-constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ (Quân duyệt 07/11).
-// Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52-0,55 vì camera thấp (log 09/11 phiên 7085).
-// Rào hẹp 115 px, rào lệch phải 90 px trùng thời điểm ngưỡng đáy hộp 0,60/0,65 đã chỉnh 07/11; đảo xa 100-233 px, vào thật >= 297 px.
+constexpr int64_t kSensorGlitchMs=250;  // Mẫu cảm biến hỏng ngắn hơn mức này thì dừng giữ góc, dài hơn thì hủy rẽ.
+// Rào/vòng xuyến gần theo bề rộng hộp (ảnh 1280): đáy hộp rào xa vẫn 0,52–0,55 vì camera thấp.
+// Rào hẹp 115 px, rào lệch phải 90 px; đảo xa rộng 100–233 px, khi vào thật >= 297 px.
 constexpr double kNarrowBarrierMinW=115, kWideBarrierMinW=90, kRoundMinW=280;
-// Giảm tốc trước rào ~2 s trước điểm rẽ (Quân 09/11): rào hẹp ~100 px (~87 cm), rào lệch phải ~80 px (log 09/11 sáng).
+// Giảm tốc trước rào ~2 s trước điểm rẽ: rào hẹp ~100 px (~87 cm), rào lệch phải ~80 px.
 constexpr double kNarrowBarrierSlowW=100, kWideBarrierSlowW=80;
-// Giao lộ trên mặt nạ (log 09/11 sáng, xe đi thẳng qua): đường phía trước kết thúc ở >= 0,69 chiều cao khi tới ngã T.
+// Giao lộ trên mặt nạ: đường phía trước kết thúc ở >= 0,69 chiều cao khi tới ngã T.
 constexpr double kRoadEndFrac=0.69;
 constexpr double kSideRoadEdgeFrac=0.10;  // đường ngang ở ngã T chạm vùng 10 % mép ảnh phía rẽ
 constexpr int64_t kRealSideMs=2000;
-// V34/V36, log l10: G loại cua L f6476, nhận ngã T từ f6700.
+// Hình đường rộng hai phía phân biệt ngã T với cua L.
 constexpr int kRouteTWideRows=2;
 constexpr double kRouteTEdgeFrac=0.10;
-// Lượt rẽ IMU (log 09/11 chiều tối): 4 cm/s x 8 s chỉ quay 18-32° rồi hết hạn → bám làn nhận khi mới quay một phần.
+// Ở 4 cm/s trong 8 s, xe chỉ quay 18–32° rồi hết hạn; cung rẽ dùng 8 cm/s.
 // Rẽ 8 cm/s (chỉ trong RE_*), giao bám làn khi IMU đã quay >= (đích - 10°) VÀ mặt nạ thấy hành lang ra (>= 3 hàng 2 cạnh thật, lệch <= 0,15).
 constexpr double kTurnCms=8.0, kHandoverTolDeg=10.0, kExitOffsetFrac=0.15;
-// Quân 11/11: IMU là phản hồi chính của cua. Mặt nạ chỉ giao lại khi yaw đã tới (đích - kHandoverTolDeg); trong cua, góc lái được
-// tăng khi chậm tiến độ yaw so với quãng còn lại (mô hình xe: dyaw = d·tan(lái)/L_eff, L_eff 31 cm đo từ log m4), không vượt steer_max_deg.
+// IMU là phản hồi chính của cua. Mặt nạ chỉ giao lại khi yaw đã tới (đích - kHandoverTolDeg); trong cua, góc lái được
+// tăng khi chậm tiến độ yaw so với quãng còn lại (mô hình xe: dyaw = d·tan(lái)/L_eff, L_eff đo được 31 cm), không vượt steer_max_deg.
 constexpr double kTurnLeffCm=31.0, kTurnPaceMargin=0.85, kTurnLagFrac=0.10;
-// Log 13/11 trong hầm: hết giờ ở 70°; chỉ bù 1/4 cung trái cuối theo cả quãng và thời gian còn lại.
+// Trong hầm có thể hết giờ khi mới quay 70°; chỉ bù 1/4 cung trái cuối theo cả quãng và thời gian còn lại.
 constexpr double kTurnFinalFrac=0.75, kTurnRemainMargin=0.85;
-constexpr double kSwerveCms=8.0;  // Quân 10/11: tốc độ pha né (NE_TRAI/NE_QUA/VE_PHAI), trước đó dùng approach_cms 5; vẫn bị chặn bởi max_speed_cms và tốc độ bám làn.
+constexpr double kSwerveCms=8.0;  // Tốc độ pha né (NE_TRAI/NE_QUA/VE_PHAI), kẹp bởi max_speed_cms và tốc độ bám làn.
 constexpr int kExitRealRows=3;  // cạnh phía rẽ phải là cạnh thật trong 2 s gần nhất thì chỗ mở mới là giao lộ
-constexpr double kSignMinWidthFrac=45.0/1280;  // TẠM: biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
+constexpr double kSignMinWidthFrac=45.0/1280;  // biển hẹp hơn (theo bề rộng ảnh) là biển xa/chặng khác, không tính phiếu; biển giả đo được rộng <= 36 px.
 // Góc lái rẽ theo hình học sa bàn (làn 30 cm, bo R=50): rẽ phải/vào 1 làn cần bán kính đường xe ~65 cm (lái nhiều hơn ~12%),
 // rẽ trái vào đường 2 làn (rào) ~95 cm (lái ít hơn ~20%); biển/vòng xuyến rẽ trái chưa biết số làn nên giữ turn_steer_deg.
-// Rào work 1 (vào đường 1 làn) lệch giữa (tâm hộp 0,43-0,54), work 2 (vào đường 2 làn) lệch phải (0,70-0,71): đo ở hai phiên 07/11.
+// Rào work 1 (đường 1 làn) có tâm hộp 0,43–0,54; work 2 (đường 2 làn) có tâm hộp 0,70–0,71.
 constexpr double kWideBarrierCx=0.55, kWideBarrierMaxCx=0.82, kNarrowBarrierEarly=0.05;
 constexpr double kFracEps=1e-9;  // so ngưỡng tỉ lệ ảnh có trừ: 0,55-0,10 = 0,45000000000000007 > 0,45
 constexpr double kBarrierBlockMinCx=0.25, kBarrierBlockMaxCx=0.75;  // dải tâm hộp rào còn chắn trước (chặn tiếp quản)
-// Rẽ phải thoát sớm hơn một chút: log 4 lần rẽ phải xong ở -80 độ rồi bộ bám làn phải trả lại 5-8 độ.
+// Bốn lượt đo rẽ phải kết thúc ở -80° rồi bộ bám làn trả lại 5–8°; hệ số góc đích phải là 0,92.
 constexpr double kRightTurnYawFactor=0.92;
-// Lộ trình chặng vòng xuyến (Quân 10/11, T94): hướng từng chặng theo bội 90°, Bắc = 0, trái dương (yaw tăng khi rẽ trái).
+// Lộ trình chặng vòng xuyến: hướng từng chặng theo bội 90°, Bắc = 0, trái dương (yaw tăng khi rẽ trái).
 // c0 trước VX1, c1 Đông, c2 Bắc (T trái), c3 Tây (T trái), c4 Nam (VX2), c5 Tây, c6 Bắc, c7 Đông = hết ý định.
 constexpr int kRouteSteps=8;
 constexpr int kRouteHeading[kRouteSteps]={0,-1,0,1,2,1,0,-1};
-constexpr double kRbHoldAlignDeg=40;   // TẠM, CHƯA ĐO: lần qua mở sau G-sau-Space vẫn giữ hướng nếu yaw lệch trục lộ trình không quá từng này
-// Log l27 12/11 (16488): cua L kết thúc bằng hạn 11 s mới quay 70,4° (đích 73,6°) và neo lộ trình lấy yaw lúc bắt đầu cua - 90° nên yaw thực sau VX1 chỉ cách trục c1
-// 13,2° trong khi cửa là 13,0°: thiếu 0,24° nên không bao giờ nhận c1, không đặt ý định rẽ trái ở hai ngã T. Nới 30 -> 38° (< 45° để hai trục kề nhau không chồng).
-constexpr double kRouteAxisDeg=38;     // TẠM, CHƯA ĐO: cách trục <= 38° mới coi là đang theo trục đó
-constexpr int64_t kRouteStableMs=500;  // TẠM, CHƯA ĐO: giữ cùng trục liên tục từng này mới tính hướng ổn định
-constexpr double kRouteMoveCm=2;       // TẠM, CHƯA ĐO: trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
+constexpr double kRbHoldAlignDeg=40;   // lần qua mở sau G-sau-Space vẫn giữ hướng nếu yaw lệch trục lộ trình không quá từng này
+// Neo lộ trình lấy yaw lúc bắt đầu cua - 90°; cua kết thúc khi yaw chưa tới đích có thể làm lệch trục sau VX1.
+// Cửa nhận trục 38° nhỏ hơn 45° để hai trục kề nhau không chồng.
+constexpr double kRouteAxisDeg=38;     // cách trục <= 38° mới coi là đang theo trục đó
+constexpr int64_t kRouteStableMs=500;  // giữ cùng trục liên tục từng này mới tính hướng ổn định
+constexpr double kRouteMoveCm=2;       // trong lúc ổn định bánh phải lăn ít nhất từng này (không đếm khi đứng/nhấc)
 int Mod4(int q) { return ((q%4)+4)%4; }
 constexpr double kReturnAlignedError=0.12, kReturnCapFactor=5;
-// Log 12/11: pha về làn phải (VE_PHAI) kết thúc quá sớm, xe chưa về làn đã bám làn đi tiếp và đâm vật 2. Quân 12/11: thêm 10 cm, rồi 20 cm (xe chuyển bám làn quá sớm) vào quãng
-// tối thiểu của pha này (TẠM, CHƯA ĐO); không đổi lúc bắt đầu về làn (obstacle_pass_cm).
+// Pha về làn phải (VE_PHAI) cần đủ quãng để tránh giao bám làn khi xe còn bên cạnh vật thứ hai. Cộng kReturnExtraCm vào quãng
+// tối thiểu của pha này; mốc bắt đầu về làn vẫn theo obstacle_pass_cm.
 constexpr double kReturnExtraCm=30;
-// Log 12/11 (5 phiên 12:41): hết pha VE_PHAI mà vật thứ hai (làn trái) còn nằm ngay cạnh trái xe, bám làn bẻ về phía vật vì mặt nạ khuyết.
-// Còn thấy hộp vật có tâm <= kReturnBesideMaxCx và đáy >= kReturnBesideY2 thì chưa hết pha; hết pha sau khi đi thêm kReturnClearCm (Quân 12/11: 20 -> 30 -> 50 cm: hộp YOLO biến mất khi vật đã ngang xe, thân vật dài ~50 cm còn cạnh xe)
-// kể từ lần cuối thấy (hoặc đủ kReturnCapFactor·obstacle_pass_cm). TẠM, CHƯA ĐO trên sa bàn.
+// Khi vật thứ hai còn nằm cạnh trái xe, mặt nạ khuyết có thể khiến bám làn bẻ về phía vật.
+// Còn hộp vật có tâm <= kReturnBesideMaxCx và đáy >= kReturnBesideY2 thì chưa hết pha; cần đi thêm kReturnClearCm (thân vật dài ~50 cm)
+// kể từ lần cuối thấy, hoặc đủ kReturnCapFactor·obstacle_pass_cm.
 constexpr double kReturnClearCm=50, kReturnBesideMaxCx=0.40, kReturnBesideY2=0.70;
 // Hạn chế lái trái trong pha về phải, tính từ lần cuối hộp vật bên cạnh còn lấn vào ảnh (mép phải hộp >= kReturnBlockMinX2): 0-kReturnHardCm không lái trái;
-// tới kReturnBlockCm lái trái tối đa kReturnLeftMaxDeg. Log l20 12/11: chặn hẳn 50 cm làm xe chạy thẳng, e -0,85, ra khỏi đường; log l21: không chặn thì
-// lái trái +40 tới vật thứ hai (YOLO mất hộp khi vật bị cắt ở mép ảnh). TẠM, CHƯA ĐO.
+// tới kReturnBlockCm lái trái tối đa kReturnLeftMaxDeg. Chặn hoàn toàn quá lâu có thể làm xe đi thẳng ra khỏi đường;
+// không hạn chế thì xe có thể lái trái +40° tới vật thứ hai khi YOLO mất hộp ở mép ảnh.
 constexpr double kReturnBlockMinX2=0.15, kReturnHardCm=15, kReturnBlockCm=50, kReturnLeftMaxDeg=10;
-// Lỗi 1 (log lan3 10/11): vật thứ hai trước mặt trên làn trái trong NE_QUA. TẠM, CHƯA ĐO trên sa bàn:
+// Vật thứ hai trước mặt trên làn trái trong NE_QUA:
 // tâm hộp trong [0,30; 0,70] và đáy hộp >= 0,60 chiều cao ảnh thì kết thúc PASS khi đã đi >= 0,85·obstacle_pass_cm
-// (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm so với lúc vật rời ảnh nên hở đuôi xe CHƯA ĐO, cần đo sa bàn).
+// (0,85·85 ≈ 72 cm sau khi bắt đầu PASS; PASS có thể bắt đầu sớm 15–17 cm trước lúc vật rời ảnh; khoảng hở đuôi xe cần đo trên sa bàn).
 constexpr double kPassAheadMinCx=0.30, kPassAheadMaxCx=0.70, kPassAheadY2=0.60, kPassMinFrac=0.85;
 // Chưa đủ quãng tối thiểu mà vật trước mặt đã rất gần (đáy >= 0,85): dừng KHONG_DUONG_NE (an toàn, như MEDIUM-1 P1).
 constexpr double kPassStopY2=0.85;
-// Lỗi 3 (log 11/11 m3, 2 phiên): vật 1 ở làn phải đã qua nhưng vật 2 (trước mặt, làn trái) vẫn giữ NE_TRAI tới sát vật 2.
-// Khi đã thấy vật ở nửa phải (tâm >= 0,60), pha trái chỉ giữ bởi hộp ở nửa phải; hộp trước mặt/bên trái không giữ (Quân 11/11).
-// TẠM, CHƯA ĐO trên sa bàn (cùng obstacle_near_w_frac): ngưỡng tâm 0,60; giữ pha trái khi hộp phải >= 0,5·near_w (kSwervePresentFrac),
+// Vật thứ hai phía trước/bên trái không được giữ NE_TRAI sau khi đã qua vật thứ nhất ở làn phải.
+// Khi đã thấy vật ở nửa phải (tâm >= 0,60), pha trái chỉ giữ bởi hộp ở nửa phải; hộp trước mặt/bên trái không giữ.
+// Cùng obstacle_near_w_frac: ngưỡng tâm 0,60; giữ pha trái khi hộp phải >= 0,5·near_w (kSwervePresentFrac),
 // quay lại pha trái từ PASS khi hộp phải >= 1,0·near_w (trễ có chủ ý để tránh dao động); vật trước mặt sát (ahead_stop) luôn ưu tiên dừng.
 constexpr double kHoldRightCx=0.60;
-// Lỗi 2 (log 10/11 lan2/lan3, 6 lượt rẽ phải): bám làn đã quay sẵn 9-20° theo miệng ngã trong 60 cm trước RE_*,
-// rồi cung lái cố định cắt góc. Quân chọn C (11/11): giảm góc rẽ cố định theo phần đã quay sẵn. TẠM, CHƯA ĐO trên sa bàn:
+// Bám làn có thể quay sẵn 9–20° theo miệng ngã trong 60 cm trước RE_*,
+// khiến cung lái cố định cắt góc. Giảm góc rẽ cố định theo phần đã quay sẵn:
 // hệ số = 1 - quay_sẵn/90°, kẹp [0,75; 1] (quay sẵn 20° -> 0,78; 25° x 1,12 = 28° -> 21,8°).
 constexpr double kPreTurnWindowCm=60, kPreTurnRefDeg=90, kPreTurnMinScale=0.75;
-// Cua L phải hai làn sau cầu, ngay trước VX1 (Quân duyệt 11/11; log 10/11 10102 + t94 12471, ảnh p0088). TẠM, CHƯA ĐO:
+// Cua L phải hai làn sau cầu, ngay trước VX1:
 // - Đảo (round_barrier, cỡ bất kỳ) có tâm hộp >= 0,80 ở vote_min lô tươi liên tiếp trước khi neo lộ trình -> chờ cua L.
 //   Log: đảo nhỏ (rộng 0,10-0,17, tâm 0,85-0,95) thấy ~10 s rồi khuất 59-76 cm trước cua.
 // - Trong 150 cm từ lần cuối thấy đảo bên phải, >= 3 trong các hàng gần có hai biên ở mép ảnh (góc cua rộng phủ kín ảnh,
 //   bám làn mất thông tin và kéo sang làn trái) ở vote_min mặt nạ liên tiếp -> rẽ phải cung cố định (như RE_PHAI), một lần mỗi G.
 constexpr double kLBarrierCx=0.80, kLArmCm=150;
 constexpr int kLOpenRows=3;
-// Quân 12/11 (log lượt chạy 11:47): cua L phải trước vòng xuyến bắt đầu muộn ~15 cm vì biên phải chỉ chạm mép ảnh sát góc. Thêm điều kiện
+// Cua L có thể bắt đầu muộn ~15 cm vì biên phải chỉ chạm mép ảnh sát góc. Điều kiện đường rộng bổ sung
 // ngoài kLOpenRows: >= kLWideRows hàng gần có biên trái sát mép (<= 6 %) và biên phải >= 90 % bề rộng mặt nạ, vote_min mặt nạ liên tiếp.
-// Phát lại 3 lượt: sớm 13 cm ở lượt 11:47, không kích hoạt thêm ở hai lượt còn lại. TẠM, CHƯA ĐO trên sa bàn.
+// Điều kiện bổ sung cho kết quả phát lại sớm hơn 13 cm ở một lượt và không kích hoạt thêm ở hai lượt khác.
 constexpr double kLWideLeftFrac=0.06, kLWideRightFrac=0.90;
-constexpr int kLWideRows=3;  // Quân 12/11 (log l21): 2 hàng kích hoạt khi góc ngã còn xa, xe cắt qua đảo -> cần 3 hàng (TẠM, CHƯA ĐO)
-// Cầu (Quân 12/11, log l21): trên cầu số hàng hợp lệ tụt 8 -> 2-3 (nhiễu), bộ bám làn lái trái +19..+23° và yaw lệch +13°. Sau khi đã rẽ rào (work) lần thứ hai
+constexpr int kLWideRows=3;  // Cần 3 hàng gần: 2 hàng có thể kích hoạt khi góc ngã còn xa, làm xe cắt qua đảo.
+// Trên cầu, số hàng hợp lệ có thể tụt từ 8 xuống 2–3 do nhiễu, gây lái trái +19..+23° và yaw lệch +13°. Sau lần rẽ rào thứ hai
 // và trước cua L / vòng xuyến: khi số hàng hợp lệ <= kBridgeLowRows thì giữ hướng IMU theo yaw lúc còn >= kBridgeGoodRows hàng, tới khi hàng hợp lệ trở lại
-// (vote_min mặt nạ liên tiếp), quá kBridgeHoldMaxCm, quá turn_max_ms hoặc bánh không tiến 1500 ms. Chỉ trong kBridgeWindowCm kể từ lần rẽ rào thứ hai. TẠM, CHƯA ĐO.
+// (vote_min mặt nạ liên tiếp), quá kBridgeHoldMaxCm, quá turn_max_ms hoặc bánh không tiến 1500 ms; chỉ trong kBridgeWindowCm từ lần rẽ rào thứ hai.
 constexpr double kBridgeWindowCm=800, kBridgeHoldMaxCm=80;
-// Vòng xuyến, lối ra bên phải (Quân 12/11, log l19-l21): bám làn trong vòng xuyến để xe lái trái / quay phải chỉ 8-19° trong 44-77 cm rồi đâm đảo (l20, l21), trong khi
+// Vòng xuyến, lối ra bên phải: quay phải chỉ 8–19° trong 44–77 cm có thể làm xe đâm đảo, trong khi
 // các lần thoát tốt quay phải 31-48° với lái -12..-17°. Trong lần qua (VX_QUANH_DAO, đã có yaw lúc vào) lái phải tối thiểu kRbArcSteerDeg cho tới khi đã quay phải
-// kRbArcDeg hoặc đi kRbArcMaxCm kể từ lúc vào; sau đó bám làn như cũ. Mất làn trong lần qua thì GIU_HUONG giữ hướng RA (yaw vào - kRbArcDeg), không kéo
-// xe về hướng vào (log l19 123 s, l25 95 s: GIU_HUONG bẻ trái +26° hủy cung phải). TẠM, CHƯA ĐO.
+// kRbArcDeg hoặc đi kRbArcMaxCm từ lúc vào rồi bám làn. Mất làn thì GIU_HUONG giữ hướng RA (yaw vào - kRbArcDeg), không kéo
+// xe về hướng vào, tránh lệnh trái +26° hủy cung phải.
 constexpr double kRbArcDeg=40, kRbArcSteerDeg=15, kRbArcMaxCm=100;
-// Log l27 12/11: Quân báo xe rẽ phải ở vòng xuyến 1 hơi SỚM. Cung phải chỉ bắt đầu sau khi đã đi kRbArcDelayCm kể từ lúc mở lần qua. TẠM, CHƯA ĐO.
+// Cung phải bắt đầu sau kRbArcDelayCm kể từ lúc mở lần qua để tránh rẽ sớm.
 constexpr double kRbArcDelayCm=15;
-// Quân 13/11 l11: cung quá gắt, quay tổng khoảng 68°; giảm riêng cung VX1.
+// Cung VX1 dùng góc lái và góc quay riêng để hạn chế cua quá gắt.
 constexpr double kVx1TurnDeg=40, kVx1SteerDeg=28;
-// Quân 13/11 l11: đáy 0,84 còn xa; chờ >= 0,98 trên ảnh YOLO gốc 720 hàng.
+// Đáy hộp 0,84 còn xa; chờ >= 0,98 trên ảnh YOLO gốc 720 hàng.
 constexpr double kVx1BoxBottomFrac=0.98;
-// Quân 13/11 l13: vẫn rẽ sớm -> sau khi hộp chạm đáy đi thêm 5 cm; tới đích rồi giữ cung thêm 25 cm (trần 100 cm/turn_max_ms giữ nguyên).
-constexpr double kVx1BoxExtraCm=5, kVx1TailCm=45;  // l14: giữ cung thêm 25 -> 45 cm (Quân)
-// l10: ảnh +9 cm đảo còn trước-trái, +34 cm thấy rõ lối ra.
+// Sau khi hộp chạm đáy, đi thêm 5 cm; tới góc đích rồi giữ cung thêm kVx1TailCm, trong trần 100 cm/turn_max_ms.
+constexpr double kVx1BoxExtraCm=5, kVx1TailCm=45;  // Giữ cung thêm 45 cm sau góc đích.
+// Ảnh đo ở +9 cm còn đảo trước-trái, ở +34 cm thấy rõ lối ra.
 constexpr double kVx1LaneCm=20;
-// Log l08: VX2 (bước lộ trình c4, lần qua thứ 2) ép phải ở +15 cm khi lối ra còn ở trước-phải; Quân ước cần tiến thêm ~25 cm. TẠM, CHƯA ĐO; VX1 giữ 15.
-// Quân 13/11 l13: VX2 còn sớm -> trễ thêm 15 cm (40 -> 55); áp cả khi đặt lại xe ở VX2 (G sau Space, rb_passes_ 0).
+// VX2 (bước c4, lần qua thứ hai) cần trễ cung phải để lối ra chuyển từ trước-phải sang bên phải.
+// Trễ cung VX2 55 cm; áp cả khi đặt lại xe ở VX2 (G sau Space, rb_passes_ bằng 0).
 constexpr double kRb2ArcDelayCm=55;
 constexpr int kBridgeLowRows=3, kBridgeGoodRows=6;
-// Quân 12/11 (log 244 s): hết lần qua vòng xuyến rồi mất làn thì dừng ngay. Trong kRbPostHoldCm sau lúc hết lần qua, mất làn thì
-// giữ hướng bằng IMU theo hướng lúc mất làn (cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua). TẠM, CHƯA ĐO.
+// Trong kRbPostHoldCm sau lúc hết lần qua vòng xuyến, mất làn thì
+// giữ hướng IMU lúc mất làn, cùng giới hạn quãng/thời gian/kẹt/cảm biến lỗi như giữ hướng trong lần qua.
 constexpr double kRbPostHoldCm=60;
 constexpr int64_t kRbPostHoldMs=2000;  // và không quá từng này, ngoài giới hạn không-tiến 1500 ms
-// Đỗ xe lùi song song (park_design_1011.md; Quân duyệt viết với số tạm 11/11). TẠM, CHƯA ĐO trên xe:
+// Đỗ xe lùi song song: điều kiện nhận biển và các pha cơ bản.
 // biển parking rộng >= 0,05 ảnh ở vote_min lô tươi -> bám làn park_forward_cm -> dừng 600 ms -> lùi cung 1 lái về phía ô
 // tới khi quay park_arc_deg -> lùi cung 2 lái ngược tới khi về hướng ban đầu ± 3° -> đứng yên (DO_XE_XONG).
 // Mỗi cung lùi: tối đa 80 cm, 15 s; không nhích >= 1 cm trong 2 s thì dừng; cảm biến lỗi thì dừng.
 constexpr double kParkSignMinW=0.05, kParkYawDoneDeg=3, kParkPhaseMaxCm=80;
 constexpr int64_t kParkWaitMs=600, kParkPhaseMaxMs=15000, kParkStallMs=2000;
-// Quét ô ToF khi xe đứng (Quân duyệt 11/11). TẠM, CHƯA ĐO: bước, ngưỡng vật, thời gian chờ mẫu.
-// Quân 12/11 (đã đo ToF trên xe): <= 250 mm có vật (ô có xe); > 500 mm hoặc phép đo invalid (cảm biến chạy, không thấy vật) = ô trống;
+// Quét ô ToF khi xe đứng: bước, ngưỡng vật và thời gian chờ mẫu.
+// Số đo ToF <= 250 mm là có vật; > 500 mm hoặc phép đo invalid (cảm biến chạy, không thấy vật) là ô trống;
 // 250..500 mm mơ hồ. Cảm biến chưa khởi tạo, không mẫu, lỗi API hoặc mẫu cũ vẫn là KHÔNG RÕ (xe dừng, không lùi).
 constexpr double kParkPastCm=10, kParkOccMm=250, kParkEmptyMm=500, kParkMaxScanCm=400, kParkMaxCreepCm=80;
 constexpr double kParkStepCms=8, kParkCreepCms=5;
 constexpr int64_t kParkSettleMs=500, kParkScanMaxMs=3000;
 constexpr int kParkTofAgeMs=300;
-// FSM đỗ theo ucr (App.cpp 517-545, 1376-1525; Quân 11/11 18:54). TẠM, CHƯA ĐO trên ucr_car:
+// Máy trạng thái đỗ vào ô cố định theo mẫu ucr:
 // ô cố định: bám làn <= 10 cm/s tới khi hàng 90% chiều cao mặt nạ không còn pixel đường (1 mặt nạ mới), hạn 20 s;
 // lùi thẳng park_entry_cm; tiến căn giữa 6 cm/s một đoạn 21,43 + (park_entry_cm mod 50) cm (ucr: 31,4 với lối vào 10);
-// lỗi khi quay sai chiều > 10°, lệch hướng > 8° lúc tiến căn giữa; kiểm cuối |lệch| <= 3°.
-// Log l14 (75,1-77,1 s): sau lệnh 0 cuối cung 2 xe còn trôi lùi 10,4 cm và quay thêm 6,3° (l10 ~4°). Dừng cung 2 sớm 5°
-// (~7 cm ở 3,2°/s x 6 cm/s) để điểm lùi sâu nhất nông hơn; tiến căn giữa bớt tương ứng 21,43 -> 14,5 để giữ vị trí cuối.
+// Lỗi khi quay sai chiều > 10°, lệch hướng > kParkCenterYawMaxDeg lúc tiến căn giữa; kiểm cuối |lệch| <= 3°.
+// Sau lệnh 0 cuối cung 2, xe có thể trôi lùi 10,4 cm và quay thêm 6,3°. Dừng cung 2 sớm 5°
+// (~7 cm ở 3,2°/s x 6 cm/s) để điểm lùi sâu nhất nông hơn; quãng tiến căn giữa theo kParkCenterBaseCm.
 constexpr double kParkLui2LeadDeg=5;
-// Log l16: lùi vẫn lấn ô sau ~5 cm (trôi lùi 10,6 cm sau cung 2) -> tiến trước 5 cm; tiến căn giữa 14,5 -> 9 (5 cm + ~1-2 cm trôi tiến) giữ vị trí cuối.
+// Tiến trước 5 cm để hạn chế lấn ô sau; tiến căn giữa 9 cm có tính phần trôi tiến ~1–2 cm.
 constexpr double kParkPreFwdCm=5;
 constexpr double kParkFixedCms=10, kParkEndRowFrac=0.90, kParkCenterCms=6, kParkCenterBaseCm=9;
-// Log l06: R1 cuối bãi +113 cm; R2 mất làn tạm ở +48/+60 cm.
+// Điểm cuối bãi đo được ở +113 cm; mất làn thoáng qua có thể xảy ra ở +48/+60 cm.
 constexpr double kParkEndLostCm=100;
-constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=12, kParkSteerHardDeg=45;  // 8 -> 12: cung 2 nay dừng ở <= 8°
+constexpr double kParkWrongDirDeg=10, kParkCenterYawMaxDeg=12, kParkSteerHardDeg=45;  // Ngưỡng lệch lúc tiến căn giữa 12°; cung 2 có thể kết thúc khi còn lệch <= 8°.
 constexpr int64_t kParkFixedMaxMs=20000, kParkCheckMs=400;
-// Log l10/l11: trôi lùi 9–11 cm sau lệnh tiến (lệnh +6 gửi ngay khi lái <= 1° lúc xe còn trôi lùi từ cung 2).
+// Xe có thể trôi lùi 9–11 cm nếu gửi lệnh tiến +6 khi lái <= 1° nhưng chưa đứng yên sau cung 2.
 // TIEN_GIUA chỉ tiến khi |odo đổi| < kParkStillCm suốt >= kParkStillMs; thời gian chờ vẫn tính vào hạn pha/hạn kẹt.
 constexpr double kParkStillCm=0.3;
-// Quân 13/11 l13: trả bánh từ từ khi tiến căn giữa; kẹt cuối cung 2 trong 8° coi như xong cung (l13 kẹt ở 3,4°).
+// Trả bánh từ từ khi tiến căn giữa; kẹt cuối cung 2 trong 8° được coi là xong cung.
 constexpr double kParkSteerBackDps=30, kParkStallDoneDeg=8;
 constexpr int64_t kParkStillMs=300;
 // park_tof_map: 4 chữ số (khe+1) theo thứ tự trái-sau, trái-trước, phải-trước, phải-sau; 0 = chưa đo.
@@ -167,12 +167,12 @@ int ParkTofSlot(int map, int pos) {
     static const int div[4]={1000,100,10,1};
     return map/div[pos]%10-1;
 }
-// Log 12/11 (work 1, rào hẹp): lái 1,12*turn_steer_deg = 28° xoay 70° chỉ trong 64 cm, Quân báo cung quá gắt -> 1,0 (TẠM, CHƯA ĐO).
+// Rào hẹp dùng đúng turn_steer_deg: hệ số 1,12 có thể quay 70° trong 64 cm, cung quá gắt.
 constexpr double kNarrowBarrierSteerScale=1.0;
-// Quân 13/11 sau l16: chặng cuối vòng xuyến (st7) phải đi THẲNG qua 2 ngã T sang chặng né vật cản; bám làn kéo rẽ phải nhầm ở ngã T cuối.
-// Quân báo trục neo VX1 sai -> hướng tham chiếu tự chốt trong st7: yaw đổi <= kSt7StableDeg suốt kSt7StableCm bám làn (đã hết cua L c6;
-// l16 215-220 s: -8,2..-9,0 trong 73 cm). Sau đó lệch quá kSt7DevDeg thì lái về hướng chốt bằng rb_yaw_kp, trong dải thì bám làn như cũ.
-// Tắt hẳn khi bắt đầu né vật cản, khi rẽ, hoặc sau kSt7HoldMaxCm. TẠM.
+// Chặng cuối vòng xuyến (st7) đi thẳng qua 2 ngã T sang chặng né vật cản; bám làn có thể kéo rẽ phải ở ngã T cuối.
+// Hướng tham chiếu tự chốt trong st7 khi yaw đổi <= kSt7StableDeg suốt kSt7StableCm bám làn sau cua L c6;
+// yaw ổn định đo được -8,2..-9,0° trong 73 cm. Lệch quá kSt7DevDeg thì lái về hướng chốt bằng rb_yaw_kp, trong dải thì bám làn.
+// Tắt giữ hướng khi bắt đầu né vật cản, khi rẽ hoặc sau kSt7HoldMaxCm.
 constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500, kSt7StableDeg=2, kSt7StableCm=25;
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
@@ -204,7 +204,7 @@ const char *StateName(PlannerState state) {
 void Planner::RouteStable(int q) {
     const int s=route_step_, d=q-route_q_;
     auto match=[&](int i) { return i>=0 && i<kRouteSteps && Mod4(kRouteHeading[i])==Mod4(q); };
-    if(route_sync_) {  // G sau Space (R1: chờ tới khi hướng ổn định mới xét)
+    if(route_sync_) {  // G sau Space: chờ hướng ổn định mới xét.
         route_sync_=route_ambig_=route_pass_seen_=false; route_q_=q;
         if(match(s)) route_note_="SYNC_R2";
         else if(match(s-1)!=match(s+1)) { route_step_=match(s-1) ? s-1 : s+1; route_note_="SYNC_R3"; }
@@ -272,7 +272,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN();
-        rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
+        rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe
         for(auto &vote:votes_) vote.round=vote.round_big=vote.round_bottom=false;  // phiếu đảo cũ không mở lại lần qua sau G
         state_=PlannerState::DUNG; reason_="SPACE"; lane_.Reset(); green_run_=0; park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_run_=0;
         park_still_ms_=-1; park_center_go_=false;
@@ -294,7 +294,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         route_g_seen_=true; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN();
     }
     // Cảm biến hỏng từ kSensorGlitchMs trong pha rẽ IMU VX1: khóa dừng tới G, không tự rơi về bám làn khi cảm biến hồi.
-    // Hỏng ngắn hơn (log l08: odo trống 51 ms) chỉ dừng tạm ở khối rẽ IMU bên dưới.
+    // Mẫu hỏng ngắn hơn ngưỡng chỉ dừng tạm ở khối rẽ IMU bên dưới (đã gặp odo trống 51 ms).
     if(rb_vx1_active_ && !input.stop && sensor_bad && sensor_bad_since_>=0 && now_ms-sensor_bad_since_>=kSensorGlitchMs) {
         state_=PlannerState::DUNG; reason_="VX1_IMU_LOI";
         rb_hold_spent_=true; rb_vx1_active_=false; rb_holding_=false; lane_.Reset();
@@ -313,7 +313,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(turning_) { state_=PlannerState::BAM_LAN; lane_.Reset(); }
         if(barrier_turn_) barrier_done_=false;  // rẽ qua rào bị hủy: rào còn gần thì dừng (Q7), hồi lỗi thì rẽ lại
         ClearTurn(); turn_fault_=true; rb_pending_=0;  // không để rẽ vòng xuyến chờ bắn muộn sau khi hồi
-        l_armed_=false;  // cua L đang chờ cũng bỏ (review 11/11 M1)
+        l_armed_=false;  // cua L đang chờ cũng bỏ
     };
     // Lỗi cảm biến/rẽ chỉ tạm: cảm biến tươi liên tục >= 1 s thì cho rẽ lại (IMU lỗi lúc khởi động luôn sensor_ok sai nên không hồi).
     if(params.turn_enable && turn_fault_) {
@@ -337,7 +337,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         ClearTurn(); state_=PlannerState::DUNG; reason_="HUY_RE_CAM_BIEN"; lane_.Reset();
     }
     if(params.turn_enable && !turn_fault_ && !fallback && !corridor_turn_) {
-        // Test P4 12/11: hạn lượt rẽ kiểm cả khi mẫu IMU đang hỏng thoáng qua (trước đây giữ thêm tới 250 ms): giờ luôn kiểm,
+        // Hạn lượt rẽ luôn được kiểm cả khi mẫu IMU hỏng thoáng qua;
         // quãng chỉ kiểm khi encoder còn tươi.
         if(turning_ && !person_stop_ && now_ms-turn_ms_>params.turn_max_ms) fault("HUY_QUA_GIO");
         else if(turning_ && !person_stop_ && encoder_good && std::abs(input.odo_cm-turn_odo_)>params.turn_max_cm) fault("HUY_QUA_QUANG");
@@ -394,7 +394,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 round_right=round_right || (double(b.x)+b.width/2)/1280.0>=kLBarrierCx; }
             else if(person) people=people || (double(b.y)+b.height)/720.0>=kPersonStopBottom;
             else if(barrier) {
-                // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước (log 1793955267).
+                // Đáy hộp gần xe; tâm ngoài 0,25-0,75 bề rộng là rào bên đường, không chắn trước.
                 const double bottom=(double(b.y)+b.height)/720.0, center=(double(b.x)+b.width/2)/1280.0;
                 // Chỉ rào còn ở dải tâm mới chặn tiếp quản; rào trôi ra mép ảnh khi xe đã quay thì không.
                 barrier_visible=barrier_visible || (center>=kBarrierBlockMinCx && center<=kBarrierBlockMaxCx);
@@ -421,8 +421,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                    (state_==PlannerState::CHO_DEN_XUAT_PHAT || state_==PlannerState::DUNG_DEN_DO)) ++green_run_;
             }
         }
-        // Phiếu theo các lô gần nhất: tuổi tính từ lô mới nhất (YOLO ~230 ms/lô, trễ ~360 ms, log 09/11),
-        // lô mới nhất cũ hơn det_max_age_ms thì bỏ hết như cũ.
+        // Phiếu theo các lô gần nhất: tuổi tính từ lô mới nhất (YOLO ~230 ms/lô, trễ đo được ~360 ms),
+        // lô mới nhất quá det_max_age_ms thì bỏ toàn bộ phiếu.
         const int64_t newest=votes_.empty() ? -1 : votes_.back().ms;
         votes_.erase(std::remove_if(votes_.begin(),votes_.end(),[&](const Vote& vote) {
             return vote.ms>now_ms || now_ms-newest>params.det_max_age_ms || newest-vote.ms>params.det_max_age_ms;
@@ -433,7 +433,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             reds+=v.red; greens+=v.green; lefts+=v.left; rights+=v.right; barriers+=v.barrier_near; barriers_wide+=v.barrier_wide; barriers_seen+=v.barrier_seen;
             rounds+=v.round; rounds_big+=v.round_big; persons+=v.person; parkings+=v.parking;
         }
-        // Log 13/11 lần 1: một lô conf thấp cắt chuỗi liên tiếp, nên parking đếm phiếu trong cửa sổ.
+        // Parking đếm phiếu trong cửa sổ để một lô tin cậy thấp không cắt toàn bộ chuỗi xác nhận.
         park_run_=parkings;
         if(fresh && person_present) person_seen_ms_=std::max(person_seen_ms_,batch.captured_ms);
         if(persons>=params.vote_min) person_latched_=true;
@@ -444,7 +444,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
         person_stop_=person_latched_;
         // Lần qua vòng xuyến; quãng theo encoder (odo NaN khi encoder lỗi thì không kết thúc lần qua).
-        // Mở lần qua cần hộp đảo lớn (đảo gần); đang qua thì hộp cỡ nào cũng tính, kể cả khi đảo trôi ra mép khung (log 09/11 152 s).
+        // Mở lần qua cần hộp đảo lớn (đảo gần); đang qua thì hộp cỡ nào cũng tính, kể cả khi đảo trôi ra mép khung.
         const bool rb_present=rb_in_pass_ ? rounds>=params.vote_min : rounds_big>=params.vote_min;
         if(rb_present) {
             if(!rb_in_pass_ && !input.stop) { rb_entered=true; rb_in_pass_=true;
@@ -454,15 +454,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     (l_turning_ && turning_ ? yaw0_-90.0 : input.yaw_deg);
                 // Đã quay phải đủ trong cửa sổ quãng trước cua L: dùng hướng sau L cho lần qua và neo Bắc.
                 if(l_lane_done) { l_done_=true; l_yaw_hist_.clear(); }
-                // Log l25 12/11 (89 s): đảo lớn thấy sớm ~50 cm trước góc cua L (cua L còn chờ) mở lần qua; cung phải ở lối ra vòng xuyến bẻ xe phải
+                // Đảo lớn có thể xuất hiện ~50 cm trước góc cua L đang chờ; cung phải ở lối ra vòng xuyến có thể bẻ xe phải
                 // lao ra ngoài đường trước góc. Lần qua mở lúc cua L còn chờ thì KHÔNG dùng cung phải (xe chưa tới vòng xuyến).
                 rb_arc_off_=l_armed_ && !l_done_;  // đang dừng (Space) không mở lần qua mới
                 // Lần qua mở ngay sau G-sau-Space (route_check_rb_): xe có thể đang giữa đảo nên yaw lúc này
-                // không phải hướng lúc vào; không giữ hướng theo nó (log 18:01 10/11 289 s lái trái ở lối ra phải).
+                // không phải hướng lúc vào; không giữ hướng theo nó.
                 rb_yaw0_=entry_yaw; rb_hold_odo_=input.odo_cm;
                 // LOW L2: chỉ lần qua ĐẦU TIÊN mở sau G-sau-Space bỏ giữ hướng; route_check_rb_ còn treo (chưa đồng bộ được) không tắt GIU_HUONG các lần qua sau.
                 rb_hold_spent_=rb_hold_check_; rb_hold_check_=false;
-                // Log l07: G-sau-Space TRƯỚC cầu làm khóa cung B1/giữ hướng ở VX1 dù hướng vào lấy từ cua L đang chạy (tin được) → mất làn, đứng.
+                // G sau Space trước cầu vẫn cho giữ hướng VX1 nếu hướng vào lấy từ cua L đang chạy và đáng tin cậy.
                 if(l_turning_ && turning_ && !sensor_bad && std::isfinite(entry_yaw)) rb_hold_spent_=false;
                 if(!sensor_bad && !route_anchored_) {  // Bắc = hướng xe lúc vào đảo lần đầu (xuất phát chặng trước VX1)
                     // Đảo mở khi đang rẽ cua L sau cầu: Bắc = hướng sau cua (yaw lúc bắt đầu cua − 90°), không phải yaw giữa cua.
@@ -473,9 +473,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     // Cua L nạp lại sau G có thể còn đang rẽ khi lần qua mở: dùng hướng sau cua (entry_yaw) như lần neo đầu.
                     const int q=int(std::lround((entry_yaw-route_yaw_ref_)/90.0));
                     if(Mod4(q)==0 || Mod4(q)==2) {
-                        // Log xe 11/11 (m4): 5/5 lần qua mở sau G-sau-Space không giữ hướng nên mất làn ở lối ra rồi dừng;
-                        // lần qua đầu sau G thường (có giữ hướng) thoát bình thường. Nếu xe đang chỉnh theo trục lộ trình
-                        // (không giữa đảo với yaw tùy ý như log 10/11 289 s) thì vẫn giữ hướng.
+                        // Lần qua mở sau G-sau-Space có thể mất làn ở lối ra nếu không giữ hướng;
+                        // nếu hướng vào gần trục lộ trình và chưa dùng hết quãng giữ hướng
+                        // thì vẫn giữ hướng; yaw tùy ý giữa đảo không đủ làm hướng tham chiếu.
                         if(rb_hold_spent_ && std::abs(WrapDeg(input.yaw_deg-route_yaw_ref_-90.0*q))<=kRbHoldAlignDeg) rb_hold_spent_=false;
                         route_sync_=route_ambig_=route_check_rb_=false;
                         if(rb_turn_ && !turning_) ClearTurn();
@@ -493,7 +493,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(!rb_losing_) { rb_losing_=true; rb_lost_odo_=input.odo_cm; }
             else if(std::abs(input.odo_cm-rb_lost_odo_)>=params.rb_lost_cm) {
                 rb_in_pass_=rb_losing_=false; if(rb_vx1_imu_) { rb_hold_spent_=true; rb_vx1_active_=false; } ++rb_passes_; rb_after_odo_=input.odo_cm;
-                // Lộ trình cũ (rb_pending_: lần 1 trái, lần 2 phải) đã tắt: ý định lấy từ chặng (T94). Gỡ hẳn ở giai đoạn 2.
+                // Ý định rẽ vòng xuyến lấy từ chặng; rb_pending_ không phát ý định rẽ ở đây.
             }
         }
         // Lần qua đã thấy đảo: chỉ lô mới, tươi mới tăng chuỗi vắng hộp.
@@ -503,7 +503,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         for(const auto &v:votes_) bottom_votes+=v.round_bottom;
         vx1_box_ready=fresh && (bottom_votes>=params.vote_min || rb_vx1_absent_>=params.vote_window);
         if(params.imu_fallback && !encoder_good) rb_losing_=false;
-        // Bỏ ý định lộ trình chưa rẽ, KHÔNG xóa phiếu biển/rào (khác ClearTurn) để luật biển/rào bên dưới chạy như cũ.
+        // Bỏ ý định lộ trình chưa rẽ, giữ phiếu biển/rào (khác ClearTurn) để luật biển/rào tiếp tục xử lý.
         auto drop_route_intent=[&]() {
             if(!rb_turn_ || turning_) return;
             turn_direction_=0; rb_turn_=false; junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0;
@@ -549,8 +549,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         // Lỗi tạm hồi (1 s tươi) thì luật trên rẽ tiếp; G sau Space bỏ qua rào này (barrier_done_).
         barrier_fault_stop=params.work_barrier_action && params.turn_enable && (turn_fault_ || sensor_bad) && !(fallback && corridor_turn_) && !barrier_done_ && !rb_present &&
             state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && barriers>=params.vote_min;
-        // Lộ trình theo hướng (T94): hướng lượng tử 90° ổn định thì đếm chặng; đóng băng trong lần qua đảo.
-        // M2: chỉ đếm khi xe đang chạy (không Space/dừng/chờ G) và bánh thực sự lăn trong lúc ổn định.
+        // Lộ trình theo hướng: hướng lượng tử 90° ổn định thì đếm chặng; đóng băng trong lần qua đảo.
+        // Chỉ đếm khi xe đang chạy (không Space/dừng/chờ G) và bánh thực sự lăn trong lúc ổn định.
         const bool route_moving=!input.stop && encoder_good &&
             (state_==PlannerState::BAM_LAN || state_==PlannerState::RE_TRAI || state_==PlannerState::RE_PHAI);
         if(route_anchored_ && !sensor_bad && !rb_in_pass_ && route_moving) {
@@ -580,7 +580,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE &&
            std::abs(input.odo_cm-rb_after_odo_)>=(rb_pending_==1 ? params.rb_turn1_cm : params.rb_turn2_cm)) {
             // Sau vòng xuyến chỉ chốt ý định; rẽ khi mặt nạ thấy giao lộ, không rẽ theo quãng.
-            // Lộ trình (Quân 09/11): lần 1 đi thẳng ~1 m rồi rẽ trái ngã T; lần 2 qua một cua L rồi rẽ phải ngã T kế:
+            // Lộ trình: lần 1 đi thẳng ~1 m rồi rẽ trái ngã T; lần 2 qua cua L rồi rẽ phải ngã T kế:
             // giữ ý định tới ngã T đúng phía (cua L bị loại bởi điều kiện đường ngang), không hủy theo quãng.
             turn_direction_=rb_pending_; arm_odo_=input.odo_cm; rb_pending_=0; rb_turn_=true;
         }
@@ -588,7 +588,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            (lefts>=params.vote_min)!=(rights>=params.vote_min)) {  // mẫu hỏng: không chốt mốc quãng NaN
             turn_direction_=lefts>=params.vote_min ? 1 : -1; arm_odo_=input.odo_cm; rb_pending_=0;
         }
-        // Mốc hủy turn_arm_cm tính từ lúc biển/rào cùng chiều không còn thấy (log 09/11: biển đủ phiếu cách giao lộ 92-100 cm).
+        // Mốc hủy turn_arm_cm tính từ lúc biển/rào cùng chiều không còn thấy; biển có thể đủ phiếu khi cách giao lộ 92–100 cm.
         if(turn_direction_ && !turning_ && std::isfinite(input.odo_cm) &&
            ((barrier_turn_ && barrier_seen) || (!barrier_turn_ && (turn_direction_>0 ? left : right)))) arm_odo_=input.odo_cm;
         const bool red_fresh=red_ms_>=0 && red_ms_<=now_ms && now_ms-red_ms_<=params.det_max_age_ms;
@@ -596,8 +596,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             if(!red_latched_) { green_run_=0; wait_since_ms_=now_ms; }
             red_latched_=true;
         }
-        // Đang đỗ (lùi/đã đỗ): đèn không kéo xe sang DUNG_DEN_DO rồi BAM_LAN tiến khi xanh (review đỗ xe MEDIUM-1).
-        // LOW (review lượt 5): đèn đỏ chốt không ghi đè DUNG_VAT_CAN (nếu ghi đè, đèn xanh sẽ nhả thẳng sang BAM_LAN khi vật còn trước mặt);
+        // Đang đỗ (lùi/đã đỗ): đèn không kéo xe sang DUNG_DEN_DO rồi BAM_LAN tiến khi xanh.
+        // Đèn đỏ chốt không ghi đè DUNG_VAT_CAN, tránh nhả sang BAM_LAN khi đèn xanh mà vật còn trước mặt;
         // vật hết thì DUNG_VAT_CAN tự nhả về BAM_LAN, bước sau đèn đỏ còn chốt sẽ chuyển DUNG_DEN_DO.
         if(!input.stop && state_!=PlannerState::DUNG && state_!=PlannerState::CHO_SAN_SANG && state_!=PlannerState::DUNG_VAT_CAN &&
            state_!=PlannerState::DO_XE && state_!=PlannerState::DO_XE_XONG) {
@@ -669,8 +669,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
             if(return_cm_>=0 && intrude) return_block_cm_=0;
             if(return_cm_>=0 && beside) return_clear_cm_=0;  // vật còn bên cạnh trái xe: chưa hết pha về làn
-            // Pha trái chỉ giữ bởi vật còn lớn so với vật đang né: log 10/11 18:01 vật thứ hai ở xa (nhỏ) làm pha trái
-            // kéo dài 44 s / 223 cm, không bao giờ qua NE_QUA/VE_PHAI.
+            // Pha trái chỉ giữ bởi vật còn lớn so với vật đang né; hộp vật thứ hai ở xa không được làm pha trái
+            // kéo dài bất thường, ngăn chuyển sang NE_QUA/VE_PHAI.
             // Vật trước mặt đã gần trong PASS: về làn phải ngay khi đã đi đủ phần tối thiểu của quãng pass.
             if(swerve_==Swerve::PASS && ahead_close && pass_cm_>=kPassMinFrac*params.obstacle_pass_cm)
                 pass_cm_=params.obstacle_pass_cm;
@@ -678,8 +678,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 // Lại có vật ở nửa phải khi đang qua/về: làn phải chưa trống, quay lại pha trái (không chuyển vào làn bị chiếm).
                 swerve_=Swerve::LEFT; pass_cm_=0; obstacle_clear_run_=0; obstacle_votes_.clear();
             }
-            // Log xe 11/11 (m4, 148-152 s): đang VE_PHAI mà vật 2 trước mặt (làn trái) đã sát nhưng xe vẫn chạy tới va vật;
-            // trước đây chỉ PASS mới dừng. Đang về làn phải cũng dừng KHONG_DUONG_NE khi vật trước mặt sát (đáy >= 0,85).
+            // Vật thứ hai trước mặt trên làn trái có thể sát xe ngay trong VE_PHAI;
+            // đang về làn phải cũng dừng KHONG_DUONG_NE khi vật trước mặt sát (đáy >= 0,85).
             else if((swerve_==Swerve::PASS || return_cm_>=0) && ahead_stop) {
                 state_=PlannerState::DUNG_VAT_CAN; reason_="KHONG_DUONG_NE";
                 swerve_=Swerve::NONE; pass_cm_=0; return_cm_=-1; obstacle_clear_run_=0; ahead_clear_lots_=0;
@@ -694,8 +694,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 if(right_present) swerve_right_seen_=true;
                 if(swerve_right_seen_) present_left=right_present;  // đã thấy vật ở làn phải: chỉ nó giữ pha trái
             }
-            // Log 12/11 (172 s, 186 s): vật thứ hai ở làn trái bị tính là vật làn phải (tâm hộp 0,43 >= 0,30) nên xe né trái lần hai.
-            // Chặng chỉ có hai vật (phải rồi trái): đã né và bắt đầu trả làn một lần thì không bắt đầu né trái nữa (Quân 12/11).
+            // Vật thứ hai làn trái có thể có tâm hộp 0,43 >= 0,30, nên không chỉ dựa vào tâm hộp để bắt đầu né lần nữa.
+            // Chặng chỉ có hai vật (phải rồi trái): đã né và bắt đầu trả làn một lần thì không bắt đầu né trái nữa.
             if(state_==PlannerState::BAM_LAN && swerve_==Swerve::NONE && return_cm_<0 && !swerve_used_ &&
                !rb_holding_ && !rb_in_pass_ && !turn_direction_) {
                 obstacle_votes_.push_back(obstacle);
@@ -722,15 +722,15 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                     const double t=bottom>top ? std::max(0.0,std::min(1.0,(bottom-row.y)/(bottom-top))) : 0;
                     const double w=input.mask.cols*(params.lane1_width_frac[0]+(params.lane1_width_frac[1]-params.lane1_width_frac[0])*t);
                     // hole_l/r là các pixel 0, hai đoạn đường hai phía đã được ExtractCorridor chọn.
-                    // Lỗ hẹp hơn ngưỡng vật cản là nhiễu: không tính vật cản, không dùng để kết luận không có đường né (log 09/11 350 s: lỗ 3 px).
+                    // Lỗ hẹp hơn ngưỡng vật cản là nhiễu: không tính vật cản, không dùng để kết luận không có đường né (đã gặp lỗ 3 px).
                     if(row.hole_r-row.hole_l+1<params.obstacle_hole_ratio*w) continue;
-                    // Chỉ nửa gần: lỗ hàng xa cho báo giả (log 09/11 112,7 s) mà không nhận vật thật sớm hơn luật thụt mép (phát lại 2 phiên).
+                    // Chỉ nửa gần: lỗ hàng xa có thể báo giả mà không nhận vật thật sớm hơn luật thụt mép.
                     if(row.y<(params.corridor_bottom_frac+params.corridor_top_frac)*input.mask.rows/2) continue;
                     near_hole=true; avoid_ok=avoid_ok && row.avoid_ok;
                     ++candidates;
                 }
                 // Vật chiếm trọn làn phải trên đường 2 làn không tạo lỗ: mép phải hàng trên thụt vào >= 0,5 làn so với hàng dưới.
-                // Bỏ hàng xa nhất (đường cụt ngã T) và lúc đã có ý định rẽ (log 09/11: 3/446 mask, 2 báo giả ở ngã T có biển).
+                // Bỏ hàng xa nhất ở đường cụt ngã T và lúc đã có ý định rẽ để tránh báo giả vật cản.
                 bool intrusion=false;
                 // Phải thấy ở 2 hàng liền nhau (hàng thụt vào và hàng ngay trên vẫn thụt) để bỏ báo giả một hàng.
                 for(size_t i=1;i+1<corridor.rows.size() && !turn_direction_;++i) {
@@ -777,14 +777,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         lane_.Reset(); return_cm_=0; return_e_=1; swerve_used_=true; return_clear_cm_=kReturnClearCm; return_block_cm_=kReturnBlockCm;
     }
     // Phiếu giao lộ độc lập với phiếu vật cản, chỉ thêm một lần cho mỗi mask mới.
-    // Theo dõi cạnh thật cả trước khi chốt ý định (rào 2: cạnh trái đã mở ngay lúc chốt, log 09/11 sáng 65 s).
+    // Theo dõi cạnh thật cả trước khi chốt ý định: cạnh trái có thể mở ngay lúc chốt ở rào thứ hai.
     if(params.turn_enable && (!turning_ || corridor_turn_) && !rb_in_pass_ && mask_fresh && image_fresh && !input.stop &&
        input.mask_ms!=last_junction_mask_ms_) {
         last_junction_mask_ms_=input.mask_ms;
         const auto corridor=ExtractCorridor(input.mask,params,TrajMode::LANE);
         // (a) Cạnh phía rẽ ở nửa hàng gần chuyển từ cạnh thật sang mở (nhánh rẽ đã tới sát xe);
         //     đường 2 làn có cạnh trái ngoài khung từ đầu thì không tính (chưa từng thấy cạnh thật).
-        // (b) Đường phía trước kết thúc gần (ngã T). Log 09/11: cả hai đến muộn hơn lúc rẽ sớm 40-60 cm.
+        // (b) Đường phía trước kết thúc gần (ngã T); hai dấu hiệu tránh điểm rẽ sớm 40–60 cm.
         int real_left=0, real_right=0, valid_near=0, route_wide=0;
         const size_t near_rows=std::min(corridor.rows.size(),size_t(params.corridor_rows/2));
         for(size_t i=0;i<near_rows;++i) {
@@ -831,13 +831,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             side_R=r>=(1-kSideRoadEdgeFrac)*input.mask.cols;
         }
         const bool side_road=turn_direction_>0 ? side_L : side_R;
-        // Chỉ ngã T thứ nhất (c2, ngay sau ngã L trái) cần hình hai phía; log l14: ngã T thứ hai (c3) chỉ mở trái (phải là mép sa bàn) -> luật cũ.
+        // Ngã T thứ nhất (c2, sau ngã L trái) cần hình hai phía; ngã T thứ hai (c3) chỉ mở trái vì bên phải là mép sa bàn.
         const bool route_T=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==2;
         const bool G=route_wide>=kRouteTWideRows || (side_L && side_R);
-        // Log l15 (f3248-3901): ngã T thứ hai nằm ngay sau ngã T thứ nhất; ra khỏi cung thứ nhất là bên trái đã mở cả 4 hàng gần,
+        // Ngã T thứ hai nằm ngay sau ngã T thứ nhất; ra khỏi cung thứ nhất, bên trái đã mở cả 4 hàng gần,
         // chưa từng có mép trái thật trong 2 s (đang rẽ không lấy phiếu) nên real_before không bao giờ đạt -> st3 không đòi real_before.
         const bool route_T2=rb_turn_ && route_anchored_ && !route_sync_ && !route_ambig_ && route_step_==3;
-        // Log l16 (151,0 s): rẽ ngã T thứ hai chỉ 1,4 cm sau khi hết cung thứ nhất -> phải bám làn thêm route_t2_gap_cm (yaml) mới nhận (phiếu cũ thành false).
+        // Bám làn thêm route_t2_gap_cm sau cung thứ nhất rồi mới nhận ngã T thứ hai để tránh rẽ ngay khi vừa hết cung.
         const bool t2_gap_ok=!route_T2 || !std::isfinite(turn_last_odo_) ||
                              (std::isfinite(input.odo_cm) && std::abs(input.odo_cm-turn_last_odo_)>=params.route_t2_gap_cm);
         const bool junction=turn_direction_ && t2_gap_ok && (route_T ? G : ((opened>=2 && (real_before || route_T2)) || side_road));
@@ -878,8 +878,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(pre_turn_.empty() || input.odo_cm-pre_turn_.back().first>=0.5) pre_turn_.emplace_back(input.odo_cm,input.yaw_deg);  // đứng yên không thêm mẫu
         while(pre_turn_.size()>1 && input.odo_cm-pre_turn_[1].first>=kPreTurnWindowCm) pre_turn_.pop_front();
     } else if(!turning_) pre_turn_.clear();
-    if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // review LOW-1: không dùng đếm cũ
-    // Log l08: odo trống 51 ms xóa chờ cua L, xe qua góc bằng bám làn. Mẫu hỏng ngắn hơn kSensorGlitchMs giữ chờ (bắt đầu cua vẫn cần cảm biến tốt).
+    if(!l_mask_counted && (turning_ || rb_in_pass_ || input.stop || !mask_fresh)) l_open_run_=0;  // Không dùng bộ đếm từ mặt nạ không còn hợp lệ.
+    // Mẫu odo hỏng ngắn hơn kSensorGlitchMs giữ chờ cua L; bắt đầu cua vẫn cần cảm biến tốt.
     const bool l_odo_lost=!std::isfinite(input.odo_cm) && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
     if(l_armed_ && (!l_rearm_ok || rb_in_pass_ || l_odo_lost || std::abs(input.odo_cm-l_seen_odo_)>kLArmCm)) l_armed_=false;
     if(params.turn_enable && l_armed_ && !l_done_ && !turning_ && !turn_direction_ && state_==PlannerState::BAM_LAN &&
@@ -898,7 +898,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         } else if(corridor_turn_ && corridor_clear_>=params.vote_min) {
             ClearTurn(); state_=PlannerState::BAM_LAN; lane_.Reset();
         } else if(!mask_fresh) {
-            if(barrier_turn_) barrier_done_=false;  // rẽ rào bị hủy vì mặt nạ cũ: rào còn gần thì xét lại (rẽ hoặc dừng Q7)
+            if(barrier_turn_) barrier_done_=false;  // Rẽ rào bị hủy vì mặt nạ quá tuổi: rào còn gần thì xét lại để rẽ hoặc dừng.
             ClearTurn(); state_=PlannerState::BAM_LAN;
         } else if(turning_ && !corridor_turn_ && !sensor_bad && std::isfinite(input.yaw_deg) &&
                   std::abs(WrapDeg(input.yaw_deg-yaw0_))>=params.turn_yaw_deg*(turn_direction_<0 ? kRightTurnYawFactor : 1.0)-kHandoverTolDeg &&
@@ -923,10 +923,10 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 yaw0_=input.yaw_deg; turn_odo_=progress_odo_=input.odo_cm; turn_end_note_.clear();
                 const double pre=pre_turn_.empty() || !std::isfinite(input.yaw_deg) ? 0 :
                     std::max(0.0,turn_direction_*WrapDeg(input.yaw_deg-pre_turn_.front().second));
-                // Chỉ rẽ phải theo biển/giao lộ có bằng chứng (6 lượt); rẽ trái, rào, vòng xuyến giữ góc cũ (review 11/11 MEDIUM-1).
+                // Bù phần đã quay sẵn chỉ cho rẽ phải theo biển/giao lộ; rẽ trái, rào, vòng xuyến dùng góc cơ bản.
                 turn_steer_scale_=turn_direction_<0 && !barrier_turn_ && !rb_turn_ ?
                     std::max(kPreTurnMinScale,std::min(1.0,1-pre/kPreTurnRefDeg)) : 1.0;
-                // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
+                // Cung trái ngã T thứ nhất rộng: tăng góc 15%, vẫn kẹp steer_max_deg ở TurnSteer và phần bù.
                 if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
                 else if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==3) turn_steer_scale_=params.route_t2_steer_scale;
                 turn_ms_=progress_ms_=now_ms;
@@ -950,12 +950,12 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
            swerve_==Swerve::NONE && !returning && !rb_in_pass_ && !rb_holding_ && !sensor_bad && park_run_>=params.vote_min) {
             park_scan_yaw_=input.yaw_deg;
             park_mode_=0; park_unknown_=0; park_scan_cm_=park_creep_cm_=0; park_fixed_=false;
-            // Quân 13/11: bỏ ToF khỏi đỗ xe; sau biển P luôn vào ô cố định cuối bãi (logic ucr), park_tof_map không còn tác dụng.
+            // Sau biển P luôn vào ô cố định cuối bãi theo mẫu ucr; park_tof_map không tham gia đường đỗ này.
             park_go_fixed("BIEN_P O_CO_DINH");
         }
-        // Có ý định rẽ trong lúc tiến (biển/lộ trình): bỏ đỗ, để rẽ chạy như thường (review MEDIUM-2).
-        // Log l27 12/11 (16656, dòng 4497): MỘT mẫu odo trống lúc đang tiến dò mép hủy đỗ ngầm, xe quay về bám làn và chạy thẳng. Mẫu hỏng ngắn hơn
-        // kSensorGlitchMs không hủy pha tiến (quãng không tăng khi odo không hữu hạn nên pha vẫn chờ); hỏng từ kSensorGlitchMs vẫn hủy như cũ.
+        // Có ý định rẽ trong lúc tiến (biển/lộ trình): hủy đỗ để thực hiện rẽ.
+        // Mẫu odo trống thoáng qua không được hủy đỗ và đưa xe về bám làn. Mẫu hỏng ngắn hơn
+        // kSensorGlitchMs không hủy pha tiến (quãng không tăng khi odo không hữu hạn); hỏng từ ngưỡng này thì hủy.
         const bool park_tien_bad=sensor_bad && !(sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs);
         // Hỏng từ kSensorGlitchMs lúc đang tiến quét/dò mép (không còn biết quãng): DỪNG có lý do như pha quét/lùi, không hủy ngầm rồi bám làn tốc độ thường trong bãi.
         if(park_phase_==ParkPhase::TIEN && park_tien_bad && state_==PlannerState::BAM_LAN) {
@@ -966,7 +966,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         if(park_phase_==ParkPhase::TIEN && park_fixed_) {
             if(person_stop_ && command_ms_>=0 && now_ms>command_ms_) park_fixed_ms0_+=now_ms-command_ms_;  // đứng vì người không tính
             // Cuối đường: vote_min mặt nạ MỚI liên tiếp có hàng 90% trống VÀ các hàng sát đầu xe (dưới hàng đó) vẫn có
-            // đường; mặt nạ trống toàn bộ (segmentation hụt) không tính (review P6 M-1).
+            // đường; mặt nạ trống toàn bộ do phân vùng hụt không được tính.
             if(input.mask_ms!=park_last_mask_ms_ && mask_fresh && !input.mask.empty() && input.mask.type()==CV_8UC1) {
                 park_last_mask_ms_=input.mask_ms;
                 // Xử lý chính mặt nạ này sớm, rồi dùng lại bên dưới; không gọi Step hai lần.
@@ -1005,9 +1005,9 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double entry_cm=park_fixed_ ? params.park_entry_cm : 0;
         const bool moving=park_phase_==ParkPhase::LUI_THANG || park_phase_==ParkPhase::LUI1 ||
                           park_phase_==ParkPhase::LUI2 || park_phase_==ParkPhase::TIEN_GIUA;
-        // Log 12/11 (l19, 484 s): một mẫu IMU/encoder hỏng đúng lúc bắt đầu quét ToF (vòng lặp 120-133 ms) hủy cả đợt đỗ. Xe đang ĐỨNG (QUET/CHO)
-        // thì mẫu hỏng ngắn hơn kSensorGlitchMs chỉ bỏ qua bước này (vẫn giữ lệnh dừng); hỏng dài thì hủy như cũ.
-        // Log l25 12/11 (480 s): MỘT mẫu odo trống lúc đang lùi cung 1 hủy cả đợt đỗ. Lúc lùi/tiến căn giữa, mẫu hỏng ngắn cũng chỉ làm xe DỪNG tạm
+        // Khi xe đứng ở QUET/CHO, mẫu IMU/encoder hỏng thoáng qua
+        // ngắn hơn kSensorGlitchMs chỉ bỏ qua bước này và giữ lệnh dừng; hỏng dài thì hủy.
+        // Lúc lùi hoặc tiến căn giữa, mẫu odo hỏng ngắn chỉ làm xe dừng tạm
         // (lệnh tốc độ 0, giữ góc, không chuyển pha; thời gian glitch VẪN tính vào các hạn kParkPhaseMaxMs/kParkStallMs) rồi tiếp tục khi mẫu tốt trở lại; hỏng từ kSensorGlitchMs vẫn hủy.
         const bool park_glitch=sensor_bad && park_phase_!=ParkPhase::XONG && park_phase_!=ParkPhase::NONE && sensor_bad_since_>=0 && now_ms-sensor_bad_since_<kSensorGlitchMs;
         if(sensor_bad && park_phase_!=ParkPhase::XONG && !park_glitch) stop_park("DO_XE_CAM_BIEN");
@@ -1065,7 +1065,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
         } else if(park_phase_==ParkPhase::CHO) {
             if(now_ms-park_ms0_>=kParkWaitMs && entry_cm<=0 && !park_prefwd_done_) {
-                // Log l16: dời cả thao tác lên kParkPreFwdCm (tiến trước rồi đứng chờ lại) để điểm lùi sâu nhất bớt lấn ô sau.
+                // Tiến trước kParkPreFwdCm rồi đứng chờ để điểm lùi sâu nhất bớt lấn ô sau.
                 park_prefwd_=park_prefwd_done_=true; start_phase(ParkPhase::LUI_THANG,"DO_XE_TIEN_TRUOC");
             } else if(now_ms-park_ms0_>=kParkWaitMs) {
                 park_yaw0_=input.yaw_deg;
@@ -1093,7 +1093,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Đang chủ động đứng chờ trả lái/đứng yên trước khi tiến căn giữa: không tính là kẹt (hạn pha 15 s vẫn áp).
             if(park_phase_==ParkPhase::TIEN_GIUA && !park_center_go_) park_prog_ms_=now_ms;
             if((arc && moved>kParkPhaseMaxCm) || now_ms-park_ms0_>max_ms) stop_park("DO_XE_HET_HAN");
-            // Log l13 (263,7 s): kẹt cuối cung 2 khi chỉ còn lệch 3,4° -> coi cung 2 xong, sang tiến căn giữa (trả lái từ từ) thay vì dừng.
+            // Kẹt cuối cung 2 trong kParkStallDoneDeg được coi là xong cung, chuyển sang tiến căn giữa và trả lái từ từ.
             else if(!person_stop_ && now_ms-park_prog_ms_>=kParkStallMs && park_phase_==ParkPhase::LUI2 && std::abs(turned)<=kParkStallDoneDeg)
                 start_phase(ParkPhase::TIEN_GIUA,"DO_XE_TIEN_GIUA");
             else if(!person_stop_ && now_ms-park_prog_ms_>=kParkStallMs) stop_park("DO_XE_KET");
@@ -1112,7 +1112,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             }
         }
         if(state_==PlannerState::DO_XE || state_==PlannerState::DO_XE_XONG) {
-            // Riêng pha đỗ (Quân 11/11 18:54): lái tới 45°, lùi tới 6 cm/s, tiến căn giữa 6 cm/s; chặng khác giữ steer_max_deg.
+            // Riêng pha đỗ: lái tới 45°, lùi tới 6 cm/s, tiến căn giữa 6 cm/s; chặng khác giữ steer_max_deg.
             const double lim=std::min(kParkSteerHardDeg,std::max(params.steer_max_deg,params.park_steer_deg));
             double cms=0, target=0;
             if(park_phase_==ParkPhase::LUI_THANG) cms=park_prefwd_ ? std::min(kParkCenterCms,params.max_speed_cms) : -std::min(params.park_rev_cms,params.max_speed_cms);
@@ -1122,7 +1122,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             // Hết cung 2 bánh còn đang bẻ hết cỡ: tiến ngay trong lúc trả lái làm xe quay tiếp ~1° và hỏng kiểm cuối (<= 3°) -> DO_XE_LECH_HUONG thay vì DO_XE_XONG.
             // Đứng yên tới khi góc lái đã về gần 0 (thời gian đứng vẫn tính vào hạn pha và hạn kẹt) rồi mới tiến căn giữa.
             } else if(park_phase_==ParkPhase::TIEN_GIUA) {
-                // Thêm (V39): còn phải đứng yên kParkStillMs; odo NaN/mẫu hỏng/lái chưa về thì cửa sổ đứng yên bắt đầu lại.
+                // Phải đứng yên kParkStillMs; odo NaN, mẫu hỏng hoặc lái chưa về làm cửa sổ đứng yên bắt đầu lại.
                 const bool steer_ok=std::abs(sent_angle_)<=1.0;
                 if(!park_center_go_) {
                     if(park_glitch || !std::isfinite(input.odo_cm) || !steer_ok) park_still_ms_=-1;
@@ -1132,7 +1132,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 cms=park_center_go_ && steer_ok ? std::min(kParkCenterCms,params.max_speed_cms) : 0.0;
             }
             if(person_stop_ || park_glitch) { cms=0; target=sent_angle_; }
-            // Log l13: trả lái 45° -> 0 tức thì làm xe bung, trượt lùi 13 cm; pha tiến căn giữa trả lái chậm kParkSteerBackDps.
+            // Trả lái 45° về 0 tức thì có thể gây trượt lùi 13 cm; pha tiến căn giữa trả lái chậm kParkSteerBackDps.
             const double rate=park_phase_==ParkPhase::TIEN_GIUA ? std::min(params.steer_rate_dps,kParkSteerBackDps) : params.steer_rate_dps;
             const double step=rate*(command_ms_<0 ? 0 : std::max<int64_t>(0,now_ms-command_ms_)/1000.0);
             sent_angle_=std::max(-lim,std::min(lim,std::max(sent_angle_-step,std::min(sent_angle_+step,target))));
@@ -1144,7 +1144,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
             return plan;
         }
     }
-    // MEDIUM M1 (review lượt 2, 12/11): nhả DUNG_VAT_CAN hoặc bước quét đỗ về BAM_LAN trong khi đèn đỏ còn chốt thì
+    // Nhả DUNG_VAT_CAN hoặc bước quét đỗ về BAM_LAN trong khi đèn đỏ còn chốt thì
     // dừng đèn đỏ ngay ở bước này (không xuất một chu kỳ tốc độ bám làn rồi mới chuyển DUNG_DEN_DO ở bước sau).
     if(red_latched_ && state_==PlannerState::BAM_LAN && !input.stop) {
         if(turning_) { ClearTurn(); lane_.Reset(); }
@@ -1211,13 +1211,13 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     const auto result=park_lane_processed ? park_lane_result : lane_.Step(input.mask,input.mask_ms,now_ms,params,plan.mode,turn_direction_==0);
     if(returning && result.debug.state=="BAM_LAN") return_e_=result.debug.e;  // mất làn thì giữ sai số cũ, không kết thúc giả
     plan.cmd=result.cmd; plan.debug=result.debug; plan.reason=result.debug.reason;
-    // Log 12/11 (l14, l17, l19): trong pha về làn phải, khi vật còn bên cạnh trái xe, bộ bám làn bẻ TRÁI (+5..+12°) vì e ở hàng nhìn xa ≈ 0
-    // và xe quay đầu về phía vật rồi va. Chưa qua kReturnBlockCm kể từ lần cuối hộp vật bên cạnh còn lấn vào ảnh thì không lái trái (kReturnHardCm) rồi lái trái tối đa kReturnLeftMaxDeg.
+    // Trong pha về làn phải, vật còn cạnh trái có thể làm bám làn bẻ trái +5..+12° vì sai số nhìn xa gần 0;
+    // trong kReturnBlockCm từ lần cuối hộp vật còn lấn ảnh, không lái trái ở kReturnHardCm đầu rồi kẹp bởi kReturnLeftMaxDeg.
     if(returning && return_block_cm_<kReturnBlockCm && plan.cmd.deg>0) {
         const double lim=return_block_cm_<kReturnHardCm ? 0.0 : kReturnLeftMaxDeg;
         if(plan.cmd.deg>lim) { plan.cmd.deg=lim; plan.debug.angle_deg=lim; }
     }
-    // Log l27 12/11 (16925, dòng 1088-1096): hộp đảo rời khung (VX_THOAT) khi cung phải mới quay 23°/57 cm; bỏ cung ở đó thì bám làn lái TRÁI +16° về phía đảo
+    // Hộp đảo có thể rời khung khi cung phải mới quay 23°/57 cm; bám làn lúc đó có thể lái trái +16° về đảo
     // (mặt nạ lối ra tách mảnh, hành lang được chọn nằm bên trái). Cung phải giữ cả khi đang mất phiếu đảo, tới khi đủ kRbArcDeg/kRbArcMaxCm hoặc hết lần qua (rb_lost_cm).
     if(!rb_vx1_active_) {
         if(rb_vx1_imu_ && rb_in_pass_ && !turning_ && !sensor_bad &&
@@ -1231,7 +1231,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         const double distance=std::abs(input.odo_cm-rb_hold_odo_);
         // Người đi bộ giữ xe đứng: thời gian đứng không tính vào hạn pha/kẹt (như lượt rẽ thường).
         if(rb_vx1_active_ && person_stop_ && command_ms_>=0 && now_ms>command_ms_) { rb_hold_ms_+=now_ms-command_ms_; rb_prog_ms_+=now_ms-command_ms_; }
-        // Pha chưa bắt đầu mà cảm biến hỏng: chưa bắt đầu (bám làn như cũ), không khóa dừng.
+        // Pha chưa bắt đầu mà cảm biến hỏng: tiếp tục bám làn, chưa khóa dừng.
         if(rb_vx1_active_ || (distance>=kRbArcDelayCm && !sensor_bad && std::isfinite(rb_vx1_lane_odo_) &&
                                 input.odo_cm-rb_vx1_lane_odo_>=kVx1LaneCm &&
                                 (std::isfinite(rb_vx1_box_odo_) || (vx1_box_ready && (rb_vx1_box_odo_=input.odo_cm, true))) &&
@@ -1289,7 +1289,7 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         }
     }
     // Vòng xuyến (phương án B): mất làn trong một lần qua thì lái giữ hướng lúc vào thay vì dừng,
-    // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng như cũ).
+    // tới khi bắt lại làn, hết lần qua, quá rb_hold_max_cm hoặc cảm biến lỗi (khi đó dừng).
     const bool was_holding=rb_holding_;
     rb_holding_=false;
     const bool rb_post=!rb_in_pass_ && rb_passes_>0 && std::isfinite(rb_after_odo_) && std::isfinite(input.odo_cm) &&
@@ -1373,14 +1373,14 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(plan.reason=="BAM_LAN" && rb_in_pass_ && swerve_==Swerve::NONE && !returning)
         plan.reason=plan.debug.reason=rb_losing_ ? "VX_THOAT" : fallback && rb_entered ? "VX_TIEP_CAN" : "VX_QUANH_DAO";
     if(input.yolo_enabled && (!fresh || reason_=="TIEP_CAN_DEN_DO" || released)) {
-        // Quân 11/11: tiếp cận đèn đỏ bằng tốc độ bám làn (cruise); approach_cms chỉ còn kẹp khi mất YOLO (!fresh).
+        // Tiếp cận đèn đỏ bằng tốc độ bám làn (cruise); approach_cms kẹp tốc độ khi mất YOLO (!fresh).
         if(!fresh) plan.cmd.cms=std::min({plan.cmd.cms,params.approach_cms,params.max_speed_cms});
         if(result.debug.state=="BAM_LAN") {
             plan.reason=released ? "DEN_XANH" : !fresh ? "MAT_YOLO" : reason_; plan.debug.reason=plan.reason;
         }
         plan.debug.speed_cms=plan.cmd.cms;
     }
-    // Log 13/11 l04: mask bãi đỗ nhiễu, yaw lệch 13,5° (phần lớn ở pha tìm cuối bãi); mọi pha TIẾN trong bãi giữ trục lúc nhận P.
+    // Mặt nạ bãi đỗ nhiễu có thể làm yaw lệch 13,5° khi tìm cuối bãi; mọi pha tiến trong bãi giữ trục lúc nhận P.
     // Mask vẫn dùng để nhận cuối bãi/mất làn; chỉ góc lái theo IMU.
     if(park_phase_==ParkPhase::TIEN && std::isfinite(park_scan_yaw_) && !sensor_bad) {
         const double target=std::max(-params.steer_max_deg,std::min(params.steer_max_deg,

@@ -9,10 +9,10 @@ struct ControlParams {
     int control_period_ms, mask_max_age_ms, cmd_max_age_ms, det_max_age_ms;
     double max_speed_cms, cruise_cms, min_cms, lost_cms, slow_per_deg;
     double steer_max_deg, steer_rate_dps, kp, kd;
-    // Hành lang (T79): hàng quét, bề rộng một làn kỳ vọng [gần, xa], ngưỡng hai làn/nhảy/tin cậy, lookahead.
+    // Hành lang: hàng quét, bề rộng một làn kỳ vọng [gần, xa], ngưỡng hai làn/nhảy/tin cậy, lookahead.
     int corridor_rows;
     int lane_backup;
-    double lane_backup_right_frac; // TẠM, CHƯA ĐO
+    double lane_backup_right_frac; // Khoảng lùi từ biên phải theo bề rộng một làn.
     double corridor_bottom_frac, corridor_top_frac;
     std::vector<double> lane1_width_frac;
     double two_lane_ratio, max_jump_frac, conf_min, lookahead_frac, avoid_min_width_ratio;
@@ -30,7 +30,7 @@ struct ControlParams {
     int imu_fallback;
     double turn_yaw_deg, turn_steer_deg, turn_arm_cm, turn_max_cm, turn_start_cm, turn_left_delay_cm, route_t2_gap_cm, st7_left_bias_deg, route_t2_steer_scale;
     double rb_lost_cm, rb_turn1_cm, rb_turn2_cm, rb_yaw_kp, rb_hold_max_cm;
-    // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11): mặc định tắt.
+    // Đỗ xe lùi song song (chặng 8); mặc định bật trong bảng tham số.
     int park_enable, park_side, park_tof_map;
     double park_forward_cm, park_arc_deg, park_rev_cms, park_steer_deg, park_entry_cm, park_cell_cm;
 

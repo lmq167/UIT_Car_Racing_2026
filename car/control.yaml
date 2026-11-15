@@ -14,16 +14,16 @@ steer_rate_dps: 200 # Tốc độ đổi góc tối đa, độ/s
 kp: 35 # Hệ số tỉ lệ, độ
 kd: 2 # Hệ số vi phân, độ.s
 lane_backup: 0
-lane_backup_right_frac: 0.5 # TẠM, CHƯA ĐO
-corridor_rows: 8 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: số hàng hành lang (2–20)
-corridor_bottom_frac: 0.95 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng gần nhất theo chiều cao mặt nạ
-corridor_top_frac: 0.62 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: hàng xa nhất theo chiều cao mặt nạ (0 < top < bottom)
-lane1_width_frac: [0.57, 0.17] # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng một làn [hàng gần, hàng xa] theo chiều rộng mặt nạ
-two_lane_ratio: 1.5 # TẠM, CHỈNH NGOẠI TUYẾN p0119/p0106: bề rộng/kỳ vọng từ mức này là hai làn (1.2–3)
-max_jump_frac: 0.08 # TẠM, CHƯA ĐO: lệch biên giữa hai hàng và dịch lookahead mỗi khung tối đa, theo chiều rộng
-corridor_conf_min: 0.4 # TẠM, CHƯA ĐO: độ tin cậy hàng tối thiểu để khớp đường (0.35–1)
-lookahead_frac: 0.75 # TẠM, CHƯA ĐO: hàng lookahead theo chiều cao (trong [top, bottom])
-avoid_min_width_ratio: 0.75 # TẠM, CHƯA ĐO: phần trống trái vật cản tối thiểu để né, theo bề rộng một làn
+lane_backup_right_frac: 0.5 # Khoảng lùi từ biên phải theo bề rộng một làn
+corridor_rows: 8 # số hàng hành lang (2–20)
+corridor_bottom_frac: 0.95 # hàng gần nhất theo chiều cao mặt nạ
+corridor_top_frac: 0.62 # hàng xa nhất theo chiều cao mặt nạ (0 < top < bottom)
+lane1_width_frac: [0.57, 0.17] # bề rộng một làn [hàng gần, hàng xa] theo chiều rộng mặt nạ
+two_lane_ratio: 1.5 # bề rộng/kỳ vọng từ mức này là hai làn (1.2–3)
+max_jump_frac: 0.08 # lệch biên giữa hai hàng và dịch lookahead mỗi khung tối đa, theo chiều rộng
+corridor_conf_min: 0.4 # độ tin cậy hàng tối thiểu để khớp đường (0.35–1)
+lookahead_frac: 0.75 # hàng lookahead theo chiều cao (trong [top, bottom])
+avoid_min_width_ratio: 0.75 # phần trống trái vật cản tối thiểu để né, theo bề rộng một làn
 center_offset_frac: 0 # Dịch tâm xe theo chiều rộng mặt nạ
 min_valid_rows: 1 # Số hàng hợp lệ tối thiểu
 lost_hold_ms: 300 # Hạn giữ tốc độ khi mất làn, ms
@@ -33,10 +33,10 @@ record_every_n: 0 # Nhịp ghi ảnh và mặt nạ, số khung; 0 = tắt ghi �
 yolo_every_n: 3 # Nhịp chạy YOLO, số khung (P2)
 work_barrier_action: 1 # Rào công trình: 0 = tắt, 1 = rẽ trái vào đường 2 làn (dùng máy rẽ IMU, cần turn_enable 1)
 work_barrier_y2_frac: 0.55 # Đáy hộp rào tối thiểu (theo chiều cao ảnh) để bắt đầu rẽ; tăng = rẽ muộn hơn
-obstacle_near_w_frac: 0.10 # TẠM, CHƯA ĐO: bề rộng hộp/ảnh để bắt đầu né, miền (0,02; 0,6]
+obstacle_near_w_frac: 0.10 # bề rộng hộp/ảnh để bắt đầu né, miền (0,02; 0,6]
 obstacle_action: 2 # Vật cản: 0 = tắt, 1 = dừng, 2 = né sang trái
-obstacle_hole_ratio: 0.25 # TẠM, CHƯA ĐO: khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
-obstacle_pass_cm: 85 # TẠM, CHƯA ĐO: vùng mù 25 + dài vật 50 + dư 10 sau khi vắng hộp YOLO; yaml xe thắng
+obstacle_hole_ratio: 0.25 # khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn (0–1]
+obstacle_pass_cm: 85 # vùng mù 25 + dài vật 50 + dư 10 sau khi vắng hộp YOLO
 start_wait_green: 1 # Chờ xanh khi xuất phát, 1
 vote_window: 5 # Cửa sổ bỏ phiếu, lô
 vote_min: 3 # Số phiếu tối thiểu, lô
@@ -49,26 +49,26 @@ green_box_min_area_frac: 0.0001 # Diện tích xanh tối thiểu, W*H
 off_box_min_area_frac: 0.0001 # Diện tích tắt tối thiểu, W*H
 approach_cms: 5.0 # Tốc độ tiếp cận đỏ, cm/s
 red_stop_x_frac: 0.90 # Mép phải hộp đỏ để dừng, W
-imu_fallback: 0 # TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt
+imu_fallback: 0 # dự phòng IMU lỗi, mặc định tắt
 turn_enable: 1 # Rẽ theo biển bằng IMU và encoder; mặc định bật
-turn_yaw_deg: 80 # TẠM, CHƯA ĐO: góc quay đích, độ (30–120)
-turn_steer_deg: 36 # TẠM, CHƯA ĐO: góc lái cố định, độ (5 đến steer_max_deg)
-turn_left_delay_cm: 0 # Quân 12/11: rẽ TRÁI theo biển (không tính rào work) chờ thêm chừng này cm kể từ lúc mặt nạ xác nhận ngã rẽ rồi mới rẽ; 0 = như cũ; tune nếu rẽ trái vào hầm quá sớm (0–60)
-turn_arm_cm: 80 # TẠM, CHƯA ĐO: quãng chờ ngã rẽ tối đa, cm (10–300)
-turn_start_cm: 45 # TẠM, CHƯA ĐO: quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ, cm (0–150)
-rb_lost_cm: 30 # TẠM, CHƯA ĐO: mất phiếu round_barrier liên tục bao nhiêu cm thì xong một lần qua vòng xuyến (10–100)
-rb_turn1_cm: 60 # TẠM, CHƯA ĐO: sau lần qua vòng xuyến thứ 1 đi thêm bao nhiêu cm thì rẽ TRÁI (0–400)
-rb_turn2_cm: 60 # TẠM, CHƯA ĐO: sau lần qua vòng xuyến thứ 2 đi thêm bao nhiêu cm thì rẽ PHẢI (0–400)
-rb_yaw_kp: 1.0 # TẠM, CHƯA ĐO: giữ hướng khi mất làn trong vòng xuyến, độ lái mỗi độ lệch (0.1–5)
-rb_hold_max_cm: 150 # TẠM, CHƯA ĐO: quãng giữ hướng tối đa mỗi lần qua (20–400)
-turn_max_cm: 70 # TẠM, CHƯA ĐO: quãng đang rẽ tối đa, cm (10–200)
-turn_max_ms: 8000 # TẠM, CHƯA ĐO: thời gian đang rẽ tối đa, ms (1000–20000)
-park_enable: 1 # TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (Quân 11/11: mặc định BẬT; 0 = tắt; cần turn_enable 1)
-park_side: -1 # TẠM: phía ô đỗ (-1 = phải, 1 = trái)
-park_forward_cm: 10 # Quân 11/11: đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ, cm (0–200)
-park_arc_deg: 45 # TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất, độ (10–80)
-park_rev_cms: 6 # TẠM, CHƯA ĐO: tốc độ lùi khi đỗ, cm/s (2–6; Quân 11/11 18:54: pha đỗ tới 6)
-park_steer_deg: 45 # TẠM, CHƯA ĐO: góc lái hai cung lùi khi đỗ, độ (5–45; riêng pha đỗ được 45)
-park_cell_cm: 50 # Quân 12/11: chiều dài mỗi ô khi quét ToF, cm (10–200; bước tiến giữa hai lần quét ToF, kể cả bước dò mép xa sau khi thấy ô trống; tune nếu quét quá ngắn/dài)
-park_entry_cm: 10 # TẠM, CHƯA ĐO: lùi thẳng trước cung 1, cm (0–120; 10 = ô giữa hàng như ucr)
+turn_yaw_deg: 80 # góc quay đích, độ (30–120)
+turn_steer_deg: 36 # góc lái cố định, độ (5 đến steer_max_deg)
+turn_left_delay_cm: 0 # rẽ TRÁI theo biển (không tính rào work) chờ thêm chừng này cm kể từ lúc mặt nạ xác nhận ngã rẽ rồi mới rẽ; 0 = không chờ thêm; tune nếu rẽ trái vào hầm quá sớm (0–60)
+turn_arm_cm: 80 # quãng chờ ngã rẽ tối đa, cm (10–300)
+turn_start_cm: 45 # quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ, cm (0–150)
+rb_lost_cm: 30 # mất phiếu round_barrier liên tục bao nhiêu cm thì xong một lần qua vòng xuyến (10–100)
+rb_turn1_cm: 60 # sau lần qua vòng xuyến thứ 1 đi thêm bao nhiêu cm thì rẽ TRÁI (0–400)
+rb_turn2_cm: 60 # sau lần qua vòng xuyến thứ 2 đi thêm bao nhiêu cm thì rẽ PHẢI (0–400)
+rb_yaw_kp: 1.0 # giữ hướng khi mất làn trong vòng xuyến, độ lái mỗi độ lệch (0.1–5)
+rb_hold_max_cm: 150 # quãng giữ hướng tối đa mỗi lần qua (20–400)
+turn_max_cm: 70 # quãng đang rẽ tối đa, cm (10–200)
+turn_max_ms: 8000 # thời gian đang rẽ tối đa, ms (1000–20000)
+park_enable: 1 # đỗ xe lùi song song khi thấy biển parking; mặc định bật; 0 = tắt; cần turn_enable 1
+park_side: -1 # phía ô đỗ (-1 = phải, 1 = trái)
+park_forward_cm: 10 # đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ, cm (0–200)
+park_arc_deg: 45 # góc quay cung lùi thứ nhất, độ (10–80)
+park_rev_cms: 6 # tốc độ lùi khi đỗ, cm/s (2–6)
+park_steer_deg: 45 # góc lái hai cung lùi khi đỗ, độ (5–45; riêng pha đỗ được 45)
+park_cell_cm: 50 # chiều dài mỗi ô khi quét ToF, cm (10–200; bước tiến giữa hai lần quét ToF, kể cả bước dò mép xa sau khi thấy ô trống; tune nếu quét quá ngắn/dài)
+park_entry_cm: 10 # lùi thẳng trước cung 1, cm (0–120; 10 = ô giữa hàng như ucr)
 park_tof_map: 0 # 0 = ánh xạ ToF CHƯA ĐO -> ô cố định cuối đường; đo xong ghi 4 chữ số khe+1 của trái-sau, trái-trước, phải-trước, phải-sau

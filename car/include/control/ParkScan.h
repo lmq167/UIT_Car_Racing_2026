@@ -10,7 +10,7 @@ struct TofSlot {
 };
 struct ParkScanConfig {
     int map[4]={-1,-1,-1,-1}; // Trái trước/sau, phải trước/sau; chưa xác nhận.
-    // TẠM: toàn bộ số đo và ngưỡng này chưa xác nhận trên xe.
+    // toàn bộ số đo và ngưỡng này chưa xác nhận trên xe.
     double occ_mm=400, slot_cm=50, slot_tol_cm=10, front_off_cm=19,
            rear_off_cm=0, max_gap_cm=3, edge_tol_cm=6;
     int max_age_ms=300, min_samples=3;

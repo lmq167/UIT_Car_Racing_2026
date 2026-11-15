@@ -22,7 +22,7 @@ Các file kết quả của lần huấn luyện (bảng tổng hợp so sánh, 
 
 ## Biến thể dùng khi thi
 
-D6 được chọn cho mọi lượt thử và lượt thi (12/11/2026), ghép với model phân vùng mặt đường TwinLiteNet+; lý do ghi nhận khi chọn là tốc độ (đầu vào nhỏ nhất, ~9,1 ms GPU trên xe). D2, D7, D8 chưa được dựng engine và đo trên xe, nên chưa có so sánh tốc độ cùng điều kiện.
+D6 là mô hình phát hiện dùng khi thi, ghép với mô hình phân vùng mặt đường TwinLiteNet+; thời gian suy luận GPU đo trên xe ~9,1 ms (đầu vào nhỏ nhất trong bốn biến thể). D2, D7, D8 chưa được dựng engine và đo trên xe, nên chưa có so sánh tốc độ cùng điều kiện.
 
 ## Ảnh preview
 

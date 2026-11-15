@@ -1,4 +1,4 @@
-"""Kiểm tra, lập phiếu, nhập nhãn và chia dữ liệu T28 theo cả lượt."""
+"""Kiểm tra, lập phiếu, nhập nhãn và chia dữ liệu theo cả lượt."""
 
 import argparse
 import csv

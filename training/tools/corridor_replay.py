@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """Phát lại ngoại tuyến ExtractCorridor (bản Python bám sát LaneController.cpp) trên mặt nạ thật.
 
-Dùng để kiểm giả thuyết lỗi 3 (đêm 10→11/11): cạnh phải chạm biên ảnh + cạnh trái thật
+Dùng để kiểm hiện tượng: cạnh phải chạm biên ảnh + cạnh trái thật
 -> hàng bị dựng thành "một làn" -> target nằm ở làn TRÁI của đường hai làn.
 
 Cách dùng:

@@ -33,7 +33,7 @@ inline bool validatePreviewOptions(const PreviewOptions& options, std::string& e
     else { error.clear(); return true; }
     return false;
 }
-// Gọi cho từng tham số trước bộ phân tích cũ; Parsed đã tăng index nếu có giá trị.
+// Gọi cho từng tham số trước bộ phân tích chính; Parsed đã tăng index nếu có giá trị.
 inline PreviewOptionResult parsePreviewOption(int argc, const char* const argv[], int& index,
                                              PreviewOptions& options, std::string& error) {
     if (index < 0 || index >= argc) return PreviewOptionResult::Unhandled;
@@ -174,7 +174,7 @@ struct PreviewDebug {
     float ref_x = 0, e = 0, p = 0, d = 0, angle_deg = 0, speed_cms = 0;
     float look_x = -1, look_y = -1; // điểm lookahead (pixel mask); < 0: khung không hợp lệ
     char state[24] = {}, reason[64] = {};
-    // Truy vết (P5): IMU/quãng, lộ trình, rẽ IMU, mốc thời gian quyết định và gốc thời gian log.
+    // Truy vết IMU/quãng, lộ trình, rẽ IMU, mốc thời gian quyết định và gốc thời gian log.
     float yaw_deg = 0, odo_cm = 0, turn_yaw0 = 0, turn_yaw_tgt = 0, turn_yaw_err = 0;
     int32_t sensor_age_ms = -1, route_step = 0, turn_dir = 0, turn_active = 0;
     uint8_t sensor_ok = 0, recording = 0;

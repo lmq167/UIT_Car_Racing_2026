@@ -75,7 +75,7 @@ struct Failure : std::runtime_error {
     Failure(int c, const std::string& message) : std::runtime_error(message), code(c) {}
 };
 struct SignalStop {}; // Tín hiệu tới trong lúc Init: thoát mã 0 qua đường dừng chung.
-// Chép từ công cụ thu cũ: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
+// Chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
 // Tạo trước luồng watchdog để luồng đó thừa hưởng mặt nạ; tín hiệu chờ sẽ tới luồng chính sau restore().
 class InitSignalMask {
     sigset_t original_{};
@@ -276,9 +276,9 @@ struct DriveImu {
             bias=sum/count;
         }
         if (!std::isfinite(bias)) throw Failure(1,"Độ trôi IMU không hữu hạn");
-        // Kiểm độ trôi (Quân duyệt 12/11): log 12/11 có 3/6 phiên yaw trôi hằng số 50-85 °/s khi xe đứng yên (phiên tốt 0,1 °/s)
+        // Kiểm độ trôi: 3/6 phiên đo yaw trôi hằng số 50–85 °/s khi xe đứng yên (phiên tốt 0,1 °/s)
         // vì độ trôi đo lúc khởi tạo lệch so với tốc độ quay thật sau đó. Đo lại sau 1 s: hai lần phải khớp (<= 1 °/s) và nhỏ (<= 5 °/s),
-        // lệch thì đo lại tối đa 3 lần. KHÔNG bao giờ chặn khởi động (Quân 12/11: mã BTC vẫn khởi động được IMU): lỗi đọc hoặc vẫn lệch
+        // lệch thì đo lại tối đa 3 lần. KHÔNG bao giờ chặn khởi động: lỗi đọc hoặc vẫn lệch
         // thì chỉ in cảnh báo và dùng kết quả đo gần nhất.
         {
             const double maxBias=5.0, maxDiff=1.0;
@@ -328,7 +328,7 @@ struct DriveImu {
 #endif
     }
 };
-// ToF 4 cảm biến hai bên (Quân duyệt 11/11): CHỈ ĐỌC và in khi xe đứng (trước G / sau Space) để xác nhận ánh xạ khe -> bánh.
+// ToF 4 cảm biến hai bên: CHỈ ĐỌC và in khi xe đứng (trước G / sau Space) để xác nhận ánh xạ khe -> bánh.
 // Không đọc khi xe đang chạy nên không ảnh hưởng điều khiển; mọi lỗi ToF chỉ in cảnh báo, không dừng chương trình.
 #if (!defined(UCR_AUTO_TEST_HOOKS) || !UCR_AUTO_TEST_HOOKS) && !defined(UCR_AUTO_NO_TOF)
 #define UCR_AUTO_TOF_REAL 1
@@ -465,7 +465,7 @@ class Watchdog {
             }).detach();
         } catch (...) { motor_.EmergencyStop(); _exit(code); }
         motor_.EmergencyStop();
-        // Như công cụ thu cũ: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
+        // Lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
         for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); motor_.EmergencyStop(); }
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }

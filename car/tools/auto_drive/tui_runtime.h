@@ -47,7 +47,7 @@ public:
     TuiRuntime() : out_(*this, false), err_(*this, true) {}
     ~TuiRuntime() { stop(); }
     bool active() const { return active_; }
-    // Bật khi stdout và stderr đều là terminal; trả về false (giữ in dòng như cũ) nếu không.
+    // Bật khi stdout và stderr đều là terminal; nếu không thì trả về false và in theo dòng.
     bool start(const TuiState& initial) {
         if (active_ || !::isatty(STDOUT_FILENO) || !::isatty(STDERR_FILENO)) return false;
         std::cout.flush(); std::cerr.flush();

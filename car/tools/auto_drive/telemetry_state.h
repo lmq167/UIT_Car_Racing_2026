@@ -57,7 +57,7 @@ inline std::array<int,3> telemetryStates(const control::Detections& detections,i
     if (sent.cms==0 && matches("NGUOI_DI_BO")) present[13]=true;
     if (sent.cms==0 && (plan.state==control::PlannerState::DUNG_DEN_DO || matches("DUNG_DEN_DO"))) present[2]=true;
 
-    // Ưu tiên leader chốt: người > đỏ > đang đỗ > vật > vòng xuyến > cầu,
+    // Thứ tự ưu tiên: người > đỏ > đang đỗ > vật > vòng xuyến > cầu,
     // rồi biển/đèn YOLO theo độ tin cậy giảm dần; bỏ trùng, thiếu điền 0.
     std::array<int,3> states{};
     std::size_t count=0;

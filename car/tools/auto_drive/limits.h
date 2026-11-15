@@ -5,7 +5,7 @@
 namespace auto_drive {
 constexpr float kMaxAutoSpeedCms = 20;
 constexpr int kMaxAutoSteerDeg = 40;
-// Riêng pha đỗ (Planner ở DO_XE; Quân 11/11 18:54): lái tới 45°. Chặng khác giữ 40°.
+// Riêng pha đỗ: lái tới 45°. Chặng khác giữ 40°.
 constexpr int kMaxParkSteerDeg = 45;
 constexpr bool kReverseMotor = false;
 constexpr int kStaleFrameMs = control::kStaleImageMs, kPollMs = 10, kUartPollMs = 50;

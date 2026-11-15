@@ -1,5 +1,5 @@
 #pragma once
-// Giao diện terminal (TUI) của ucr_auto: hàm THUẦN dựng một khung từ trạng thái (P5b, Quân 11/11 19:24).
+// Giao diện terminal (TUI) của ucr_auto: hàm THUẦN dựng một khung từ trạng thái.
 // Chỉ dùng mã ANSI: về đầu màn (ESC[H), xóa tới cuối dòng (ESC[K), xóa phần còn lại (ESC[J), màu (ESC[..m).
 // Không đụng terminal, tín hiệu hay phím; luồng vẽ và kiểm isatty nằm ở main.cpp.
 #include <algorithm>

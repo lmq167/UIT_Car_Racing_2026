@@ -1,8 +1,8 @@
 """Hai mạng phân vùng giữ nguyên định nghĩa và tên trọng số của notebook xe thật.
 
-Lưu ý: các kiến trúc trong module này chỉ là tạm thời, dùng để chạy thử quy trình
-xuất ONNX và so sánh kết quả. Kiến trúc chính thức sẽ được chọn sau khi có sa bàn,
-thể lệ và số đo FPS trên Jetson Nano.
+Lưu ý: các kiến trúc trong module này dùng để kiểm quy trình
+xuất ONNX và so sánh kết quả. Mô hình mặt đường dùng trên xe là TwinLiteNet+;
+các mạng U-Net ở đây phục vụ đối chiếu ngoại tuyến.
 """
 
 try:

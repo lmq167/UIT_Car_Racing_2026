@@ -74,7 +74,7 @@ def analyze(args: argparse.Namespace) -> dict:
     files = sorted((p for p in source.iterdir() if p.suffix.lower() in {".jpg", ".jpeg", ".png"}), key=image_order)
     if not files:
         raise ValueError("Không tìm thấy ảnh trong thư mục phiên")
-    # Không ghi đè kết quả đã có, kể cả khi người dùng chọn nhầm thư mục.
+    # Không ghi đè kết quả đã có, kể cả khi người vận hành chọn nhầm thư mục.
     output.mkdir(parents=True, exist_ok=False)
     sheets = output / "contact_sheets"
     sheets.mkdir()

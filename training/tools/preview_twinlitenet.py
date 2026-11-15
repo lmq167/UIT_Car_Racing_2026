@@ -6,8 +6,8 @@ Chạy:  python preview_twinlitenet.py            (hỏi "Nhập lượt thu:")
 
 Chỉ xử lý ảnh car6_pXXXX_YYYY.(jpg|jpeg|png) của đúng lượt nhập, không bao giờ quét cả thư mục.
 
-Pipeline mặc định (THEO BENCHMARK benchmark.cpp/benchmark.py trên Jetson Nano, do người dùng cung cấp
-qua ghi chú phân tích; công cụ này chưa tự đọc hai file đó):
+Quy trình mặc định theo benchmark.cpp/benchmark.py trên Jetson Nano;
+công cụ dùng thông số ghi trong mã, không tự đọc hai file đó:
   - Tiền xử lý: resize toàn ảnh về 320x192 bằng cv2.INTER_LINEAR (không crop, không padding) -> BGR2RGB
     -> chia 255 -> trừ mean/chia std ImageNet -> NCHW float32 [1,3,192,320].
   - Giải mã: output [1,2,192,320]; mặt đường khi output[1] > output[0] (không sigmoid/softmax/ngưỡng 0,5).
@@ -103,7 +103,7 @@ def read_bgr(path):
 
 
 def write_png(path, img):
-    """Ghi PNG qua tệp tạm cùng thư mục rồi os.replace; không bao giờ xóa tệp có sẵn của người dùng.
+    """Ghi PNG qua tệp tạm cùng thư mục rồi os.replace; không bao giờ xóa tệp có sẵn của người vận hành.
     Lỗi ghi được báo kèm errno/winerror, đường dẫn, độ dài đường dẫn và tình trạng tệp đích."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Đỗ LÙI VÀO (đúng quyết định Quân: đỗ lùi là phương án chính): chỉ tiến-lùi nhưng tổng đoạn TIẾN <= fwd_budget cm,
+"""Đỗ LÙI VÀO: chỉ tiến-lùi nhưng tổng đoạn TIẾN <= fwd_budget cm,
 xe bắt đầu ở phía trước ô (trục sau x0 >= 40). [MP] Chạy: python park_sim_revonly.py"""
 import heapq, math, sys, time
 sys.path.insert(0, ".")

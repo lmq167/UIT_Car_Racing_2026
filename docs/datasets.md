@@ -25,7 +25,7 @@ Số ảnh JSON đã đối chiếu với số mục ảnh thực trong từng t
 
 ## Phát hiện đối tượng: car6_det_b4
 
-Nguồn: export từ Roboflow, định dạng YOLO detection (phát hiện bằng hộp giới hạn). `README_det_b4.txt` mô tả kết hợp ảnh cũ và ảnh bổ sung ngày 09/11, giữ cách chia theo lượt.
+Nguồn: export từ Roboflow, định dạng YOLO detection (phát hiện bằng hộp giới hạn). `README_det_b4.txt` mô tả thành phần dữ liệu và cách chia theo lượt.
 
 - Tệp đính kèm: `yolo_car6_det_b4_public.zip`, `yolo_manifest.json`, `yolo_SHA256SUMS.txt`.
 - Zip: 102554563 byte, nhỏ hơn 2 GB; 1.488 ảnh, 1.488 tệp nhãn, 12 lớp.

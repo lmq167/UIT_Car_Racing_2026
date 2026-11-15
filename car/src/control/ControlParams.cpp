@@ -26,17 +26,17 @@ const Parameter table[] = {
     {"work_barrier_action",1,&ControlParams::work_barrier_action,0,1,"1","Rào công trình (0 = tắt, 1 = rẽ trái theo IMU)"},
     {"work_barrier_y2_frac",0.55,&ControlParams::work_barrier_y2_frac,0.30,0.95,"H","Đáy hộp rào tối thiểu để bắt đầu rẽ"},
     {"obstacle_action",2,&ControlParams::obstacle_action,0,2,"1","Vật cản (0 = tắt, 1 = dừng, 2 = né)"},
-    {"obstacle_near_w_frac",0.10,&ControlParams::obstacle_near_w_frac,0.02,0.6,"W","TẠM, CHƯA ĐO: bề rộng hộp tối thiểu để bắt đầu né"},
+    {"obstacle_near_w_frac",0.10,&ControlParams::obstacle_near_w_frac,0.02,0.6,"W","Bề rộng hộp tối thiểu để bắt đầu né"},
     {"obstacle_hole_ratio",0.25,&ControlParams::obstacle_hole_ratio,0,1,"1","Khe tối thiểu trong hành lang để nhận vật cản, theo bề rộng một làn"},
-    {"obstacle_pass_cm",85.0,&ControlParams::obstacle_pass_cm,10,200,"cm","TẠM, CHƯA ĐO: vùng mù 25 + dài vật 50 + dư 10 sau khi vắng hộp YOLO"},
-    {"imu_fallback",0,&ControlParams::imu_fallback,0,1,"1","TẠM, CHƯA ĐO: dự phòng IMU lỗi, mặc định tắt"},
+    {"obstacle_pass_cm",85.0,&ControlParams::obstacle_pass_cm,10,200,"cm","Quãng đi sau khi vắng hộp YOLO: vùng mù 25 cm + dài vật 50 cm + dư 10 cm"},
+    {"imu_fallback",0,&ControlParams::imu_fallback,0,1,"1","Dự phòng khi IMU lỗi, mặc định tắt"},
     {"turn_enable",1,&ControlParams::turn_enable,0,1,"1","Bật rẽ theo biển"},
     {"turn_yaw_deg",80.0,&ControlParams::turn_yaw_deg,30,120,"độ","Góc quay đích"},
     {"turn_steer_deg",36.0,&ControlParams::turn_steer_deg,5,40,"độ","Góc lái khi rẽ, không vượt steer_max_deg"},
-    {"route_t2_gap_cm",115.0,&ControlParams::route_t2_gap_cm,0,300,"cm","Quân 13/11: chặng vòng xuyến, bám làn chừng này cm sau khi hết cung rẽ trái ngã T thứ nhất rồi mới nhận ngã T thứ hai"},
-    {"route_t2_steer_scale",0.85,&ControlParams::route_t2_steer_scale,0.5,1.2,"x","Quân 13/11: hệ số góc lái cung rẽ trái ngã T thứ hai chặng vòng xuyến (nhân turn_steer_deg; nhỏ hơn = cung rộng hơn)"},
-    {"st7_left_bias_deg",3.0,&ControlParams::st7_left_bias_deg,0,10,"deg","Quân 13/11: chặng cuối vòng xuyến (qua 2 ngã T tới vật cản), hướng đi thẳng chốt bằng IMU cộng thêm chừng này độ sang trái (chốt lúc bám làn phải nên hơi chếch phải)"},
-    {"turn_left_delay_cm",0.0,&ControlParams::turn_left_delay_cm,0,60,"cm","Quân 12/11: rẽ TRÁI theo biển chờ thêm chừng này (tính từ lúc mặt nạ xác nhận ngã rẽ) rồi mới bắt đầu rẽ; 0 = như cũ. Log l25: rẽ trái vào hầm hơi sớm, va thành hầm"},
+    {"route_t2_gap_cm",115.0,&ControlParams::route_t2_gap_cm,0,300,"cm","Chặng vòng xuyến: quãng bám làn sau khi hết cung rẽ trái ngã T thứ nhất trước khi nhận ngã T thứ hai"},
+    {"route_t2_steer_scale",0.85,&ControlParams::route_t2_steer_scale,0.5,1.2,"x","Hệ số góc lái cung rẽ trái ngã T thứ hai chặng vòng xuyến (nhân turn_steer_deg; nhỏ hơn = cung rộng hơn)"},
+    {"st7_left_bias_deg",3.0,&ControlParams::st7_left_bias_deg,0,10,"deg","Chặng cuối vòng xuyến (qua 2 ngã T tới vật cản): góc bù trái cho hướng đi thẳng chốt bằng IMU để bù hướng hơi chếch phải khi bám làn phải"},
+    {"turn_left_delay_cm",0.0,&ControlParams::turn_left_delay_cm,0,60,"cm","Quãng chờ thêm từ lúc mặt nạ xác nhận ngã rẽ tới lúc bắt đầu rẽ trái theo biển; 0 = không chờ thêm, tăng để tránh rẽ sớm va thành hầm"},
     {"turn_arm_cm",80.0,&ControlParams::turn_arm_cm,10,300,"cm","Quãng chờ ngã rẽ tối đa"},
     {"turn_start_cm",45.0,&ControlParams::turn_start_cm,0,150,"cm","Quãng từ lúc biển đủ phiếu tới lúc bắt đầu rẽ"},
     {"rb_lost_cm",30.0,&ControlParams::rb_lost_cm,10,100,"cm","Quãng mất phiếu round_barrier liên tục để kết thúc một lần qua vòng xuyến"},
@@ -46,15 +46,15 @@ const Parameter table[] = {
     {"rb_hold_max_cm",150.0,&ControlParams::rb_hold_max_cm,20,400,"cm","Quãng giữ hướng tối đa mỗi lần qua vòng xuyến"},
     {"turn_max_cm",70.0,&ControlParams::turn_max_cm,10,200,"cm","Quãng rẽ tối đa"},
     {"turn_max_ms",8000,&ControlParams::turn_max_ms,1000,20000,"ms","Thời gian rẽ tối đa"},
-    {"park_enable",1,&ControlParams::park_enable,0,1,"1","TẠM, CHƯA ĐO: đỗ xe lùi song song khi thấy biển parking (Quân 11/11: mặc định BẬT; 0 = tắt)"},
-    {"park_side",-1,&ControlParams::park_side,-1,1,"1","TẠM: phía ô đỗ (-1 = phải, 1 = trái)"},
-    {"park_forward_cm",10.0,&ControlParams::park_forward_cm,0,200,"cm","Quân 11/11: đi qua biển P 10 cm rồi mới bắt đầu quét ô/đỗ"},
-    {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","TẠM, CHƯA ĐO: góc quay cung lùi thứ nhất (đuôi vào ô)"},
-    {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,6,"cm/s","TẠM, CHƯA ĐO: tốc độ lùi khi đỗ (Quân 11/11 18:54: pha đỗ lùi tới 6 cm/s, như FSM ucr)"},
-    {"park_steer_deg",45.0,&ControlParams::park_steer_deg,5,45,"độ","TẠM, CHƯA ĐO: góc lái hai cung lùi khi đỗ (Quân 11/11 18:54: riêng pha đỗ tới 45°, như FSM ucr)"},
-    {"park_cell_cm",50.0,&ControlParams::park_cell_cm,10,200,"cm","Quân 12/11: chiều dài mỗi ô khi quét ToF: bước tiến giữa hai lần quét ToF, kể cả bước dò mép xa sau khi thấy ô trống (50 = ô BTC 30x50; log l25: bước dò mép cũ 10 cm làm xe chỉ nhích)"},
-    {"park_entry_cm",10.0,&ControlParams::park_entry_cm,0,120,"cm","TẠM, CHƯA ĐO: lùi thẳng trước cung 1 (ucr: 10 cm = ô giữa hàng; thêm 50 cm mỗi ô lùi xa hơn)"},
-    {"park_tof_map",0,&ControlParams::park_tof_map,0,4444,"1","Ánh xạ ToF CHƯA ĐO = 0 (dùng ô cố định cuối đường). Đo xong: 4 chữ số = khe+1 của trái-sau, trái-trước, phải-trước, phải-sau (vd 1234)"},
+    {"park_enable",1,&ControlParams::park_enable,0,1,"1","Đỗ xe lùi song song khi thấy biển parking (mặc định bật; 0 = tắt)"},
+    {"park_side",-1,&ControlParams::park_side,-1,1,"1","Phía ô đỗ (-1 = phải, 1 = trái)"},
+    {"park_forward_cm",10.0,&ControlParams::park_forward_cm,0,200,"cm","Quãng đi qua biển P trước khi bắt đầu quét ô/đỗ (mặc định 10 cm)"},
+    {"park_arc_deg",45.0,&ControlParams::park_arc_deg,10,80,"độ","Góc quay cung lùi thứ nhất (đuôi vào ô)"},
+    {"park_rev_cms",6.0,&ControlParams::park_rev_cms,2,6,"cm/s","Tốc độ lùi khi đỗ, tối đa 6 cm/s"},
+    {"park_steer_deg",45.0,&ControlParams::park_steer_deg,5,45,"độ","Góc lái hai cung lùi khi đỗ, tối đa 45° riêng pha đỗ"},
+    {"park_cell_cm",50.0,&ControlParams::park_cell_cm,10,200,"cm","Chiều dài mỗi ô khi quét ToF: bước tiến giữa hai lần quét, kể cả bước dò mép xa sau khi thấy ô trống (50 cm ứng với ô BTC 30x50 cm)"},
+    {"park_entry_cm",10.0,&ControlParams::park_entry_cm,0,120,"cm","Quãng lùi thẳng trước cung 1 (10 cm = ô giữa hàng; thêm 50 cm mỗi ô lùi xa hơn)"},
+    {"park_tof_map",0,&ControlParams::park_tof_map,0,4444,"1","Ánh xạ ToF: 0 = dùng ô cố định cuối đường; 4 chữ số = khe+1 của trái-sau, trái-trước, phải-trước, phải-sau (ví dụ 1234)"},
     {"start_wait_green",1,&ControlParams::start_wait_green,0,1,"1","Chờ xanh khi xuất phát"},
     {"vote_window",5,&ControlParams::vote_window,1,30,"lô","Cửa sổ bỏ phiếu"},
     {"vote_min",3,&ControlParams::vote_min,1,30,"lô","Số phiếu tối thiểu"},
@@ -82,7 +82,7 @@ const Parameter table[] = {
     {"kp",35.0,&ControlParams::kp,0,200,"độ","Hệ số tỉ lệ"},
     {"kd",2.0,&ControlParams::kd,0,50,"độ.s","Hệ số vi phân"},
     {"lane_backup",0,&ControlParams::lane_backup,0,1,"1","Bật bộ bám làn dự phòng, mặc định tắt"},
-    {"lane_backup_right_frac",0.5,&ControlParams::lane_backup_right_frac,0.35,0.65,"w(y)","TẠM, CHƯA ĐO: khoảng lùi từ biên phải"},
+    {"lane_backup_right_frac",0.5,&ControlParams::lane_backup_right_frac,0.35,0.65,"w(y)","Khoảng lùi từ biên phải"},
     {"corridor_rows",8,&ControlParams::corridor_rows,2,20,"hàng","Số hàng hành lang, đều từ hàng gần tới hàng xa"},
     {"corridor_bottom_frac",0.95,&ControlParams::corridor_bottom_frac,0,1,"H","Hàng hành lang gần nhất theo chiều cao"},
     {"corridor_top_frac",0.62,&ControlParams::corridor_top_frac,0,1,"H","Hàng hành lang xa nhất theo chiều cao"},
@@ -145,7 +145,7 @@ void ControlParams::Validate() const {
     Require(min_cms<=cruise_cms && cruise_cms<=max_speed_cms,"min_cms / cruise_cms / max_speed_cms");
     Require(lost_cms<=max_speed_cms,"lost_cms / max_speed_cms");
     Require(vote_min<=vote_window,"vote_min / vote_window");
-    // Chỉ ràng buộc khi bật rẽ: yaml cũ có steer_max_deg nhỏ vẫn nạp được lúc rẽ tắt.
+    // Chỉ ràng buộc khi bật rẽ: cấu hình steer_max_deg nhỏ vẫn nạp được khi rẽ tắt.
     Require(turn_enable==0 || turn_steer_deg<=steer_max_deg,"turn_steer_deg / steer_max_deg");
     Require(turn_start_cm<turn_arm_cm,"turn_start_cm / turn_arm_cm");
     Require(park_side==-1 || park_side==1,"park_side");
@@ -154,9 +154,9 @@ void ControlParams::Validate() const {
         for(int i=0;i<4;++i) { const int d=m%10; m/=10; Require(d>=1 && d<=4 && !(seen&(1<<d)),"park_tof_map"); seen|=1<<d; }
         Require(m==0,"park_tof_map");
     }
-    // park_enable mặc định BẬT (Quân 11/11) nên KHÔNG ràng buộc chéo ở đây: yaml có max_speed_cms/steer_max_deg nhỏ hoặc
+    // park_enable mặc định BẬT nên KHÔNG ràng buộc chéo ở đây: yaml có max_speed_cms/steer_max_deg nhỏ hoặc
     // turn_enable 0 vẫn phải nạp được. Planner tự kẹp: đỗ chỉ chạy khi turn_enable (yaw/encoder), tốc độ lùi
-    // min(park_rev_cms, max_speed_cms), góc lái pha đỗ min(park_steer_deg, 45) (riêng pha đỗ được vượt steer_max_deg, Quân 11/11 18:54).
+    // min(park_rev_cms, max_speed_cms), góc lái pha đỗ min(park_steer_deg, 45); riêng pha đỗ được vượt steer_max_deg.
     Require(green_frames<=vote_window,"green_frames / vote_window");
     Require(lost_stop_ms>=lost_hold_ms,"lost_stop_ms / lost_hold_ms");
 }

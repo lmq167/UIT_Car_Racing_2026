@@ -262,7 +262,7 @@ void LogWriter::run() noexcept {
         detectionsDropped+=detections_.size(); detections_.clear();
     }
 }
-// Cột scan_rows (giữ tên cũ): luôn đủ corridor_rows hàng như hợp đồng log cũ; center_frac = target (điểm mục tiêu hàng).
+// Cột scan_rows luôn đủ corridor_rows hàng theo hợp đồng log; center_frac = target (điểm mục tiêu hàng).
 std::string scanJson(const control::ControlDebug& debug,const control::ControlParams& params,int width,int height) {
     std::ostringstream out; out<<'[';
     const auto frac=[&](double v,int size) {

@@ -76,7 +76,7 @@ private:
     double return_block_cm_=0;  // quãng đã đi từ lần cuối hộp vật bên cạnh còn lấn vào ảnh (kReturnBlockMinX2) trong pha về làn phải; còn nhỏ hơn kReturnBlockCm thì chặn lái trái
     double return_clear_cm_=0;  // quãng đã đi từ lần cuối thấy hộp vật bên trái sát xe trong pha về làn phải (chưa hết pha khi vật còn bên cạnh)
     bool swerve_used_=false;  // đã né vật làn phải một lần và bắt đầu trả làn: chặng chỉ có hai vật (phải rồi trái) nên không né trái lần nữa; KHÔNG xóa trong Reset (sống qua Space/G), chỉ xóa khi mở lại chương trình
-    bool swerve_right_seen_=false;  // đã thấy vật ở nửa phải ảnh trong pha trái (Lỗi 3, 11/11)
+    bool swerve_right_seen_=false;  // Đã thấy vật ở nửa phải ảnh trong pha trái.
     double swerve_peak_w_=0;  // bề rộng hộp vật cản lớn nhất (theo ảnh) từ lúc bắt đầu pha trái; vật nhỏ hơn nửa mức này là vật xa, không giữ pha trái
     int64_t swerve_ms_=-1;
     double swerve_odo_=0;
@@ -89,7 +89,7 @@ private:
     double red_x_=0;
     bool red_latched_=false, start_cleared_=false;
     // Vòng xuyến: lần qua = từ lúc đủ phiếu round_barrier tới khi mất phiếu liên tục rb_lost_cm.
-    // Bộ đếm chỉ về 0 khi khởi động chương trình (Quân đặt lại xe ở điểm xuất phát).
+    // Bộ đếm chỉ về 0 khi khởi động chương trình.
     bool rb_in_pass_=false, rb_losing_=false, rb_hold_spent_=false;
     bool rb_vx1_imu_=false, rb_vx1_active_=false; // chốt VX1 tin cậy lúc mở lần qua; pha rẽ IMU đang chạy (bắt đầu sau cua L)
     int rb_passes_=0, rb_pending_=0;
@@ -125,16 +125,16 @@ private:
     double arm_odo_=0, turn_odo_=0, yaw0_=0, progress_odo_=0, sent_angle_=0;
     int64_t turn_ms_=-1, progress_ms_=-1, command_ms_=-1;
     std::deque<std::pair<double,double>> pre_turn_;  // (odo, yaw) khi bám làn chờ rẽ, trong kPreTurnWindowCm gần nhất
-    double turn_target_deg_=0, turn_err_deg_=0;  // góc quay đích và sai lệch còn lại của cua IMU hiện tại (log)
-    std::string turn_end_note_;                    // lý do kết thúc/hủy cua gần nhất (log)
+    double turn_target_deg_=0, turn_err_deg_=0;  // Góc quay đích và sai lệch còn lại của cua IMU, phục vụ ghi log.
+    std::string turn_end_note_;                    // Lý do kết thúc/hủy cua gần nhất, phục vụ ghi log.
     double turn_steer_scale_=1;  // hệ số góc rẽ cố định theo phần yaw đã quay sẵn trước RE_* (lỗi 2)
-    // Cua L phải sau cầu trước VX1 (Quân duyệt 11/11): đảo thấy ở mép phải rồi các hàng gần phủ kín ảnh.
+    // Cua L phải sau cầu trước VX1: đảo thấy ở mép phải rồi các hàng gần phủ kín ảnh.
     bool l_armed_=false, l_done_=false, l_turning_=false;
     double l_seen_odo_=0;
     std::deque<std::pair<double,double>> l_yaw_hist_; // (odo, yaw) trong cửa sổ kLArmCm trước cua L
     int l_right_run_=0, l_open_run_=0;
-    // Đỗ xe lùi song song (chặng 8, Quân duyệt viết với số tạm 11/11).
-    // FSM đỗ theo ucr (Quân 11/11 18:54): CHO -> LUI_THANG -> LUI1 (cung về phía ô) -> LUI2 (cung ngược) -> TIEN_GIUA -> KIEM -> XONG.
+    // Đỗ xe lùi song song.
+    // FSM đỗ theo ucr: CHO -> LUI_THANG -> LUI1 (cung về phía ô) -> LUI2 (cung ngược) -> TIEN_GIUA -> KIEM -> XONG.
     enum class ParkPhase { NONE, TIEN, QUET, CHO, LUI_THANG, LUI1, LUI2, TIEN_GIUA, KIEM, XONG };
     ParkPhase park_phase_=ParkPhase::NONE;
     double park_odo0_=0, park_yaw0_=0, park_prog_odo_=0;
@@ -149,7 +149,7 @@ private:
     double st7_ref_=0, st7_cap_yaw_=0, st7_cap_odo_=std::numeric_limits<double>::quiet_NaN();  // hướng st7 tự chốt khi yaw ổn định
     double turn_last_odo_=std::numeric_limits<double>::quiet_NaN();  // odo cuối cùng còn trong lượt rẽ (khoảng cách tới ngã T thứ hai)  // đang tiến trước khi lùi; đã tiến trước trong lượt đỗ này
     int park_run_=0;  // số phiếu parking trong cửa sổ YOLO tươi
-    // Quét ô bằng ToF khi xe đứng, tiến từng bước (Quân duyệt 11/11): mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
+    // Quét ô bằng ToF khi xe đứng, tiến từng bước: mode 0 = tìm ô trống (bước 50 cm), 1 = bò 10 cm tìm mép xa, 2 = đi quá mép.
     int park_mode_=0, park_unknown_=0;
     double park_step_cm_=0, park_scan_cm_=0, park_creep_cm_=0, park_cap_cms_=0;
     int64_t park_scan_ms0_=-1;

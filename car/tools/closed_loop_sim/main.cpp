@@ -2,7 +2,7 @@
    Công cụ laptop, KHÔNG chạy trên xe, KHÔNG chứng minh an toàn trên xe: chỉ so sánh hai bản bộ điều khiển
    trên cùng kịch bản (quỹ đạo, dao động lái, tỷ lệ chạm trần lái, giữ xe trong hành lang).
 
-   Mô hình đã định danh từ log xe thật (phiên m3 11/11, 2 phiên, tương quan 0,97):
+   Mô hình đã định danh từ log xe thật (2 phiên, tương quan 0,97):
      dyaw = d * tan(steer) / L_eff, L_eff ~ 31 cm; lệnh lái tới bánh trễ ~0,3-0,4 s; tuổi mặt nạ khi ra lệnh p50 ~ 160 ms.
    Hình học camera suy từ lane1_width_frac (bề rộng làn theo hàng): chân trời, chiều cao camera ~14,9 cm;
    góc nhìn ngang (hfov) KHÔNG đo được: mặc định 62 độ, thử thêm giá trị khác.

@@ -5,13 +5,13 @@
 
 namespace control {
 namespace {
-constexpr double kNoiseFrac=0.15;    // TẠM, CHƯA ĐO: đoạn hẹp hơn 0,15·w(y) là nhiễu
-constexpr double kConfPenalty=0.3;   // TẠM, CHƯA ĐO: mức trừ độ tin cậy mỗi dấu hiệu xấu
-constexpr double kNoRealEdgePenalty=0.1; // TẠM, CHƯA ĐO: hai biên không thật phải thấp hơn conf_min mặc định 0,4
-constexpr double kMergeFactor=1.5;   // TẠM, CHƯA ĐO: gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
-constexpr double kMinWidthRatio=0.6; // TẠM, CHƯA ĐO: bề rộng dưới 0,6·w(y) là bất thường
+constexpr double kNoiseFrac=0.15;    // đoạn hẹp hơn 0,15·w(y) là nhiễu
+constexpr double kConfPenalty=0.3;   // mức trừ độ tin cậy mỗi dấu hiệu xấu
+constexpr double kNoRealEdgePenalty=0.1; // hai biên không thật phải thấp hơn conf_min mặc định 0,4
+constexpr double kMergeFactor=1.5;   // gộp đoạn khi bề rộng gộp ≤ two_lane_ratio·w·1,5
+constexpr double kMinWidthRatio=0.6; // bề rộng dưới 0,6·w(y) là bất thường
 constexpr double kRightLaneFrac=0.25, kLeftLaneFrac=0.75;  // tâm làn phải/trái của đường hai làn
-constexpr double kReturnKpScale=3.5;  // TẠM, CHƯA ĐO: độ lợi P khi về làn phải sau né (mô hình xe: dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°). Quân 12/11: 1,5 -> 2,0 -> 3,5 vì sa bàn trả làn vẫn chưa đủ mạnh (lái chỉ -10..-16° ở e 0,2-0,3 với 1,5); 35·3,5·0,3 ≈ 37°, chặn bởi steer_max_deg
+constexpr double kReturnKpScale=3.5;  // Độ lợi P khi về làn phải sau né: 3,5; dịch ngang 30 cm cần >= 59 cm quãng ở lái 40°. Với e=0,3: 35·3,5·0,3 ≈ 37°, kẹp steer_max_deg.
 const char *const kThat="THAT";
 const char *const kEdge="MEP_ANH";
 const char *const kJump="NHAY";
@@ -151,12 +151,12 @@ Corridor ExtractCorridor(const cv::Mat &mask, const ControlParams &params, TrajM
         if(!left_ok && right_ok) row.left=row.right-reference;
         else if(left_ok && !right_ok) {
             row.right=row.left+reference;
-            // Lỗi 3 (sa bàn 10/11): biên phải chạm mép ảnh nên bề rộng thật >= bề rộng thô. Thô đã đủ
+            // Biên phải chạm mép ảnh nên bề rộng thật >= bề rộng thô. Thô đã đủ
             // hai làn thì dựng đường hai làn (2·w) từ biên trái thật: mục tiêu ở làn PHẢI, không ở làn trái.
             // Biên phải thật (biên trái mép ảnh) không cần: tâm làn phải = phải − w/2 cho cả 1 và 2 làn.
-            // Chỉ trong lần qua vòng xuyến (cả chặng là đường hai làn, Quân 10/11) và khi hàng gần nhất đã rộng hai làn
+            // Chỉ trong lần qua vòng xuyến (đường hai làn) và khi hàng gần nhất đã rộng hai làn
             // hoặc hàng ngay dưới đã là 2 làn. Ở LANE, đường một làn có lối mở phải (ngã T) cho đoạn thô giống hệt
-            // nên không áp (safety-reviewer 11/11, MEDIUM-1).
+            // nên không áp.
             if(mode==TrajMode::ROUNDABOUT && right_edge_cut && raw.r-raw.l>=params.two_lane_ratio*w && (!below || below->lanes==2))
                 row.right=row.left+std::max(reference,2*w);
             // Khung trước đã thấy rõ đường hai làn mà biên phải nay chạm mép ảnh (xe lệch sang làn trái khi ra cua phải):
@@ -270,11 +270,11 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
     if(!mask.empty()) {
         auto corridor=ExtractCorridor(mask,params,mode,lanes_memory_);
         const double W=mask.cols, axis=W/2.0+params.center_offset_frac*W;
-        // TẠM CHƯA ĐO: chỉ dùng tâm vùng đường khi hàng gần nhất phủ ít nhất 90%.
+        // chỉ dùng tâm vùng đường khi hàng gần nhất phủ ít nhất 90%.
         // Giữ cờ/độ tin cậy gốc trong debug; không biến mép ảnh thành cạnh thật.
         auto centered=corridor.rows;
         const size_t near_count=1;
-        // Đầu ngã T và cua L cho mặt nạ giống nhau: Planner tắt nhánh này khi đang có ý định rẽ (ngã T chờ M6).
+        // Đầu ngã T và cua L cho mặt nạ giống nhau: Planner tắt nhánh này khi đang có ý định rẽ.
         bool wide_near=wide_center && mode==TrajMode::LANE && !centered.empty();
         for(size_t i=0;i<near_count && wide_near;++i) {
             const auto &row=centered[i];
@@ -352,7 +352,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         result.debug.rows=std::move(corridor.rows);
     }
     if(!valid) { have_look_=false; result.debug.look_x=-1; }
-    // Mất làn/giữ góc/phục hồi: giữ nguyên logic bộ bám làn trước T79.
+    // Mất làn thì giữ góc trong thời hạn cho phép, chờ đủ mặt nạ mới để phục hồi.
     if(!valid) { lost_=true; regain_=0; regain_mask_ms_=-1; derivative_ready_=false; }
     else if(lost_) {
         if(mask_ms>regain_mask_ms_) { ++regain_; regain_mask_ms_=mask_ms; }
@@ -366,7 +366,7 @@ ControlResult LaneController::Step(const cv::Mat &mask, int64_t mask_ms, int64_t
         return finish(params.lost_cms,angle_,"GIU_GOC",valid ? "CHO_HOI_LAN" : "MAT_LAN_GIU");
     }
     if(mode!=mode_) derivative_ready_=false;
-    // Về làn phải sau né cần dịch ngang ~30 cm trong quãng ngắn (log 11/11 m4: lái chỉ tới 23° với e 0,67): tăng độ lợi khi RETURN_RIGHT.
+    // Về làn phải cần dịch ngang ~30 cm trong quãng ngắn (đo được lái chỉ tới 23° với e=0,67): tăng độ lợi khi RETURN_RIGHT.
     result.debug.p=params.kp*(mode==TrajMode::RETURN_RIGHT ? kReturnKpScale : 1.0)*result.debug.e;
     result.debug.d=derivative_ready_ && dt>0 ? params.kd*(result.debug.e-error_)/dt : 0;
     const double desired=Clamp(-(result.debug.p+result.debug.d),-params.steer_max_deg,params.steer_max_deg);

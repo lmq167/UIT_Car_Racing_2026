@@ -50,7 +50,7 @@ inline cv::Mat renderDebugMask(const PreviewDebug& d, int scale = 2) {
 // Truy vết (P5), hàm thuần: các dòng chữ ASCII + cờ cảnh báo (vẽ đỏ). frame_ms = giờ chụp của khung đang hiển thị.
 // Khung hiển thị là khung camera MỚI NHẤT; mask/hành lang/trạng thái thuộc khung bộ điều khiển đã dùng (mask_ms):
 // dòng "hien thi moi hon" cho biết hai khung lệch nhau bao nhiêu ms.
-// Ngưỡng đổi màu (log m4: lệch hiển thị p95 ~130 ms, tuổi khung quyết định p50 ~150, p95 ~210 ms).
+// Ngưỡng đổi màu: lệch hiển thị đo được p95 ~130 ms, tuổi khung quyết định p50 ~150 ms, p95 ~210 ms.
 constexpr int64_t kDebugLagWarnMs = 150, kDebugDecisionWarnMs = 250, kDebugSensorWarnMs = 200;
 struct DebugInfoLine { std::string text; bool warn = false; };
 inline std::vector<DebugInfoLine> debugInfoLines(const PreviewDebug& d, int64_t frame_ms) {

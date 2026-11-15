@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Bọc một lệnh biên dịch (CMAKE_CXX_COMPILER_LAUNCHER): đo RSS đỉnh và thời gian từng file.
-# Vượt trần (mặc định 1,2 GB, 300 s) thì thoát 97 để build hỏng ngay. Công thức theo T21c.
+# Vượt trần (mặc định 1,2 GB, 300 s) thì thoát 97 để build hỏng ngay.
 import os
 import resource
 import signal

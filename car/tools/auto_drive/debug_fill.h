@@ -27,7 +27,7 @@ inline void fillPreviewBoxes(drive::PreviewDebug& out, const control::Detections
     }
 }
 
-// Truy vết (P5): IMU, lộ trình, rẽ IMU, mốc quyết định, gốc thời gian log; plan null thì bỏ phần lộ trình/rẽ.
+// Truy vết IMU, lộ trình, rẽ IMU, mốc quyết định và gốc thời gian log; plan null thì bỏ phần lộ trình/rẽ.
 inline void fillPreviewTrace(drive::PreviewDebug& out, const control::ControlDebug* plan, double yaw_deg, double odo_cm,
                              bool sensor_ok, int64_t sensor_ms, int64_t decision_ms, int64_t log_t0_ms, bool recording) {
     out.yaw_deg = std::isfinite(yaw_deg) ? float(yaw_deg) : 0.f;

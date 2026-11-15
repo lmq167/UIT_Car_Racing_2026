@@ -67,7 +67,7 @@ struct Failure : std::runtime_error {
     Failure(int c, const std::string& message) : std::runtime_error(message), code(c) {}
 };
 struct SignalStop {}; // Tín hiệu tới trong lúc Init: thoát mã 0 qua đường dừng chung.
-// Chép từ công cụ thu cũ: chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
+// chặn tín hiệu khi Motor::Init/mở servo để usleep/ghi UART không bị cắt ngang.
 // Tạo trước luồng watchdog để luồng đó thừa hưởng mặt nạ; tín hiệu chờ sẽ tới luồng chính sau restore().
 class InitSignalMask {
     sigset_t original_{};
@@ -121,7 +121,7 @@ bool fakeMotorFail() {
     const char* value = std::getenv("UCR_DRIVE_FAKE_MOTOR_FAIL");
     return value && std::string(value) == "1";
 }
-// Như công cụ thu cũ: lệnh tiêm lỗi qua tệp UCR_DRIVE_FAKE_CTRL (chỉ dòng đủ '\n'), chỉ ở bản hooks.
+// lệnh tiêm lỗi qua tệp UCR_DRIVE_FAKE_CTRL (chỉ dòng đủ '\n'), chỉ ở bản hooks.
 struct HookState {
     std::atomic<bool> cameraStall{false}, jpegFail{false}, csvFail{false}, jpegHang{false};
     std::atomic<int> freeMb{-1};
@@ -295,7 +295,7 @@ struct DriveServo {
         return rawAngle(a);
     }
 };
-// Chép từ công cụ thu cũ (emergencyTerminate): ngoại lệ không bắt được vẫn dừng motor rồi abort.
+// emergencyTerminate: ngoại lệ không bắt được vẫn dừng motor rồi abort.
 DriveMotor* terminateMotor = nullptr;
 void emergencyTerminate() noexcept {
     hardwareFault = true;
@@ -320,7 +320,7 @@ class Watchdog {
             }).detach();
         } catch (...) { motor_.EmergencyStop(); _exit(code); }
         motor_.EmergencyStop();
-        // Như công cụ thu cũ: lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
+        // lặp lệnh dừng 3 lần cách 20 ms phòng lần đầu bị nuốt.
         for (int i = 0; i < 3; ++i) { ::poll(nullptr, 0, 20); motor_.EmergencyStop(); }
         // Không ghi I2C chồng lên lời gọi đang treo của chính I2C.
         if (kind != 2) { try { servo_.rawAngle(0); } catch (...) {} }
@@ -615,7 +615,7 @@ class Writer {
                 }
                 if (nowMs() >= nextDisk) {
                     if (freeMB(options_.outRoot) < kMinFreeMb) {
-                        // Như công cụ thu cũ: còn dự phòng nên đóng lượt gọn (end,disk_low) rồi mới báo mã 5.
+                        // còn dự phòng nên đóng lượt gọn (end,disk_low) rồi mới báo mã 5.
                         if (store.active()) store.endPass("disk_low", wallMs());
                         throw std::runtime_error("Đĩa dưới ngưỡng dự phòng");
                     }
@@ -820,7 +820,7 @@ int collect(const Options& o, const Paths&, int lockFd, const std::string& host,
     catch (const std::exception& e) { code = 1; error = e.what(); }
     catch (...) { code = 1; error = "Ngoại lệ không xác định"; }
 
-    // HĐ §2: thoát do tín hiệu là mã 0 kể cả khi luồng ghi kẹt lúc dọn (như công cụ thu cũ: lý do tín hiệu thắng).
+    // thoát do tín hiệu là mã 0 kể cả khi luồng ghi kẹt lúc dọn (lý do tín hiệu thắng).
     const auto hungCode = [&] { return code ? code : (stopping ? 0 : 4); };
     const int64_t cleanupStart = nowMs();
     if (watchdog) { watchdog->cleanupCode = hungCode(); watchdog->cleanupAt = cleanupStart; }
@@ -871,7 +871,7 @@ int collect(const Options& o, const Paths&, int lockFd, const std::string& host,
 } // namespace
 
 int main(int argc, char** argv) {
-    // Như công cụ thu cũ: OpenCV một luồng trước mọi fork (preview.cpp dựa vào điều này, tránh TBB treo sau fork).
+    // OpenCV một luồng trước mọi fork (preview.cpp dựa vào điều này, tránh TBB treo sau fork).
     cv::setNumThreads(1);
     std::set_terminate(emergencyTerminate);
     Options o;
@@ -886,7 +886,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     struct sigaction action{}; action.sa_handler = signalStop; sigemptyset(&action.sa_mask);
-    // Như công cụ thu cũ: cả SIGQUIT/SIGTSTP đi đường dừng (bắt SIGTSTP nên tiến trình không bị treo dừng).
+    // cả SIGQUIT/SIGTSTP đi đường dừng (bắt SIGTSTP nên tiến trình không bị treo dừng).
     for (int s : {SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGTSTP}) {
         if (sigaction(s, &action, nullptr) != 0) return 1;
     }
