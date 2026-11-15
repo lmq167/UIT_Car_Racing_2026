@@ -59,7 +59,7 @@ Cơ sở nhóm lấy đúng từ `group_basis`: 740 ảnh có số lượt trong
 
 Các mã `c`, `t`, `s`, `e`, `k`, `v`, `l` giữ nguyên từ CSV nguồn; không suy diễn thêm ý nghĩa. 747 ảnh có kích thước 1280×720 và 151 ảnh 640×384 (rộng × cao).
 
-**Giới hạn so sánh:** model đường trong `models/` được train trên cách chia CŨ, chia ngẫu nhiên theo ảnh của Roboflow. Huấn luyện lại bằng `ucr_road` dùng cách chia theo nhóm nêu trên, nên IoU mới không so trực tiếp với model đó. Chưa có số IoU để công bố.
+Model đường trong `models/` được huấn luyện trên đúng cách chia này (SHA256 `split.csv`: `0229e37c05fe34c9f6fbd8b356197936cf128e29f5e27237badca140e4e750ac`). Test 129 ảnh: IoU road 0,9700, mIoU 0,9768 (chi tiết ở [kết quả huấn luyện](results/README.md)). IoU này đo trên cách chia theo lượt thu nên không so trực tiếp được với số đo trên cách chia ngẫu nhiên theo ảnh.
 
 ## Phát hiện đối tượng: ucr_det
 

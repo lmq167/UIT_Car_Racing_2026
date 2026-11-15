@@ -63,11 +63,26 @@ Thư mục `models/` chứa hai ONNX (định dạng trao đổi mạng học s�
 | `yolo.onnx` | YOLOv5nu D6 phát hiện 12 lớp |
 | `yolo_info.json` | Danh sách lớp, chuẩn hóa, thêm đệm giữ tỉ lệ và hậu xử lý |
 
+`twinlitenetplus_192x320.onnx`: 521.971 byte, SHA256 `9d71b311d75ce896f76a5a323ffb86ac5ae5300a7fdbd3c0443bdeb7feb0fdc9` (trùng trường `onnx_sha256` trong JSON đi kèm).
+
 Ảnh nguồn theo siêu dữ liệu là 1280 × 720; cả hai mạng nhận đầu vào cao × rộng 192 × 320.
 ONNX giữ số thực FP32; engine (bản thực thi tối ưu) TensorRT dùng FP16 và phải tạo trên Jetson đích.
 Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp trong dataset là mã lớp của model; phải ánh xạ theo tên.
 
 ## Kết quả huấn luyện
+
+### Phân vùng đường TwinLiteNet+
+
+Huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên `ucr_road`, chia theo lượt thu bằng `split.csv`: train 635 / valid 134 / test 129 ảnh, 108 nhóm, không nhóm nào nằm ở hai tập. Checkpoint tốt nhất ở epoch 83/100 theo mIoU valid.
+
+| Tập | IoU road | IoU background | mIoU | Precision road | Recall road |
+|---|---|---|---|---|---|
+| Valid (134 ảnh) | 0,9609 | 0,9773 | 0,9691 | 0,9757 | 0,9844 |
+| Test (129 ảnh, không dùng khi chọn model) | 0,9700 | 0,9837 | 0,9768 | 0,9804 | 0,9892 |
+
+ONNX xuất ra khớp PyTorch trên 129 ảnh test: sai số tuyệt đối lớn nhất 2,6e-05, argmax trùng 100%. Chi tiết: [kết quả chi tiết](docs/results/README.md).
+
+### Phát hiện YOLO 12 lớp
 
 | Biến thể | Đầu vào (cao × rộng) | GFLOPs | mAP50 val | mAP50-95 val | Suy luận GPU trên xe |
 |---|---|---|---|---|---|
@@ -117,8 +132,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 
 - Bản công khai quyết định hướng rẽ theo lớp biển do YOLO nhận; không gồm cơ chế chuỗi biển cố định của bản dùng khi thi (mã trong repo không phải nguyên bản đã chạy thi).
 - Đây là mã phục vụ sa bàn cuộc thi, chưa chứng minh khả năng vận hành ngoài môi trường đó.
-- Model đường trong `models/` train trên cách chia cũ, ngẫu nhiên theo ảnh của Roboflow; IoU khi train lại bằng `ucr_road` (635/134/129 ảnh theo nhóm thu) không so trực tiếp được với model đó.
-- mAP YOLO đã đối chiếu với CSV kết quả; IoU của TwinLiteNet+ chưa có, chờ huấn luyện lại bằng notebook; FPS toàn hệ thống chưa đo (xem [docs/results/](docs/results/README.md)).
+- IoU TwinLiteNet+ đo trên cách chia theo lượt thu, không so trực tiếp được với số đo trên cách chia ngẫu nhiên theo ảnh. FPS toàn hệ thống chưa đo (xem [docs/results/](docs/results/README.md)).
 - Slide không cung cấp bằng chứng hoàn tất toàn bộ thao tác đỗ; lượt minh họa dừng bằng Space khi còn lùi.
 - ToF nằm hai bên xe; `ucr_auto` đỗ ô cố định, không khởi tạo ToF và không có phanh ToF trước/sau.
 - Bộ kiểm thử chỉ giữ phần cứng: một ca CTest driver motor UART qua cổng giả; camera, IMU BNO055 và OLED là chương trình kiểm tra trực tiếp trên xe. Chưa chạy được trên Windows; cần Linux/Jetson để kiểm chứng.

@@ -1,6 +1,28 @@
-# Kết quả huấn luyện YOLO 12 lớp
+# Kết quả huấn luyện
 
-So sánh bốn biến thể trên bộ dữ liệu `ucr_det`, đánh giá trên tập val (tập kiểm định). `people` là hình nộm, `obstacle` là vật cản và `parking` là biển đỗ xe. Xem [bộ dữ liệu](../datasets.md) và [CSV tổng hợp](yolo_compare_summary.csv). Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân trong bảng dùng dấu phẩy.
+Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân trong bảng dùng dấu phẩy.
+
+## Phân vùng đường TwinLiteNet+
+
+Model `models/twinlitenetplus_192x320.onnx` (biến thể small, 2 lớp `background`/`road`, đầu vào 192 × 320) được huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên dataset `ucr_road`.
+
+- Chia tập theo `split.csv` (theo lượt thu, SHA256 `0229e37c05fe34c9f6fbd8b356197936cf128e29f5e27237badca140e4e750ac`): train 635 / valid 134 / test 129 ảnh; 108 nhóm, không nhóm nào nằm ở hai tập.
+- Checkpoint tốt nhất theo mIoU valid: epoch 83 / 100. Tập test không dùng khi chọn model.
+
+| Tập | IoU road | IoU background | mIoU | Precision road | Recall road |
+|---|---|---|---|---|---|
+| Valid (134 ảnh) | 0,9609 | 0,9773 | 0,9691 | 0,9757 | 0,9844 |
+| Test (129 ảnh) | 0,9700 | 0,9837 | 0,9768 | 0,9804 | 0,9892 |
+
+IoU (tỉ lệ giao trên hợp) tính theo pixel trên mặt nạ 192 × 320; mIoU là trung bình IoU hai lớp; precision/recall tính cho lớp `road`. Các số này đo trên cách chia theo lượt thu, nên không so trực tiếp được với số đo trên cách chia ngẫu nhiên theo ảnh.
+
+Xuất ONNX: opset 12, đầu vào `input` 1×3×192×320, đầu ra `output` 1×2×192×320 (logits). So với PyTorch trên 129 ảnh test: sai số tuyệt đối lớn nhất 2,6e-05, argmax trùng 100%.
+
+Môi trường huấn luyện: Python 3.13.16, torch 2.14.1+cu130, onnx 1.23.2, onnxruntime 1.32.0; mã nguồn [TwinLiteNetPlus](https://github.com/chequanghuy/TwinLiteNetPlus) commit `90f1b8695ae311d5123b05f8534b2e11e42499d2` (MIT License). Siêu tham số: ô cấu hình đầu notebook.
+
+## Phát hiện YOLO 12 lớp
+
+So sánh bốn biến thể trên bộ dữ liệu `ucr_det`, đánh giá trên tập val (tập kiểm định). `people` là hình nộm, `obstacle` là vật cản và `parking` là biển đỗ xe. Xem [bộ dữ liệu](../datasets.md) và [CSV tổng hợp](yolo_compare_summary.csv).
 
 ## Bảng so sánh
 
@@ -57,9 +79,9 @@ D2 có độ chính xác cao hơn mức cần thiết cho bài toán trên sa b�
 
 Recall biển đỗ còn thấp: D6 đạt 0,538, D7 đạt 0,462; D8 cao nhất trong nhóm ở 0,769. Khi giảm độ sáng xuống 0,6, recall hình nộm của D6 giảm từ 0,857 xuống 0,750, trong khi recall vật cản giữ ở 0,905. Các chỉ số val mô tả khả năng phát hiện trên tập kiểm định, không xác nhận an toàn hay hiệu quả điều khiển trên sa bàn.
 
-Chưa có IoU của TwinLiteNet+; chỉ số này chờ huấn luyện lại bằng notebook. FPS (số khung hình mỗi giây) toàn hệ thống chưa đo.
+FPS (số khung hình mỗi giây) toàn hệ thống chưa đo.
 
-Chưa có ảnh preview.
+Chưa có ảnh preview YOLO.
 
 ## Nguồn từng số
 
