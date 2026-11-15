@@ -1,6 +1,6 @@
 # Bộ dữ liệu
 
-Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi UIT Car Racing 2026. Nhóm không cấp giấy phép: chỉ xem, không dùng lại khi chưa được nhóm đồng ý.
+Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi UIT Car Racing 2026. Nhóm không cấp giấy phép.
 
 [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final)
 

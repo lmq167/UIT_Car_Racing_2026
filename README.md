@@ -145,7 +145,6 @@ Slide thuyết trình (`docs/deck.pdf`) và bản đồ sa bàn (`docs/track_map
 ## Giấy phép
 
 Repo chưa cấp giấy phép: mọi quyền thuộc nhóm tác giả (trừ phần mã BTC và ST nêu trên).
-Có thể xem và fork trên GitHub, nhưng không dùng lại mã hoặc dữ liệu khi chưa được nhóm đồng ý.
 
 ## English summary
 
@@ -153,4 +152,4 @@ Autonomous driving software of the team that won the UIT Car Racing 2026 final (
 TwinLiteNet+ road segmentation and a twelve-class YOLO detector feed a state-machine planner and lane controller, followed by a safety layer for motor and steering commands.
 The repository includes car software, training notebooks, data tools and ONNX models; datasets (self-collected and self-labeled on the competition track) are attached to the v1.0-final release.
 Hardware drivers in `car/` come from the organizers' sample code (no license given) and ST's VL53L0X/VL53L1X libraries; they will be removed on request.
-No license is granted: all rights reserved by the authors. You may view and fork on GitHub, but do not reuse the code or data without the team's permission.
+No license is granted: all rights reserved by the authors.
