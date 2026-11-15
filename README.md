@@ -82,7 +82,7 @@ for f in car/src/control/*.cpp; do
 done
 ```
 
-Khi chuẩn bị bản công khai, lệnh trên chạy được với 0 lỗi, 0 cảnh báo; bộ test chưa chạy lại sau thi.
+Khi chuẩn bị bản công khai, lệnh trên chạy được với 0 lỗi, 0 cảnh báo. Bộ test điều khiển (279 ca, chạy trên laptop) đạt 205, hỏng 74; xem mục Giới hạn đã biết.
 
 ## Chạy ở mức khái quát
 
@@ -96,7 +96,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 - Chưa có nguồn số liệu mAP/IoU của hai mô hình hoặc FPS toàn hệ thống để công bố.
 - Tài liệu slide chưa xác nhận một lượt hoàn tất từ quét ToF đến đỗ xong; một lượt được dẫn dừng bằng Space khi còn pha lùi.
 - ToF nằm hai bên xe, dùng quét ô đỗ khi đứng; không có phanh ToF phía trước/sau xe trong `ucr_auto`.
-- Bộ kiểm thử được giữ lại từ quá trình phát triển; phiên chuẩn bị bản công khai chưa xác nhận toàn bộ test sau thi.
+- 74/279 ca test điều khiển đang hỏng, đã có từ trước khi thi: phần lớn là ca dựng tình huống rẽ bằng biển tùy ý, viết trước khi xe chuyển sang chuỗi biển cố định (13/11/2026). Test chưa được cập nhật, nhưng giữ nguyên làm tài liệu hành vi cũ.
 - Một số tài liệu huấn luyện cũ mô tả U-Net; mô hình đường cuối dùng TwinLiteNet+ theo JSON đi kèm.
 - `car/tools/auto_drive/main.cpp` có IP `192.168.1.100`: chỉ dùng trong mạng LAN tại sân thi, để gửi telemetry tới dashboard phục vụ ban giám khảo chấm thi.
 
