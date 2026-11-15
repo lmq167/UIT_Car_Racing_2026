@@ -69,7 +69,16 @@ Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp tro
 
 ## Kết quả huấn luyện
 
-Bảng so sánh bốn biến thể YOLO 12 lớp (D2, D6, D7, D8) và nguồn từng số: [docs/results/](docs/results/README.md). D6 là biến thể dùng khi thi; thời gian suy luận GPU đo trên xe là 9,1 ms (trung bình). Số mAP và ảnh preview chưa có vì file kết quả huấn luyện không được lưu cùng mã nguồn.
+| Biến thể | Đầu vào (cao × rộng) | GFLOPs | mAP50 val | mAP50-95 val | Suy luận GPU trên xe |
+|---|---|---|---|---|---|
+| D8 | 288 × 512 | 2,33 | 0,907 | 0,682 | — |
+| D2 | 256 × 416 | 2,133 | 0,894 | 0,654 | — |
+| D7 | 256 × 416 | 1,869 | 0,869 | 0,629 | — |
+| D6 | 192 × 320 | 1,078 | 0,827 | 0,587 | 9,148 ms (trung bình); 11,23 ms (p99) |
+
+`—`: không đo; D6 có lượng tính toán thấp nhất nên được triển khai trực tiếp, các biến thể khác không dựng engine trên xe.
+
+D6 là biến thể dùng khi thi vì nhẹ nhất về lượng tính toán, với đầu vào 192 × 320 và xấp xỉ 1,08 GFLOPs. Đây là đánh đổi tốc độ/độ chính xác: mAP50 của D6 thấp hơn D2 và D8; thời gian GPU chưa gồm tiền/hậu xử lý và không phải FPS toàn hệ thống. Định nghĩa chỉ số, điều kiện đánh giá và nguồn từng số nằm trong [kết quả chi tiết](docs/results/README.md).
 
 ## Build (biên dịch)
 
@@ -102,7 +111,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 
 - Bản công khai quyết định hướng rẽ theo lớp biển do YOLO nhận; không gồm cơ chế chuỗi biển cố định của bản dùng khi thi (mã trong repo không phải nguyên bản đã chạy thi).
 - Đây là mã phục vụ sa bàn cuộc thi, chưa chứng minh khả năng vận hành ngoài môi trường đó.
-- Chưa có số liệu mAP/IoU đã đối chiếu với file gốc cho hai mô hình, chưa đo FPS toàn hệ thống (xem [docs/results/](docs/results/README.md)).
+- mAP YOLO đã đối chiếu với CSV kết quả; IoU của TwinLiteNet+ chưa có, chờ huấn luyện lại bằng notebook; FPS toàn hệ thống chưa đo (xem [docs/results/](docs/results/README.md)).
 - Slide không cung cấp bằng chứng hoàn tất toàn bộ thao tác đỗ; lượt minh họa dừng bằng Space khi còn lùi.
 - ToF nằm hai bên xe; `ucr_auto` đỗ ô cố định, không khởi tạo ToF và không có phanh ToF trước/sau.
 - Bộ kiểm thử chỉ giữ phần cứng: một ca CTest driver motor UART qua cổng giả; camera, IMU BNO055 và OLED là chương trình kiểm tra trực tiếp trên xe. Chưa chạy được trên Windows; cần Linux/Jetson để kiểm chứng.
