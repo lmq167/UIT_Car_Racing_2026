@@ -1,16 +1,17 @@
-# UIT Car Racing 2026 – đội Hội Đồng Quảng Trị
+# UIT_Car_Racing_2026
 
 Mã nguồn xe tự hành của đội Hội Đồng Quảng Trị tại vòng chung kết UIT Car Racing 2026, sử dụng xe Jetson Nano do Ban tổ chức (BTC) cung cấp.
 Mục tiêu là nhận biết mặt đường, biển báo, đèn giao thông và vật cản để quyết định hành vi và điều khiển xe trên sa bàn.
 
-| Thông tin | Nội dung |
-|---|---|
-| Tên và địa chỉ repo | TODO |
-| Kết quả thi | TODO |
-| Video | TODO |
-| Thành viên và vai trò | TODO |
-| Giấy phép mã nguồn và mô hình | TODO |
-| Quyền công khai dataset (bộ dữ liệu) | TODO |
+**Kết quả:** Đội vô địch UIT Car Racing 2026 (vòng chung kết 14/11/2026).
+
+| Họ tên | Email | Vai trò |
+|---|---|---|
+| Lê Minh Quân | stkirito74@gmail.com | |
+| Nguyễn Ngọc Anh Tuấn | | |
+| Nguyễn Văn Chí | | |
+
+Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi; tải ở [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final), chi tiết ở [docs/datasets.md](docs/datasets.md).
 
 ## Kiến trúc
 
@@ -97,16 +98,37 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 - ToF nằm hai bên xe, dùng quét ô đỗ khi đứng; không có phanh ToF phía trước/sau xe trong `ucr_auto`.
 - Bộ kiểm thử được giữ lại từ quá trình phát triển; phiên chuẩn bị bản công khai chưa xác nhận toàn bộ test sau thi.
 - Một số tài liệu huấn luyện cũ mô tả U-Net; mô hình đường cuối dùng TwinLiteNet+ theo JSON đi kèm.
-- Dữ liệu phân vùng chưa có zip phát hành; giấy phép và quyền công khai dữ liệu còn TODO.
+- `car/tools/auto_drive/main.cpp` có IP `192.168.1.100`: chỉ dùng trong mạng LAN tại sân thi, để gửi telemetry tới dashboard phục vụ ban giám khảo chấm thi.
 
-## Nguồn
+## Nguồn và ghi công
 
-Hệ thống tham khảo code mẫu BTC tại [LTan17/thisinh](https://github.com/LTan17/thisinh).
-Các driver phần cứng và cảm biến trong `car/` (camera, motor, servo, OLED, IMU BNO055, ToF và thư viện VL53L1X của ST) lấy từ code mẫu BTC, gần như giữ nguyên; nhận thức, điều khiển, an toàn và công cụ do đội viết.
+`car/` dựa trên mã mẫu repo [thisinh](https://github.com/LTan17/thisinh) của BTC UIT Car Racing 2026. Phần mã đó thuộc bản quyền BTC; repo thisinh không kèm giấy phép. Nhóm sẽ gỡ phần mã đó nếu BTC yêu cầu.
+
+Các file có nguồn BTC (giữ nguyên hoặc sửa ít):
+
+| Nhóm | File |
+|---|---|
+| Ứng dụng | `car/include/app/DeviceInitialization.h`, `car/include/app/UI.h`, `car/src/app/UI.cpp` |
+| Ghi nhật ký | `car/include/common/Logger.h`, `car/src/common/Logger.cpp` |
+| Phần cứng | `car/include/hardware/` và `car/src/hardware/`: `Camera`, `Motor`, `Servo`, `SH1106` (OLED), `SH1106Fonts.h` |
+| Cảm biến | `car/include/sensor/BNO055.h`, `TOF.h`; `car/src/sensor/BNO055.cpp`, `TOF.cpp` |
+| ToF | `car/src/sensor/tof/` (`LinuxHardware`, `SensorReader`, `SensorSetup`, `StPlatformL0/L1`, `StTransport`, `config.h`) |
+| Thư viện ST | `car/src/sensor/tof/vendor/STM_VL53L0X/`, `car/src/sensor/tof/vendor/STM_VL53L1X/` |
+| Test phần cứng | `car/tests/hardware/test_bno055.cpp`, `test_camera.cpp`, `test_oled.cpp` |
+
+Thư viện VL53L0X/VL53L1X thuộc STMicroelectronics; header bản quyền ST được giữ nguyên trong từng file.
+Nhận thức, điều khiển, lớp an toàn, công cụ, notebook và mô hình do nhóm viết và huấn luyện.
 Slide thuyết trình (`docs/deck.pdf`) và bản đồ sa bàn (`docs/track_map.png`) nằm trong `docs/`; bản đồ là tài liệu tham khảo của đội, không thay thế quy chế BTC.
+
+## Giấy phép
+
+Repo chưa cấp giấy phép: mọi quyền thuộc nhóm tác giả (trừ phần mã BTC và ST nêu trên).
+Có thể xem và fork trên GitHub, nhưng không dùng lại mã hoặc dữ liệu khi chưa được nhóm đồng ý.
 
 ## English summary
 
-Autonomous driving software for the UIT Car Racing 2026 final, running on an organizer-provided Jetson Nano car.
+Autonomous driving software of the team that won the UIT Car Racing 2026 final (14/11/2026), running on an organizer-provided Jetson Nano car.
 TwinLiteNet+ road segmentation and a twelve-class YOLO detector feed a state-machine planner and lane controller, followed by a safety layer for motor and steering commands.
-The repository includes car software, training notebooks and data tools. Competition results, video, contributors, license and dataset publication rights: TODO.
+The repository includes car software, training notebooks, data tools and ONNX models; datasets (self-collected and self-labeled on the competition track) are attached to the v1.0-final release.
+Hardware drivers in `car/` come from the organizers' sample code (no license given) and ST's VL53L0X/VL53L1X libraries; they will be removed on request.
+No license is granted: all rights reserved by the authors. You may view and fork on GitHub, but do not reuse the code or data without the team's permission.

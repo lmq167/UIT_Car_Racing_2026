@@ -17,6 +17,7 @@ namespace auto_drive { HookState hooks; }
 namespace {
 // Telemetry dashboard BTC (giá trị theo Config.h mẫu BTC; ảnh camera gốc + mã nhãn YOLO, 10 Hz).
 // shortcut: hằng số trong mã, chuyển sang control.yaml nếu BTC đổi IP/port.
+// IP này chỉ dùng trong mạng LAN tại sân thi, để gửi telemetry tới dashboard phục vụ ban giám khảo chấm thi.
 constexpr const char* kTelemetryIp="192.168.1.100";
 constexpr int kTelemetryPort=9999;
 constexpr const char* kTelemetryCarId="HDQT_No1";
