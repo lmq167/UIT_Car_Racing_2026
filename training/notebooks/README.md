@@ -4,8 +4,8 @@ Hai notebook tự chứa mã, chạy trên Google Colab GPU (Python hiện đạ
 
 | Notebook | Mô hình | Dữ liệu vào | Đầu ra |
 |---|---|---|---|
-| `twinlitenetplus_train.ipynb` | TwinLiteNetPlus (biến thể small) phân vùng 2 lớp `background`, `road`; vào 192×320 | zip COCO segmentation `road_*` | checkpoint, ONNX opset 12 khớp `models/twinlitenetplus_192x320_road_info.json`, `results/twinlite_metrics.json` |
-| `yolo_train_car.ipynb` | YOLO 12 lớp `red`, `green`, `off`, `left`, `right`, `no_left`, `no_right`, `round_barrier`, `work_barrier`, `parking`, `people`, `obstacle`; so sánh biến thể D1–D8 (D6 = YOLOv5nu 192×320 dùng trên xe) | zip YOLO `yolo_*` | trọng số, ONNX opset 12 + `_info.json`, CSV so sánh |
+| `twinlitenetplus_train.ipynb` | TwinLiteNetPlus (biến thể small) phân vùng 2 lớp `background`, `road`; vào 192×320 | zip COCO segmentation `ucr_road.zip` + `split.csv` theo nhóm thu | checkpoint, ONNX opset 12 khớp `models/twinlitenetplus_192x320_road_info.json`, `results/twinlite_metrics.json` |
+| `yolo_train_car.ipynb` | YOLO 12 lớp `red`, `green`, `off`, `left`, `right`, `no_left`, `no_right`, `round_barrier`, `work_barrier`, `parking`, `people`, `obstacle`; so sánh biến thể D1–D8 (D6 = YOLOv5nu 192×320 dùng trên xe) | zip YOLO `ucr_det.zip` với `train.txt`/`val.txt` ở gốc | trọng số, ONNX opset 12 + `_info.json`, CSV so sánh |
 
 ## Hợp đồng đầu vào, đầu ra
 

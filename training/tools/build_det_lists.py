@@ -1,4 +1,4 @@
-"""Tạo nhãn theo khung hình và danh sách train/val từ export YOLOv8 car6_det."""
+"""Tạo nhãn theo khung hình và danh sách train/val từ export YOLOv8 ucr_det."""
 
 import argparse
 import csv
@@ -40,7 +40,7 @@ class _NameLoader(yaml.SafeLoader):
     pass
 
 
-# YAML 1.1 đọc `off` thành False; tên lớp `off` của car6_det phải giữ là chuỗi.
+# YAML 1.1 đọc `off` thành False; tên lớp `off` của ucr_det phải giữ là chuỗi.
 _NameLoader.yaml_implicit_resolvers = {
     key: [item for item in value if item[0] != 'tag:yaml.org,2002:bool']
     for key, value in yaml.SafeLoader.yaml_implicit_resolvers.items()}

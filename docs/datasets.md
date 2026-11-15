@@ -1,78 +1,110 @@
 # Bộ dữ liệu
 
-Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi UIT Car Racing 2026. Nhóm không cấp giấy phép.
+Hai dataset (bộ dữ liệu) do nhóm tự thu thập và gắn nhãn trên sa bàn UIT Car Racing 2026: `ucr_road` và `ucr_det`. Nhóm chưa cấp giấy phép; metadata (siêu dữ liệu) `Private` không phải giấy phép sử dụng lại.
+Tải tại [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final).
 
-[Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final)
+## Phân vùng đường: ucr_road
 
-## Phân vùng đường: ucr_roadfinal-2
+Tệp release: `ucr_road.zip`, `ucr_road_manifest.json`, `ucr_road_SHA256SUMS.txt`. Manifest (bản kê) và SHA256SUMS là bản kèm của dataset, được đặt tiền tố khi phát hành.
+Zip có 898 ảnh, 921 annotation (đối tượng gắn nhãn), 3 JSON COCO segmentation (phân vùng bằng đa giác) và `split.csv`. Không có RLE hay mặt nạ raster riêng. Category ID 0 `ucr_road` là lớp cha, không có annotation; ID 1 `road` là mặt đường. Mặt nạ cho mô hình dùng nền = 0, đường = 1; không đồng nhất mã category với mã mặt nạ.
 
-Nguồn: export từ Roboflow, định dạng COCO segmentation (phân vùng bằng đa giác).
+| Tập | Ảnh | Tỉ lệ ảnh | Annotation |
+|---|---:|---:|---:|
+| train | 635 | 70.71% | 644 |
+| valid | 134 | 14.92% | 135 |
+| test | 129 | 14.37% | 142 |
 
-- Tệp đính kèm: `road_UCR_RoadFinal_2.v5i.coco-segmentation_public.zip`, `road_manifest.json`, `road_SHA256SUMS.txt`.
-- Zip: 62496590 byte, nhỏ hơn 2 GB; 898 ảnh, 3 JSON nhãn, 921 annotation (đối tượng gắn nhãn).
-- Mask (mặt nạ): polygon COCO; toàn bộ annotation dùng đa giác, không có RLE hay mask raster riêng.
-- Category (lớp) gốc: ID 0 `UCR-Road-zXwd-r2fc` là lớp cha, không có annotation; ID 1 `road` là mặt đường.
-- Model xuất `background` (nền) = 0 và `road` (mặt đường) = 1. Không đồng nhất ID category COCO với mã mask model.
-- Theo JSON model: ảnh nguồn cao × rộng 720 × 1280; đầu vào 192 × 320, RGB, chuẩn hóa ImageNet, thu toàn ảnh.
+### Chia theo lượt thu và mức đầy đủ metadata
 
-| Split (tập) | Ảnh | JSON nhãn | Annotation | ID 0 | ID 1 | Kích thước rộng × cao (số ảnh), từ JSON | Ảnh không annotation |
-|---|---:|---:|---:|---:|---:|---|---:|
-| train | 721 | 1 | 738 | 0 | 738 | 1280x720 (613), 640x384 (108) | 0 |
-| valid | 165 | 1 | 171 | 0 | 171 | 1280x720 (134), 640x384 (31) | 0 |
-| test | 12 | 1 | 12 | 0 | 12 | 640x384 (12) | 0 |
+Cột `split` trong `split.csv` là nguồn xác định tập; không chia ngẫu nhiên lại từng ảnh. Có 108 `group_id`, mỗi nhóm chỉ thuộc một tập, không giao nhóm giữa train/valid/test. Tỉ lệ thực tế xấp xỉ 70,71% / 14,92% / 14,37% do giữ nguyên nhóm.
 
-Số ảnh JSON đã đối chiếu với số mục ảnh thực trong từng thư mục zip.
+| Series (nhóm nguồn thu, giữ mã gốc) | train | valid | test | metadata_level (số ảnh) |
+|---|---:|---:|---:|---|
+| car6_1031 | 310 | 17 | 104 | frame_manifest: 157, pass_only: 219, pass_ticket: 55 |
+| car6_1031_hoac_park_0411 | 194 | 78 | 0 | pass_only: 272 |
+| det_0911 | 26 | 11 | 0 | pass_only: 37 |
+| h_nguon_chua_xac_dinh | 7 | 0 | 0 | none: 7 |
+| image_nguon_chua_xac_dinh | 8 | 0 | 0 | none: 8 |
+| park_nguon_chua_xac_dinh | 69 | 26 | 11 | none: 106 |
+| road_them_nguon_chua_xac_dinh | 21 | 2 | 14 | none: 37 |
 
-## Phát hiện đối tượng: car6_det_b4
+`frame_manifest`: có metadata tới khung hình; `pass_ticket`: metadata từ phiếu lượt thu; `pass_only`: chỉ truy được lượt thu; `none`: thiếu metadata thu. Ô trống là chưa biết, không tự suy ra thời điểm/tốc độ/điều kiện thu. Tổng: 157 frame_manifest, 55 pass_ticket, 528 pass_only, 158 none.
 
-Nguồn: export từ Roboflow, định dạng YOLO detection (phát hiện bằng hộp giới hạn). `README_det_b4.txt` mô tả thành phần dữ liệu và cách chia theo lượt.
+Cơ sở nhóm lấy đúng từ `group_basis`: 740 ảnh có số lượt trong tên. Với tên không có số lượt, đây là **giả định**, không phải lượt thu đã xác minh: `park_` (106 ảnh) và `road_them_` (37 ảnh) gom theo khối 10 số liền nhau; `image` gom cả nhóm 8 ảnh; `h9342_` gom 7 ảnh với giả định cùng một video. Không gán quy tắc khối 10 cho hai nhóm cuối vì CSV không ghi như vậy.
 
-- Tệp đính kèm: `yolo_car6_det_b4_public.zip`, `yolo_manifest.json`, `yolo_SHA256SUMS.txt`.
-- Zip: 102554563 byte, nhỏ hơn 2 GB; 1.488 ảnh, 1.488 tệp nhãn, 12 lớp.
-- Ảnh rộng × cao 1280 × 720; nhãn gồm mã lớp, hộp tâm/rộng/cao theo tỉ lệ.
-- Đầu vào model D6 cao × rộng 192 × 320; giữ tỉ lệ, thêm đệm.
-- README export ghi 1.818 ảnh, khác nội dung zip; dùng số đếm thực tế 1.488. Metadata `Private` không phải giấy phép sử dụng lại.
+| Cột split.csv | Ý nghĩa |
+|---|---|
+| `file` | Tên ảnh duy nhất, giữ nguyên |
+| `original_name` | Tên ảnh gốc, giữ nguyên |
+| `split` | Nguồn sự thật cho train/valid/test theo lượt thu |
+| `split_roboflow_v5` | Cách chia Roboflow cũ để đối chiếu; không dùng chia tập mới |
+| `series` | Nhóm nguồn thu |
+| `group_id` | Định danh lượt thu, không giao giữa các tập |
+| `group_basis` | Cơ sở xác định nhóm |
+| `pass_id` | Số lượt thu nếu có |
+| `frame_idx` | Số khung hình nếu có |
+| `width` | Chiều rộng ảnh |
+| `height` | Chiều cao ảnh |
+| `metadata_level` | Mức truy xuất metadata |
+| `capture_time` | Thời điểm thu nếu biết |
+| `c` | Mã metadata c từ CSV nguồn |
+| `t` | Mã metadata t từ CSV nguồn |
+| `s` | Mã metadata s từ CSV nguồn |
+| `e` | Mã metadata e từ CSV nguồn |
+| `k` | Mã metadata k từ CSV nguồn |
+| `v` | Mã metadata v từ CSV nguồn |
+| `l` | Mã metadata l từ CSV nguồn |
+| `speed_cms` | Tốc độ thu, cm/s nếu có |
+| `result` | Kết quả ghi nhận |
 
-### Chia theo thư mục vật lý
+Các mã `c`, `t`, `s`, `e`, `k`, `v`, `l` giữ nguyên từ CSV nguồn; không suy diễn thêm ý nghĩa. 747 ảnh có kích thước 1280×720 và 151 ảnh 640×384 (rộng × cao).
 
-`data.yaml` trỏ tới `train/images`, `valid/images`, `test/images`.
+**Giới hạn so sánh:** model đường trong `models/` được train trên cách chia CŨ, chia ngẫu nhiên theo ảnh của Roboflow. Huấn luyện lại bằng `ucr_road` dùng cách chia theo nhóm nêu trên, nên IoU mới không so trực tiếp với model đó. Chưa có số IoU để công bố.
 
-| Thư mục | Ảnh | Tệp nhãn |
-|---|---:|---:|
-| train | 1161 | 1161 |
-| valid | 252 | 252 |
-| test | 75 | 75 |
+## Phát hiện đối tượng: ucr_det
 
-### Chia theo danh sách huấn luyện
+Tệp release: `ucr_det.zip`, `ucr_det_manifest.json`, `ucr_det_SHA256SUMS.txt`.
+Zip có 1.488 ảnh 1280×720, 1.488 tệp nhãn YOLO detection (phát hiện bằng hộp giới hạn), 12 lớp. Mỗi dòng nhãn gồm `class_id cx cy width height`, tọa độ hộp được chuẩn hóa theo kích thước ảnh. Ảnh/nhãn được đặt theo `train/images`, `train/labels`, `val/images`, `val/labels`.
 
-`train.txt` và `val.txt` trỏ xuyên các thư mục vật lý; không suy ra tập huấn luyện cuối từ tên thư mục.
+| Tập | Ảnh / tệp nhãn | Tỉ lệ ảnh | Số hộp |
+|---|---:|---:|---:|
+| train | 1027 | 69.02% | 1038 |
+| val | 461 | 30.98% | 391 |
 
-| Danh sách | Ảnh | Tệp nhãn |
-|---|---:|---:|
-| train.txt | 1027 | 1027 |
-| val.txt | 461 | 461 |
+Giữ nguyên danh sách `train.txt` (1.027 dòng) và `val.txt` (461 dòng) đã dùng khi train D2/D6/D7/D8; zip có hai tệp này ở gốc, đường dẫn dạng `./<split>/images/<ảnh>` để notebook đọc. Không có tập test độc lập; không còn cách chia thư mục vật lý cũ khác danh sách. Có 91 lượt, **0 lượt bị chia đôi** giữa train/val. mAP YOLO của D2/D6/D7/D8 được tính trên đúng cách chia của `ucr_det`.
 
-Không có `test.txt`. Không coi thư mục `test/` là tập đánh giá độc lập khi dùng hai danh sách trên. Thứ tự lớp dataset theo `data.yaml`, khác thứ tự D6; cần ánh xạ theo tên.
+| Cột split.csv | Ý nghĩa |
+|---|---|
+| `file` | Đường dẫn ảnh trong zip, gồm tập và thư mục images |
+| `original_name` | Tên ảnh gốc; bỏ đuôi export `_jpg.rf.<mã>`, khôi phục tiền tố xe theo notebook |
+| `split` | train hoặc val theo danh sách đã dùng huấn luyện |
+| `pass` | Số lượt: NNNN từ pNNNN_MMMM hoặc SSSS từ rec0411_SSSS_ID, chuyển thành số nguyên |
+| `width`, `height` | Chiều rộng, chiều cao ảnh, pixel |
 
-### Số hộp mỗi lớp
+Không có `metadata_level` trong CSV phát hiện; chỉ công bố các trường hiện có, không suy ra metadata thu khác.
 
-Hai cách chia cùng bộ dữ liệu, không cộng các cột với nhau.
+| ID | Lớp | Hộp train | Hộp val |
+|---:|---|---:|---:|
+| 0 | green | 71 | 36 |
+| 1 | left | 96 | 25 |
+| 2 | no_left | 87 | 50 |
+| 3 | no_right | 99 | 46 |
+| 4 | obstacle | 95 | 21 |
+| 5 | off | 63 | 18 |
+| 6 | parking | 19 | 13 |
+| 7 | people | 88 | 28 |
+| 8 | red | 92 | 29 |
+| 9 | right | 111 | 78 |
+| 10 | round_barrier | 33 | 9 |
+| 11 | work_barrier | 184 | 38 |
 
-| ID | Lớp | train/ | valid/ | test/ | train.txt | val.txt |
-|---:|---|---:|---:|---:|---:|---:|
-| 0 | green | 85 | 18 | 4 | 71 | 36 |
-| 1 | left | 95 | 22 | 4 | 96 | 25 |
-| 2 | no_left | 105 | 24 | 8 | 87 | 50 |
-| 3 | no_right | 118 | 17 | 10 | 99 | 46 |
-| 4 | obstacle | 87 | 26 | 3 | 95 | 21 |
-| 5 | off | 68 | 12 | 1 | 63 | 18 |
-| 6 | parking | 24 | 6 | 2 | 19 | 13 |
-| 7 | people | 83 | 21 | 12 | 88 | 28 |
-| 8 | red | 94 | 22 | 5 | 92 | 29 |
-| 9 | right | 148 | 34 | 7 | 111 | 78 |
-| 10 | round_barrier | 34 | 7 | 1 | 33 | 9 |
-| 11 | work_barrier | 175 | 37 | 10 | 184 | 38 |
+Thứ tự lớp dataset khác thứ tự model D6; phải ánh xạ theo tên. `people` là hình nộm, `parking` là biển đỗ xe.
 
-## Kiểm tra SHA256
+## SHA256 và kích thước
 
-Tải zip và SHA256SUMS cùng bộ từ Release vào một thư mục. SHA256SUMS ghi đúng tên tệp đính kèm (có tiền tố `road_`/`yolo_`), nên trên Linux chạy được `sha256sum -c road_SHA256SUMS.txt`; trên PowerShell chạy `Get-FileHash -Algorithm SHA256 -LiteralPath <đường_dẫn_zip>` rồi đối chiếu. `manifest.json` ghi tên zip trước khi thêm tiền tố.
+| Tệp | Kích thước (byte) | SHA256 |
+|---|---:|---|
+| `ucr_road.zip` | 62181749 | `9fd0d3707b779d4b778f36fc642912b242b895562e08284bf143714a75c58db1` |
+| `ucr_det.zip` | 102593582 | `175d0de2508d51645c9df754903a2460616e72b0d83fe2d11037149349e9111e` |
+
+Tải zip và `<dataset>_SHA256SUMS.txt` vào cùng thư mục. Trên Linux: `sha256sum -c ucr_road_SHA256SUMS.txt` hoặc `sha256sum -c ucr_det_SHA256SUMS.txt`. Trên PowerShell: `Get-FileHash -Algorithm SHA256 -LiteralPath <đường_dẫn_zip>` rồi đối chiếu. SHA256SUMS ghi đúng tên zip không có hậu tố phiên bản.

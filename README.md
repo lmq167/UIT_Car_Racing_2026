@@ -5,7 +5,7 @@ Mục tiêu là nhận biết mặt đường, biển báo, đèn giao thông v�
 
 **Kết quả:** Đội vô địch UIT Car Racing 2026 (vòng chung kết 14/11/2026).
 
-Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi; tải ở [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final), chi tiết ở [docs/datasets.md](docs/datasets.md).
+Hai dataset `ucr_road` (phân vùng đường) và `ucr_det` (YOLO 12 lớp) do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi; tải ở [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final), chi tiết ở [docs/datasets.md](docs/datasets.md).
 
 ## Thành viên
 
@@ -76,6 +76,8 @@ Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp tro
 | D7 | 256 × 416 | 1,869 | 0,869 | 0,629 | — |
 | D6 | 192 × 320 | 1,078 | 0,827 | 0,587 | 9,148 ms (trung bình); 11,23 ms (p99) |
 
+mAP D2/D6/D7/D8 dùng đúng tập val 461 ảnh của `ucr_det` (train 1027 ảnh, chia theo lượt thu).
+
 `—`: không đo; D6 có lượng tính toán thấp nhất nên được triển khai trực tiếp, các biến thể khác không dựng engine trên xe.
 
 D6 là biến thể dùng khi thi vì nhẹ nhất về lượng tính toán, với đầu vào 192 × 320 và xấp xỉ 1,08 GFLOPs. Đây là đánh đổi tốc độ/độ chính xác: mAP50 của D6 thấp hơn D2 và D8; thời gian GPU chưa gồm tiền/hậu xử lý và không phải FPS toàn hệ thống.
@@ -115,6 +117,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 
 - Bản công khai quyết định hướng rẽ theo lớp biển do YOLO nhận; không gồm cơ chế chuỗi biển cố định của bản dùng khi thi (mã trong repo không phải nguyên bản đã chạy thi).
 - Đây là mã phục vụ sa bàn cuộc thi, chưa chứng minh khả năng vận hành ngoài môi trường đó.
+- Model đường trong `models/` train trên cách chia cũ, ngẫu nhiên theo ảnh của Roboflow; IoU khi train lại bằng `ucr_road` (635/134/129 ảnh theo nhóm thu) không so trực tiếp được với model đó.
 - mAP YOLO đã đối chiếu với CSV kết quả; IoU của TwinLiteNet+ chưa có, chờ huấn luyện lại bằng notebook; FPS toàn hệ thống chưa đo (xem [docs/results/](docs/results/README.md)).
 - Slide không cung cấp bằng chứng hoàn tất toàn bộ thao tác đỗ; lượt minh họa dừng bằng Space khi còn lùi.
 - ToF nằm hai bên xe; `ucr_auto` đỗ ô cố định, không khởi tạo ToF và không có phanh ToF trước/sau.

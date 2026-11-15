@@ -1,6 +1,6 @@
 # Kết quả huấn luyện YOLO 12 lớp
 
-So sánh bốn biến thể trên bộ dữ liệu `det_b4`, đánh giá trên tập val (tập kiểm định). `people` là hình nộm, `obstacle` là vật cản và `parking` là biển đỗ xe. Xem [bộ dữ liệu](../datasets.md) và [CSV tổng hợp](yolo_compare_det_b4_summary.csv). Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân trong bảng dùng dấu phẩy.
+So sánh bốn biến thể trên bộ dữ liệu `ucr_det`, đánh giá trên tập val (tập kiểm định). `people` là hình nộm, `obstacle` là vật cản và `parking` là biển đỗ xe. Xem [bộ dữ liệu](../datasets.md) và [CSV tổng hợp](yolo_compare_summary.csv). Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân trong bảng dùng dấu phẩy.
 
 ## Bảng so sánh
 
@@ -63,6 +63,6 @@ Chưa có ảnh preview.
 
 ## Nguồn từng số
 
-- Toàn bộ giá trị trong các bảng, trừ thời gian suy luận: bảng tổng hợp `yolo_compare_det_b4_summary.csv` do notebook YOLO sinh ra; bản chép nguyên văn nằm [tại đây](yolo_compare_det_b4_summary.csv).
+- Toàn bộ giá trị trong các bảng, trừ thời gian suy luận: bảng tổng hợp `yolo_compare_summary.csv` do notebook YOLO sinh ra; bản chép nguyên văn nằm [tại đây](yolo_compare_summary.csv).
 - Định nghĩa cột: [training/notebooks/yolo_train_car.ipynb](../../training/notebooks/yolo_train_car.ipynb), số ô tính từ 1, dòng tính trong phần source của ô: ô 2 dòng 16–20 và 45–53 (ngưỡng, biến thể); ô 10 dòng 1–25 (thời gian train); ô 12 dòng 10–19, 28–65 (ghép hộp, val, mAP, precision/recall, nhầm lẫn); ô 18 dòng 12–21 (tham số, GFLOPs, đầu vào); ô 22 dòng 5–16 (lọc, tổng hợp, độ sáng 0,6, làm tròn).
 - Độ trễ D6: `trtexec` (TensorRT 8.2) khi dựng engine FP16 trên Jetson Nano của xe; chỉ đo thời gian GPU của mạng.
