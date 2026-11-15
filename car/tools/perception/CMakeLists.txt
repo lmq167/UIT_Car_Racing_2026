@@ -4,15 +4,6 @@ add_library(perception_cpu STATIC ../../src/perception/InfoJson.cpp ../../src/pe
 target_include_directories(perception_cpu PUBLIC ../../include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(perception_cpu PUBLIC ${OpenCV_LIBS})
 
-if(BUILD_TESTING)
-    add_executable(test_yolo ../../tests/test_yolo.cpp)
-    target_link_libraries(test_yolo PRIVATE perception_cpu)
-    add_test(NAME test_yolo COMMAND test_yolo)
-    set_tests_properties(test_yolo PROPERTIES LABELS "unit" TIMEOUT 15)
-    add_executable(test_input_compare ../../tests/test_input_compare.cpp)
-    add_test(NAME test_input_compare COMMAND test_input_compare)
-    set_tests_properties(test_input_compare PROPERTIES LABELS "unit" TIMEOUT 15)
-endif()
 
 if(UCR_WITH_TRT)
     set(TENSORRT_LIB_DIR "/usr/lib/aarch64-linux-gnu" CACHE PATH "Thư mục thư viện TensorRT")

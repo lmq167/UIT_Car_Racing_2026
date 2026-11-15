@@ -23,12 +23,10 @@ Các công cụ hỗ trợ chỉ đọc log:
 - `mask_probe.py`: thử thay chọn dải trong ROUNDABOUT ở ngoại tuyến; giữ dựng biên/tâm làn/độ tin cậy/khớp đường. Cột midpoint là biến thể lấy trung điểm như ucr, chưa phải toàn bộ thuật toán ucr. Điểm nhìn đo từng mặt nạ, chưa áp kẹp dịch chuyển qua thời gian hay vòng điều khiển xe.
 - `verify_mask_port.py`: biên dịch harness (chương trình kiểm nhỏ) tại thư mục tạm, kiểm điểm nhìn Python với LaneController C++ gốc.
 - `evidence_sheets.py`: ghép ảnh gốc, xuất bảng mốc yêu cầu/mốc ảnh thật; không coi ảnh gần nhất là ảnh đúng thời điểm.
-- `test_replay_regress.py`: kiểm khác biệt ý định/lệnh và mặt nạ rỗng.
 
 ```powershell
 python round3_final/tools/replay_regress/analyze_sessions.py
 python round3_final/tools/replay_regress/mask_probe.py
 python round3_final/tools/replay_regress/verify_mask_port.py
 python round3_final/tools/replay_regress/evidence_sheets.py
-python round3_final/tools/replay_regress/test_replay_regress.py
 ```

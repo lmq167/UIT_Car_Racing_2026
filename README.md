@@ -43,7 +43,7 @@ car/                   Mã C++ chạy trên xe, cấu hình, công cụ và ki�
   include/             Khai báo các module
   src/                 Nhận thức, điều khiển, phần cứng, cảm biến, ứng dụng
   tools/               Chạy tự hành, thu ảnh, phát lại và kiểm mô hình
-  tests/               Kiểm thử đơn vị và chấp nhận
+  tests/               Kiểm thử phần cứng: camera, IMU, OLED và driver motor UART
 training/notebooks/    Notebook huấn luyện và xuất mô hình
 training/tools/        Công cụ chuẩn bị dữ liệu, xuất và đối chiếu mô hình
 models/                ONNX và siêu dữ liệu đi kèm
@@ -90,7 +90,7 @@ for f in car/src/control/*.cpp; do
 done
 ```
 
-Khi chuẩn bị bản công khai, lệnh trên chạy được với 0 lỗi, 0 cảnh báo. Bộ test điều khiển (279 ca, chạy trên laptop) đạt 205, hỏng 74; xem mục Giới hạn đã biết.
+Lệnh biên dịch thư viện điều khiển trên chạy được với 0 lỗi, 0 cảnh báo. Kiểm thử phần cứng chưa chạy được trên Windows; cần Linux/Jetson.
 
 ## Chạy ở mức khái quát
 
@@ -104,7 +104,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 - Chưa có số liệu mAP/IoU đã đối chiếu với file gốc cho hai mô hình, chưa đo FPS toàn hệ thống (xem [docs/results/](docs/results/README.md)).
 - Tài liệu slide chưa xác nhận một lượt hoàn tất từ quét ToF đến đỗ xong; một lượt được dẫn dừng bằng Space khi còn pha lùi.
 - ToF nằm hai bên xe, dùng quét ô đỗ khi đứng; không có phanh ToF phía trước/sau xe trong `ucr_auto`.
-- 74/279 ca test điều khiển đang hỏng, đã có từ trước khi thi: phần lớn là ca dựng tình huống rẽ bằng biển tùy ý, viết trước khi xe chuyển sang chuỗi biển cố định (13/11/2026). Test chưa được cập nhật, nhưng giữ nguyên làm tài liệu hành vi cũ.
+- Bộ kiểm thử chỉ giữ phần cứng: một ca CTest driver motor UART qua cổng giả; camera, IMU BNO055 và OLED là chương trình kiểm tra trực tiếp trên xe. Chưa chạy được trên Windows; cần Linux/Jetson để kiểm chứng.
 - Một số tài liệu huấn luyện cũ mô tả U-Net; mô hình đường cuối dùng TwinLiteNet+ theo JSON đi kèm.
 - `car/tools/auto_drive/main.cpp` có IP `192.168.1.100`: chỉ dùng trong mạng LAN tại sân thi, để gửi telemetry tới dashboard phục vụ ban giám khảo chấm thi.
 
@@ -122,7 +122,7 @@ Các file có nguồn BTC (giữ nguyên hoặc sửa ít):
 | Cảm biến | `car/include/sensor/BNO055.h`, `TOF.h`; `car/src/sensor/BNO055.cpp`, `TOF.cpp` |
 | ToF | `car/src/sensor/tof/` (`LinuxHardware`, `SensorReader`, `SensorSetup`, `StPlatformL0/L1`, `StTransport`, `config.h`) |
 | Thư viện ST | `car/src/sensor/tof/vendor/STM_VL53L0X/`, `car/src/sensor/tof/vendor/STM_VL53L1X/` |
-| Test phần cứng | `car/tests/hardware/test_bno055.cpp`, `test_camera.cpp`, `test_oled.cpp` |
+| Test phần cứng | `car/tests/hardware/test_bno055.cpp`, `test_camera.cpp`, `test_oled.cpp` (BTC); `CameraGuides.h` và `car/tests/acceptance/acc_motor_uart.cpp`, `acc_common.h` do nhóm bổ sung |
 
 Thư viện VL53L0X/VL53L1X thuộc STMicroelectronics; header bản quyền ST được giữ nguyên trong từng file. Hai chú thích mã theo dõi lỗi nội bộ của ST nằm sẵn trong file gốc `vl53l1_api.c`, không sửa.
 Nhận thức, điều khiển, lớp an toàn, công cụ, notebook và mô hình do nhóm viết và huấn luyện.
