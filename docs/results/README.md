@@ -6,7 +6,7 @@ Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân t
 
 Model `models/twinlitenetplus_192x320.onnx` (biến thể small, 2 lớp `background`/`road`, đầu vào 192 × 320) được huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên dataset `ucr_road`.
 
-- Chia tập theo `split.csv` (theo lượt thu, SHA256 `0229e37c05fe34c9f6fbd8b356197936cf128e29f5e27237badca140e4e750ac`): train 635 / valid 134 / test 129 ảnh; 108 nhóm, không nhóm nào nằm ở hai tập.
+- Chia tập theo `split.csv` (theo lượt thu; xem [cách chia giữ nguyên khi huấn luyện](../datasets.md#chia-theo-lượt-thu-và-mức-đầy-đủ-metadata)): train 635 / valid 134 / test 129 ảnh; 108 nhóm, không nhóm nào nằm ở hai tập.
 - Checkpoint tốt nhất theo mIoU valid: epoch 83 / 100. Tập test không dùng khi chọn model.
 
 | Tập | IoU road | IoU background | mIoU | Precision road | Recall road |
