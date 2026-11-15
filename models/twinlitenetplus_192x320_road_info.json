@@ -1,0 +1,70 @@
+{
+  "task": "segmentation",
+  "architecture": "twinlitenetplus",
+  "class_names": [
+    "background",
+    "road"
+  ],
+  "num_classes": 2,
+  "mask_values": {
+    "background": 0,
+    "road": 1
+  },
+  "source_image_hw": [
+    720,
+    1280
+  ],
+  "crop_y": [
+    0,
+    720
+  ],
+  "crop_x": [
+    0,
+    1280
+  ],
+  "resize": "cv2.resize INTER_LINEAR (full -> input)",
+  "input_name": "input",
+  "input_shape": [
+    1,
+    3,
+    192,
+    320
+  ],
+  "input_hw": [
+    192,
+    320
+  ],
+  "input_dtype": "float32",
+  "color_order": "RGB",
+  "layout": "NCHW",
+  "normalization": {
+    "scale": 0.00392156862745098,
+    "mean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "std": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "imagenet_normalization_in_model": false,
+  "preprocessing_in_model": false,
+  "output_name": "output",
+  "output_shape": [
+    1,
+    2,
+    192,
+    320
+  ],
+  "output_type": "logits",
+  "activation": "softmax_over_channels_argmax",
+  "road_rule": "output[0,1] > output[0,0]",
+  "dynamic": false,
+  "fake_data": false,
+  "opset": 12,
+  "onnx_sha256": "1e196480cc74d0d7fc253fa58ebf7fc423d311bac164b34766ecd5c8ae7217bd",
+  "source_note": "08/11: ten input/output doc tu ONNX bang onnxruntime; tien xu ly theo benchmark tren Jetson Nano"
+}
