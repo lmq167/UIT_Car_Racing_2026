@@ -5,13 +5,17 @@ Mục tiêu là nhận biết mặt đường, biển báo, đèn giao thông v�
 
 **Kết quả:** Đội vô địch UIT Car Racing 2026 (vòng chung kết 14/11/2026).
 
+Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi; tải ở [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final), chi tiết ở [docs/datasets.md](docs/datasets.md).
+
+## Thành viên
+
 | Họ tên | Email | Vai trò |
 |---|---|---|
-| Lê Minh Quân | stkirito74@gmail.com | |
-| Nguyễn Ngọc Anh Tuấn | | |
-| Nguyễn Văn Chí | | |
+| Lê Minh Quân | stkirito74@gmail.com | Thu thập và xử lí dữ liệu, gán nhãn, huấn luyện mô hình, thiết kế giải thuật điều khiển |
+| Nguyễn Ngọc Anh Tuấn | — | Gán nhãn, hỗ trợ huấn luyện mô hình, hỗ trợ phần cứng, chỉnh sửa mã nhúng do BTC cung cấp, thiết kế giải thuật điều khiển |
+| Nguyễn Văn Chí | nggvanchi@gmail.com | Hỗ trợ gán nhãn, hỗ trợ thiết kế giải thuật điều khiển |
 
-Dataset do nhóm tự thu thập và tự gắn nhãn trên sa bàn thi; tải ở [Release v1.0-final](https://github.com/lmq167/UIT_Car_Racing_2026/releases/tag/v1.0-final), chi tiết ở [docs/datasets.md](docs/datasets.md).
+Toàn bộ lịch sử commit nằm dưới một tài khoản vì repo được duy trì từ một máy; phần đóng góp của từng thành viên theo bảng trên, không theo thống kê commit.
 
 ## Kiến trúc
 
@@ -116,7 +120,7 @@ Các file có nguồn BTC (giữ nguyên hoặc sửa ít):
 | Thư viện ST | `car/src/sensor/tof/vendor/STM_VL53L0X/`, `car/src/sensor/tof/vendor/STM_VL53L1X/` |
 | Test phần cứng | `car/tests/hardware/test_bno055.cpp`, `test_camera.cpp`, `test_oled.cpp` |
 
-Thư viện VL53L0X/VL53L1X thuộc STMicroelectronics; header bản quyền ST được giữ nguyên trong từng file.
+Thư viện VL53L0X/VL53L1X thuộc STMicroelectronics; header bản quyền ST được giữ nguyên trong từng file. Hai chú thích mã theo dõi lỗi nội bộ của ST nằm sẵn trong file gốc `vl53l1_api.c`, không sửa.
 Nhận thức, điều khiển, lớp an toàn, công cụ, notebook và mô hình do nhóm viết và huấn luyện.
 Slide thuyết trình (`docs/deck.pdf`) và bản đồ sa bàn (`docs/track_map.png`) nằm trong `docs/`; bản đồ là tài liệu tham khảo của đội, không thay thế quy chế BTC.
 
