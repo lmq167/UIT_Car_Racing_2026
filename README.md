@@ -122,7 +122,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 - Công cụ U-Net nằm trong `training/tools/`; mô hình đường dùng TwinLiteNet+ theo JSON đi kèm.
 - `car/tools/auto_drive/main.cpp` có IP `192.168.1.100`: chỉ dùng trong mạng LAN tại sân thi, để gửi telemetry tới dashboard phục vụ ban giám khảo chấm thi.
 
-## Nguồn và ghi công
+## Nguồn
 
 `car/` dựa trên mã mẫu repo [thisinh](https://github.com/LTan17/thisinh) của BTC UIT Car Racing 2026. Phần mã đó thuộc bản quyền BTC; repo thisinh không kèm giấy phép. Nhóm sẽ gỡ phần mã đó nếu BTC yêu cầu.
 
@@ -140,6 +140,8 @@ Các file có nguồn BTC (giữ nguyên hoặc sửa ít):
 
 Thư viện VL53L0X/VL53L1X thuộc STMicroelectronics; header bản quyền ST được giữ nguyên trong từng file. Hai chú thích mã theo dõi lỗi nội bộ của ST nằm sẵn trong file gốc `vl53l1_api.c`, không sửa.
 Nhận thức, điều khiển, lớp an toàn, công cụ, notebook và mô hình do nhóm viết và huấn luyện.
+Mô hình phân vùng dùng kiến trúc [TwinLiteNetPlus](https://github.com/chequanghuy/TwinLiteNetPlus) (MIT License); notebook huấn luyện ghim commit `90f1b86`.
+Dataset do nhóm tự thu thập và gắn nhãn, export từ Roboflow (COCO segmentation cho mặt đường, YOLO cho phát hiện); chi tiết ở [docs/datasets.md](docs/datasets.md).
 Slide thuyết trình (`docs/deck.pdf`) và bản đồ sa bàn (`docs/track_map.png`) nằm trong `docs/`; bản đồ là tài liệu tham khảo của đội, không thay thế quy chế BTC.
 
 ## Giấy phép
