@@ -53,6 +53,8 @@ Các giá trị bằng 0 chỉ xác nhận không có nhầm lẫn giữa các c
 
 D6 là biến thể dùng khi thi vì có lượng tính toán nhỏ nhất: 1,078 GFLOPs (xấp xỉ 1,08 GFLOPs), đầu vào 192 × 320. Đây là đánh đổi tốc độ/độ chính xác: mAP50 của D6 là 0,827, thấp hơn D2 (0,894) và D8 (0,907); GFLOPs không thay thế phép đo độ trễ thực tế.
 
+D2 có độ chính xác cao hơn mức cần thiết cho bài toán trên sa bàn: biển báo có thể được nhận từ khoảng 2 m, trong khi xe phải đi qua biển rồi mới thực hiện tín hiệu. D6 vẫn đủ chính xác cho nhu cầu đó và xử lý nhanh vượt trội (1,078 GFLOPs so với 2,133 GFLOPs của D2), nên D6 được chọn cho xe.
+
 Recall biển đỗ còn thấp: D6 đạt 0,538, D7 đạt 0,462; D8 cao nhất trong nhóm ở 0,769. Khi giảm độ sáng xuống 0,6, recall hình nộm của D6 giảm từ 0,857 xuống 0,750, trong khi recall vật cản giữ ở 0,905. Các chỉ số val mô tả khả năng phát hiện trên tập kiểm định, không xác nhận an toàn hay hiệu quả điều khiển trên sa bàn.
 
 Chưa có IoU của TwinLiteNet+; chỉ số này chờ huấn luyện lại bằng notebook. FPS (số khung hình mỗi giây) toàn hệ thống chưa đo.

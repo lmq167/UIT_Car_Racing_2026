@@ -78,7 +78,11 @@ Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp tro
 
 `—`: không đo; D6 có lượng tính toán thấp nhất nên được triển khai trực tiếp, các biến thể khác không dựng engine trên xe.
 
-D6 là biến thể dùng khi thi vì nhẹ nhất về lượng tính toán, với đầu vào 192 × 320 và xấp xỉ 1,08 GFLOPs. Đây là đánh đổi tốc độ/độ chính xác: mAP50 của D6 thấp hơn D2 và D8; thời gian GPU chưa gồm tiền/hậu xử lý và không phải FPS toàn hệ thống. Định nghĩa chỉ số, điều kiện đánh giá và nguồn từng số nằm trong [kết quả chi tiết](docs/results/README.md).
+D6 là biến thể dùng khi thi vì nhẹ nhất về lượng tính toán, với đầu vào 192 × 320 và xấp xỉ 1,08 GFLOPs. Đây là đánh đổi tốc độ/độ chính xác: mAP50 của D6 thấp hơn D2 và D8; thời gian GPU chưa gồm tiền/hậu xử lý và không phải FPS toàn hệ thống.
+
+D2 có độ chính xác cao hơn mức cần thiết cho bài toán trên sa bàn: biển báo có thể được nhận từ khoảng 2 m, trong khi xe phải đi qua biển rồi mới thực hiện tín hiệu. D6 vẫn đủ chính xác cho nhu cầu đó và xử lý nhanh vượt trội (1,08 GFLOPs so với 2,13 GFLOPs của D2), nên D6 được chọn cho xe.
+
+Định nghĩa chỉ số, điều kiện đánh giá và nguồn từng số nằm trong [kết quả chi tiết](docs/results/README.md).
 
 ## Build (biên dịch)
 
