@@ -67,6 +67,10 @@ Thư mục `models/` chứa hai ONNX (định dạng trao đổi mạng học s�
 ONNX giữ số thực FP32; engine (bản thực thi tối ưu) TensorRT dùng FP16 và phải tạo trên Jetson đích.
 Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp trong dataset là mã lớp của model; phải ánh xạ theo tên.
 
+## Kết quả huấn luyện
+
+Bảng so sánh bốn biến thể YOLO 12 lớp (D2, D6, D7, D8) và nguồn từng số: [docs/results/](docs/results/README.md). D6 là biến thể dùng khi thi; thời gian suy luận GPU đo trên xe là 9,1 ms (trung bình). Số mAP và ảnh preview chưa có vì file kết quả huấn luyện không được lưu cùng mã nguồn.
+
 ## Build (biên dịch)
 
 Môi trường đích: Jetson Nano, JetPack 4.6, Ubuntu 18.04, CMake 3.10, GCC 7, C++17, OpenCV 4.1.1, TensorRT 8.2.
@@ -97,7 +101,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 ## Giới hạn đã biết
 
 - Đây là mã phục vụ sa bàn cuộc thi, chưa chứng minh khả năng vận hành ngoài môi trường đó.
-- Chưa có nguồn số liệu mAP/IoU của hai mô hình hoặc FPS toàn hệ thống để công bố.
+- Chưa có số liệu mAP/IoU đã đối chiếu với file gốc cho hai mô hình, chưa đo FPS toàn hệ thống (xem [docs/results/](docs/results/README.md)).
 - Tài liệu slide chưa xác nhận một lượt hoàn tất từ quét ToF đến đỗ xong; một lượt được dẫn dừng bằng Space khi còn pha lùi.
 - ToF nằm hai bên xe, dùng quét ô đỗ khi đứng; không có phanh ToF phía trước/sau xe trong `ucr_auto`.
 - 74/279 ca test điều khiển đang hỏng, đã có từ trước khi thi: phần lớn là ca dựng tình huống rẽ bằng biển tùy ý, viết trước khi xe chuyển sang chuỗi biển cố định (13/11/2026). Test chưa được cập nhật, nhưng giữ nguyên làm tài liệu hành vi cũ.
