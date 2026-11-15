@@ -100,6 +100,7 @@ Chương trình lấy ảnh mới nhất, suy luận, cập nhật Planner rồi
 
 ## Giới hạn đã biết
 
+- Bản công khai quyết định hướng rẽ theo lớp biển do YOLO nhận; không gồm cơ chế chuỗi biển cố định của bản dùng khi thi (mã trong repo không phải nguyên bản đã chạy thi).
 - Đây là mã phục vụ sa bàn cuộc thi, chưa chứng minh khả năng vận hành ngoài môi trường đó.
 - Chưa có số liệu mAP/IoU đã đối chiếu với file gốc cho hai mô hình, chưa đo FPS toàn hệ thống (xem [docs/results/](docs/results/README.md)).
 - Tài liệu slide chưa xác nhận một lượt hoàn tất từ quét ToF đến đỗ xong; một lượt được dẫn dừng bằng Space khi còn pha lùi.

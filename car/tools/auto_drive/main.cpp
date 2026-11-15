@@ -56,7 +56,6 @@ struct ControlInput {
     std::shared_ptr<const control::ControlParams> params;
     YoloResult yolo;
     SensorSample sensor;
-    uint64_t sign_jumps=0;  // số lần bấm N (đếm dồn, luồng điều khiển áp phần chênh)
 };
 struct CommandStamped {
     control::Plan plan;
@@ -165,8 +164,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
     Mailbox<CommandStamped> commands;
     static_assert(std::atomic<uint64_t>::is_always_lock_free,"Lenh telemetry phai khong khoa");
     std::atomic<uint64_t> sentTelemetry{0};
-    std::atomic<int> telemetrySignMap{0};  // Planner::TelemetrySignMap: sửa nhãn biển nhận nhầm ở 2 ngã đèn, chỉ cho telemetry
-    std::atomic<int> telemetrySignsPassed{-1};  // Planner::SignIndex: số biển đã qua (x/5) vẽ lên video telemetry
     std::atomic<bool> telemetryPlanActive{false};
     std::thread cameraThread,modelThread,controllerThread,telemetryThread;
     int code=0; std::string error;
@@ -281,7 +278,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                 control::Planner planner;
                 std::string lastParkNote;
                 ControlInput input;
-                uint64_t epoch=~uint64_t(0),id=0,signJumps=0;
+                uint64_t epoch=~uint64_t(0),id=0;
                 bool goPending=false;
                 auto previous=Clock::now();
                 while (!quit) {
@@ -309,14 +306,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         pi.encoder_ok=std::isfinite(pi.odo_cm) && pi.sensor_ms>=0 &&
                             pi.sensor_ms<=now && now-pi.sensor_ms<=200;
                         if (hooks.plannerThrow.exchange(false)) throw std::runtime_error("Tiêm lỗi ngay trước Planner::Step");
-                        for (; signJumps<input.sign_jumps; ++signJumps) {
-                            static const char* const kSignNames[]={"0 right","1 den: no_left/right","2 left/no_right","3 den: no_right/left","4 P","5 het chuoi (theo model)"};
-                            const int next=planner.NextSign();
-                            std::cout<<"BIEN KE TIEP: "<<kSignNames[next>=0 && next<=5 ? next : 5]<<std::endl; trace("sign_jump",std::to_string(next));
-                        }
                         auto plan=planner.Step(pi,now,*input.params);
-                        telemetrySignMap.store(planner.TelemetrySignMap(now),std::memory_order_relaxed);
-                        telemetrySignsPassed.store(planner.SignIndex(),std::memory_order_relaxed);
                         if (planner.ParkNote()!=lastParkNote) {  // log quá trình đỗ: biển P, quét ToF, chọn ô, quyết định
                             lastParkNote=planner.ParkNote();
                             if (!lastParkNote.empty()) { std::cout<<"PARK: "<<lastParkNote<<std::endl; trace("park",lastParkNote); }
@@ -368,14 +358,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                         try {
                             // Chỉ đọc hộp thư có sẵn; nén/gửi ảnh nằm ngoài khóa và ngoài vòng an toàn.
                             detections.latest(yolo); commands.latest(latestCommand);
-                            // Quân 13/11: theo chuỗi biển cố định, biển kế rẽ phải -> no_left/right, rẽ trái -> no_right/left (bản sao cục bộ).
-                            const int signMap=telemetrySignMap.load(std::memory_order_relaxed);
-                            for (auto& d:yolo.detections.items) {
-                                if (signMap==1 && d.class_name=="no_right") d.class_name="no_left";
-                                else if (signMap==1 && d.class_name=="left") d.class_name="right";
-                                else if (signMap==2 && d.class_name=="no_left") d.class_name="no_right";
-                                else if (signMap==2 && d.class_name=="right") d.class_name="left";
-                            }
                             const auto sent=unpackTelemetryCommand(sentTelemetry.load(std::memory_order_relaxed));
                             const auto plan=telemetryPlanActive.load(std::memory_order_relaxed)
                                 ? latestCommand.plan : control::Plan{};
@@ -388,13 +370,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                             cv::Mat video=yoloFresh
                                 ? telemetryYoloOverlay(yoloFrame.bgr,yoloFrame.id,yoloFrame.captured_ms,yolo.detections)
                                 : frame.bgr;
-                            // Quân 13/11: số biển đã qua trong chuỗi 5 biển; vẽ trên bản sao, không đụng khung dùng chung.
-                            const int passed=telemetrySignsPassed.load(std::memory_order_relaxed);
-                            if (passed>=0 && !video.empty()) {
-                                if (video.data==frame.bgr.data || video.data==yoloFrame.bgr.data) video=video.clone();
-                                cv::putText(video,"BIEN DA QUA: "+std::to_string(std::min(passed,5))+"/5",cv::Point(20,60),
-                                            cv::FONT_HERSHEY_SIMPLEX,1.6,cv::Scalar(0,255,255),4,cv::LINE_AA);
-                            }
                             client.SendFrameAndTelemetry(video,static_cast<float>(sent.cms),int(sent.deg),states);
                         } catch (...) {}
                     }
@@ -413,7 +388,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
         double safetyPeakMs=0;
         auto safetyPrevious=Clock::now();
         std::string latch,state="CHO_SAN_SANG",reason="CHO_G",lastState,lastReason;
-        uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0,signJumps=0;
+        uint64_t epoch=0,lastLog=0,lastImage=0,lastFrames=0;
         int every=params->record_every_n;
         int64_t nextStats=boot+2000,statsStart=boot,highSince=0,lastAdapt=boot,lastRowMs=boot;
         Statistics stats;
@@ -474,9 +449,6 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     if (batchStop) { eventGo=false; trace("go","ignored SPACE"); }
                     else if (!imageFresh || !maskFresh) trace("go",imageFresh ? "ignored MAT_NAN_CU" : "ignored MAT_ANH");
                     else if (!enabled) { enabled=true; latch.clear(); reason="BAM_LAN"; ++epoch; }
-                } else if (key=='n' || key=='N') {
-                    // Quân 13/11: nhảy sang biển kế trong chuỗi biển cố định; chỉ khi dừng như R.
-                    if (enabled) trace("sign_jump","ignored"); else ++signJumps;
                 } else if (key=='r' || key=='R') {
                     if (enabled) trace("reload","ignored");
                     else {
@@ -529,7 +501,7 @@ int driveAuto(const Options& options,const Paths& paths,int lockFd,
                     enabled=false; latch=control::kMissingImageReason; ++epoch; eventStop=true; forceLog=true;
                 }
             } else { sensor=plannerSensor=SensorSample{}; sensorFaultPending=false; }
-            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor,signJumps});
+            inputs.offer(ControlInput{model,image,enabled,epoch,params,yolo,plannerSensor});
             double speed=0; int angle=0; bool parkSteer=false;
             const bool commandMaskFresh=!command.model.mask.empty() &&
                 now-command.model.frame.captured_ms<=params->mask_max_age_ms;
@@ -714,7 +686,7 @@ int main(int argc,char** argv) {
     catch (const std::exception& e) { std::cerr<<e.what()<<'\n'; return 2; }
     if (options.help) {
         std::cout<<"ucr_auto [--control control.yaml] [--model-dir $HOME/ucr_models] [--no-yolo] [--debug-windows] [--out-root runs_auto]\n"
-                 <<"G chạy; Space dừng; R nạp khi dừng; N nhảy biển kế khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
+                 <<"G chạy; Space dừng; R nạp khi dừng; Esc/Ctrl+C dừng rồi thoát.\n";
         return 0;
     }
     struct sigaction action{}; action.sa_handler=signalStop; sigemptyset(&action.sa_mask);

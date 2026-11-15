@@ -174,12 +174,6 @@ constexpr double kNarrowBarrierSteerScale=1.0;
 // l16 215-220 s: -8,2..-9,0 trong 73 cm). Sau đó lệch quá kSt7DevDeg thì lái về hướng chốt bằng rb_yaw_kp, trong dải thì bám làn như cũ.
 // Tắt hẳn khi bắt đầu né vật cản, khi rẽ, hoặc sau kSt7HoldMaxCm. TẠM.
 constexpr double kSt7DevDeg=8, kSt7HoldMaxCm=500, kSt7StableDeg=2, kSt7StableCm=25;
-// Quân 13/11: chuỗi biển rẽ cố định trên sa bàn: right; (đèn) no_left/right; left/no_right; (đèn) no_right/left.
-// Biển rẽ thứ sign_idx_ tính theo hướng của chuỗi, bỏ qua lớp model đọc (t94 nhầm no_left/no_right cạnh đèn).
-// sign_idx_ không xóa khi Space/G; Space giữa cung đang rẽ trả lại lượt đó; yaml sign_seq_next đổi giá trị (R) đặt lại.
-constexpr int kSignSeqN=4;
-constexpr bool kSignSeqLeft[kSignSeqN]={false,false,true,true};
-constexpr int kSignSeqTotal=kSignSeqN+1;  // Quân 13/11: biển P là biển thứ 5 (chỉ đếm/hiển thị, không đổi đỗ xe)
 constexpr double kT1SteerScale=1.15;  // ngã T thứ nhất (lộ trình c2): xe yaml turn_steer_deg 25 -> 28,75°
 double TurnSteer(const ControlParams &p, int direction, bool barrier_turn, bool wide_barrier) {
     const double s=direction<0 ? p.turn_steer_deg*1.12 : barrier_turn ? p.turn_steer_deg*(wide_barrier ? 0.8 : kNarrowBarrierSteerScale) : p.turn_steer_deg;
@@ -237,17 +231,10 @@ void Planner::RouteStable(int q) {
 void Planner::ClearTurn() {
     junction_votes_.clear(); last_junction_mask_ms_=-1; exit_run_=0; last_exit_mask_ms_=-1;
     corridor_turn_=false; corridor_clear_=0; junction_odo_set_=false;
-    turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false; sign_turn_counted_=false;  // lượt rẽ biển đã xong/hủy: Space sau đó không trả lại lượt
+    turn_direction_=0; turning_=false; barrier_turn_=false; barrier_wide_turn_=false; rb_turn_=false;
     arm_odo_=turn_odo_=yaw0_=progress_odo_=0; turn_ms_=progress_ms_=-1;
     pre_turn_.clear(); turn_steer_scale_=1; l_turning_=false;
     for(auto &vote:votes_) vote.left=vote.right=false;
-}
-int Planner::TelemetrySignMap(int64_t /*now_ms*/) const {
-    return sign_idx_>=0 && sign_idx_<kSignSeqN ? (kSignSeqLeft[sign_idx_] ? 2 : 1) : 0;
-}
-int Planner::NextSign() {
-    sign_idx_=sign_idx_>=0 && sign_idx_<kSignSeqTotal ? sign_idx_+1 : 0; sign_turn_counted_=false;
-    return sign_idx_;
 }
 void Planner::Reset(bool preserve_lights) {
     ClearTurn(); sent_angle_=0; command_ms_=-1; sensor_bad_since_=-1; sensor_hold_=false; left_real_ms_=right_real_ms_=-1;
@@ -267,7 +254,6 @@ void Planner::Reset(bool preserve_lights) {
     votes_.clear(); red_ms_=-1; red_x_=0; last_frame_=last_obstacle_frame_=0; red_latched_=false; start_cleared_=false; barrier_done_=false;
 }
 Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParams &params) {
-    if(params.sign_seq_next!=sign_seq_applied_) { sign_idx_=sign_seq_applied_=params.sign_seq_next; sign_turn_counted_=false; }
     params.Validate();
     Plan plan;
     const bool image_fresh=input.image_ms>=0 && input.image_ms<=now_ms && now_ms-input.image_ms<=kStaleImageMs;
@@ -285,7 +271,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     }
     bool entered_wait=false, released=false, barrier_slow=false, barrier_fault_stop=false, rb_entered=false;
     if(input.stop) {
-        if(turning_ && sign_turn_counted_) { --sign_idx_; sign_turn_counted_=false; }  // rẽ dở bị Space: đặt lại xe thì vẫn gặp lại biển đó
         ClearTurn(); sent_angle_=0; command_ms_=-1; rb_hold_spent_=true; rb_holding_=false; rb_vx1_imu_=rb_vx1_active_=false; rb_vx1_lane_odo_=rb_vx1_box_odo_=std::numeric_limits<double>::quiet_NaN();
         rb_in_pass_=rb_losing_=false;  // Space: bỏ lần qua vòng xuyến đang dở, không tính thành lần qua sau khi đặt lại xe (log 09/11 138 s)
         for(auto &vote:votes_) vote.round=vote.round_big=vote.round_bottom=false;  // phiếu đảo cũ không mở lại lần qua sau G
@@ -378,11 +363,8 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
     if(input.yolo_enabled) {
         if(!votes_.empty() && now_ms-votes_.back().ms>params.det_max_age_ms) green_run_=0;
         if(fresh) for(const auto &d:batch.items) {
-            // Chuỗi biển cố định (kSignSeq*): biển rẽ trong chuỗi tính theo hướng của chuỗi, không theo lớp model.
-            const bool turn_sign=d.class_name=="left" || d.class_name=="right" || d.class_name=="no_left" || d.class_name=="no_right";
-            const bool seq=turn_sign && sign_idx_>=0 && sign_idx_<kSignSeqN;
-            const bool signLeft=seq ? kSignSeqLeft[sign_idx_] : d.class_name=="left" || d.class_name=="no_right";
-            const bool signRight=seq ? !kSignSeqLeft[sign_idx_] : d.class_name=="right" || d.class_name=="no_left";
+            const bool signLeft=d.class_name=="left" || d.class_name=="no_right";
+            const bool signRight=d.class_name=="right" || d.class_name=="no_left";
             const bool barrier=params.work_barrier_action && d.class_name=="work_barrier";
             const bool roundabout=d.class_name=="round_barrier";
             const bool parking_sign=params.park_enable && d.class_name=="parking";
@@ -947,9 +929,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
                 // Quân 13/11 l15: cung trái ngã T thứ nhất của lộ trình hơi rộng -> gắt hơn 15% (vẫn trần steer_max_deg ở TurnSteer/bù).
                 if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==2) turn_steer_scale_=kT1SteerScale;
                 else if(turn_direction_>0 && rb_turn_ && route_anchored_ && route_step_==3) turn_steer_scale_=params.route_t2_steer_scale;
-                // Lượt rẽ theo biển: rẽ của biển right -> nhớ cho biển kế (2); rẽ của biển kế -> xóa (0).
-                sign_turn_counted_=!barrier_turn_ && !rb_turn_ && sign_idx_>=0 && sign_idx_<kSignSeqN;
-                if(sign_turn_counted_) ++sign_idx_;
                 turn_ms_=progress_ms_=now_ms;
                 state_=turn_direction_==1 ? PlannerState::RE_TRAI : PlannerState::RE_PHAI;
             }
@@ -963,7 +942,6 @@ Plan Planner::Step(const PlannerInput &input, int64_t now_ms, const ControlParam
         park_prefwd_=park_prefwd_done_=false;
         park_odo0_=input.odo_cm; park_step_cm_=0; park_cap_cms_=kParkFixedCms;
         state_=PlannerState::BAM_LAN; reason_="BAM_LAN"; park_note_=why+" -> O_CO_DINH_CUOI_DUONG";
-        sign_idx_=kSignSeqTotal;  // đã qua biển P (biển thứ 5); chỉ để đếm/hiển thị
     };
     if(!params.park_enable || !params.turn_enable) {
         if(park_phase_==ParkPhase::TIEN) { park_phase_=ParkPhase::NONE; park_scan_yaw_=std::numeric_limits<double>::quiet_NaN(); park_fixed_=false; }
