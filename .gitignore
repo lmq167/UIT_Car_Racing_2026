@@ -1,0 +1,11 @@
+build*/
+runs/
+runs_*/
+data/
+*.engine
+*.o
+*.exe
+__pycache__/
+*.log
+.vscode/
+.idea/
