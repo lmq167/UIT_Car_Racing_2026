@@ -65,6 +65,5 @@
   "dynamic": false,
   "fake_data": false,
   "opset": 12,
-  "onnx_sha256": "1e196480cc74d0d7fc253fa58ebf7fc423d311bac164b34766ecd5c8ae7217bd",
-  "source_note": "Tên đầu vào/đầu ra đọc từ ONNX bằng onnxruntime; tiền xử lý theo benchmark trên Jetson Nano"
+  "onnx_sha256": "9d71b311d75ce896f76a5a323ffb86ac5ae5300a7fdbd3c0443bdeb7feb0fdc9"
 }
