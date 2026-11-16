@@ -34,7 +34,7 @@ flowchart LR
 
 Planner là máy trạng thái quyết định hành vi; LaneController tính lệnh bám đường từ mặt nạ phân vùng.
 Lớp an toàn kiểm tra tuổi dữ liệu và lệnh, giới hạn tốc độ, giám sát vòng điều khiển bằng watchdog (bộ giám sát hoạt động).
-Xem [kiến trúc](docs/kien_truc.md) và [bộ dữ liệu](docs/datasets.md).
+Xem [kiến trúc](docs/architecture.md) và [bộ dữ liệu](docs/datasets.md).
 
 ## Cấu trúc
 
