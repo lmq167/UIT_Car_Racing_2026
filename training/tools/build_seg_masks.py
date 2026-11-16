@@ -273,7 +273,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--coco', type=Path, nargs='+', required=True,
                         help='JSON hoặc thư mục COCO; nhận nhiều đường dẫn train/valid/test')
-    parser.add_argument('--out', type=Path, default=ROOT / 'data/round3/seg_masks_v0',
+    parser.add_argument('--out', type=Path, default=ROOT / 'data/round3/seg_masks',
                         help='Thư mục mask PNG')
     parser.add_argument('--images', type=Path, default=ROOT / 'data/round3/data_clean_car6/images',
                         help='Thư mục ảnh JPG gốc')

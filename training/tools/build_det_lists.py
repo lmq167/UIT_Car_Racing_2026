@@ -87,7 +87,7 @@ def read_boxes(path, names):
 
 def read_frames(export, data_dir, names):
     manifest = read_table(data_dir / 'manifest.csv', ['file', 'pass', 'idx', 't', 's', 'l'])
-    splits = read_table(data_dir / 'split_v0.csv', ['file', 'pass', 'split'])
+    splits = read_table(data_dir / 'split.csv', ['file', 'pass', 'split'])
     frames = []
     seen = set()
     for subset in ('train', 'valid', 'test'):
@@ -104,7 +104,7 @@ def read_frames(export, data_dir, names):
             if filename not in manifest:
                 raise ValueError('Ảnh không có trong manifest.csv: ' + filename)
             if filename not in splits:
-                raise ValueError('Ảnh không có trong split_v0.csv: ' + filename)
+                raise ValueError('Ảnh không có trong split.csv: ' + filename)
             meta, split = manifest[filename], splits[filename]
             try:
                 pass_id, idx, t, s, l = [int(meta[key]) for key in ('pass', 'idx', 't', 's', 'l')]
@@ -172,7 +172,7 @@ def main(argv=None):
     parser = Parser(description=__doc__)
     parser.add_argument('--export', required=True, type=Path, help='Thư mục export YOLOv8')
     parser.add_argument('--data-dir', type=Path, default=ROOT / 'data/round3/data_clean_car6',
-                        help='Thư mục manifest.csv và split_v0.csv')
+                        help='Thư mục manifest.csv và split.csv')
     parser.add_argument('--out-dir', type=Path, help='Nơi ghi train.txt/val.txt, mặc định là export')
     parser.add_argument('--max-right-per-pass', type=int, default=4, help='Số ảnh right-thuần tối đa mỗi lượt')
     parser.add_argument('--cap-right-t', default='9', help='Các giá trị t cần giới hạn, ngăn bằng dấu phẩy')

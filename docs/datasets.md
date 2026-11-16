@@ -41,7 +41,7 @@ Phương pháp nhóm: 740 ảnh có số lượt trong tên được nhóm theo 
 | `file` | Tên ảnh duy nhất, giữ nguyên |
 | `original_name` | Tên ảnh gốc, giữ nguyên |
 | `split` | Nguồn sự thật cho train/valid/test theo lượt thu |
-| `split_roboflow_v5` | Cách chia Roboflow cũ để đối chiếu; không dùng chia tập mới |
+| `split_roboflow` | Cách chia Roboflow cũ để đối chiếu; không dùng chia tập mới |
 | `series` | Nhóm nguồn thu |
 | `group_id` | Định danh lượt thu, không giao giữa các tập |
 | `group_basis` | Cơ sở xác định nhóm |

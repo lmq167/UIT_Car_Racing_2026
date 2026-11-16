@@ -35,7 +35,7 @@ except ImportError as exc:
     sys.exit("Thiếu thư viện: %s\nCài bằng: python -m pip install numpy opencv-python onnxruntime" % exc)
 
 MODEL = Path(r"models\twinlitenetplus_192x320.onnx")
-IMAGES = Path(r"data\round3\clean_car6_v3\images")
+IMAGES = Path(r"data\round3\clean_car6\images")
 OUT = Path(r"data\round3\preview_twinlitenet")
 DIAG = Path(r"data\round3\preview_twinlitenet_diag")
 
