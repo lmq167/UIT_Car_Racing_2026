@@ -6,7 +6,7 @@ Dùng để kiểm hiện tượng: cạnh phải chạm biên ảnh + cạnh tr
 -> hàng bị dựng thành "một làn" -> target nằm ở làn TRÁI của đường hai làn.
 
 Cách dùng:
-  python round3_final/tools/corridor_replay.py <thư_mục_phiên> [--t0 280 --t1 294] [--fix]
+  python training/tools/corridor_replay.py <thư_mục_phiên> [--t0 280 --t1 294] [--fix]
 In mỗi khung: thời điểm (s), trạng thái planner, e log, và mỗi hàng: cờ trái/phải, lanes, target_frac.
 Luật hai làn khi biên phải bị cắt theo mã hiện hành (chỉ ROUNDABOUT, hàng dưới 2 làn); --fix giữ để tương thích.
 Chỉ đọc dữ liệu, không ghi gì vào data/.

@@ -5,7 +5,7 @@ Mô hình [MP] (chưa kiểm trên xe): xe 27x22 cm, trục sau cách đuôi 4 c
 R (đo 51 cm ở lái phần mềm 35 độ). Lối y in [-15,15], ô bên phải y in [-45,-15], mỗi ô 50 cm dọc lối (x in [0,50] là ô đích).
 Vật cản: mọi ô khác bị chiếm (hộp đặc kín cả ô: giả định bất lợi nhất); phía đối diện y>15 bị chiếm hết.
 Biến thể "vao_mo": phần x<0, y<-15 (phía đầu bãi) là chỗ trống; "vao_kin": bị chặn như ô chiếm.
-Chạy: python round3_final/tools/park_sim_occupied.py [--quick]
+Chạy: python training/tools/park_sim_occupied.py [--quick]
 """
 import heapq
 import math
