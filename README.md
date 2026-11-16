@@ -12,7 +12,7 @@ Hai dataset `ucr_road` (phân vùng đường) và `ucr_det` (YOLO 12 lớp) do 
 | Họ tên | Email | Vai trò |
 |---|---|---|
 | Lê Minh Quân | stkirito74@gmail.com | Thu thập và xử lí dữ liệu, gán nhãn, huấn luyện mô hình, thiết kế giải thuật điều khiển |
-| Nguyễn Ngọc Anh Tuấn | — | Gán nhãn, hỗ trợ huấn luyện mô hình, hỗ trợ phần cứng, chỉnh sửa mã nhúng do BTC cung cấp, thiết kế giải thuật điều khiển |
+| Nguyễn Ngọc Anh Tuấn | anhtuannguyenngoc415@gmail.com | Gán nhãn, hỗ trợ sửa chữa phần cứng, chỉnh sửa mã nhúng do BTC cung cấp, thiết kế giải thuật điều khiển |
 | Nguyễn Văn Chí | nggvanchi@gmail.com | Hỗ trợ gán nhãn, hỗ trợ thiết kế giải thuật điều khiển |
 
 Toàn bộ lịch sử commit nằm dưới một tài khoản vì repo được duy trì từ một máy; phần đóng góp của từng thành viên theo bảng trên, không theo thống kê commit.
