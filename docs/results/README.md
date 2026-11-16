@@ -6,17 +6,16 @@ Các chỉ số chất lượng dùng thang từ 0 đến 1; số thập phân t
 
 Model `models/twinlitenetplus_192x320.onnx` (biến thể small, 2 lớp `background`/`road`, đầu vào 192 × 320) được huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên dataset `ucr_road`.
 
-- Chia tập theo `split.csv` (theo lượt thu; xem [cách chia giữ nguyên khi huấn luyện](../datasets.md#chia-theo-lượt-thu-và-mức-đầy-đủ-metadata)): train 635 / valid 134 / test 129 ảnh; 108 nhóm, không nhóm nào nằm ở hai tập.
-- Checkpoint tốt nhất theo mIoU valid: epoch 83 / 100. Tập test không dùng khi chọn model.
+- Chia tập theo `split.csv` (theo lượt thu; xem [cách chia giữ nguyên khi huấn luyện](../datasets.md#chia-theo-lượt-thu-và-mức-đầy-đủ-metadata)): train 635 / valid 263 ảnh; 108 nhóm, không nhóm nào nằm ở hai tập; không có tập test riêng.
+- Checkpoint tốt nhất theo mIoU valid: epoch 96 / 100. Valid vừa dùng để chọn epoch nên số đo hơi lạc quan.
 
 | Tập | IoU road | IoU background | mIoU | Precision road | Recall road |
 |---|---|---|---|---|---|
-| Valid (134 ảnh) | 0,9609 | 0,9773 | 0,9691 | 0,9757 | 0,9844 |
-| Test (129 ảnh) | 0,9700 | 0,9837 | 0,9768 | 0,9804 | 0,9892 |
+| Valid (263 ảnh) | 0,9659 | 0,9809 | 0,9734 | 0,9801 | 0,9852 |
 
 IoU (tỉ lệ giao trên hợp) tính theo pixel trên mặt nạ 192 × 320; mIoU là trung bình IoU hai lớp; precision/recall tính cho lớp `road`. Các số này đo trên cách chia theo lượt thu, nên không so trực tiếp được với số đo trên cách chia ngẫu nhiên theo ảnh.
 
-Xuất ONNX: opset 12, đầu vào `input` 1×3×192×320, đầu ra `output` 1×2×192×320 (logits). So với PyTorch trên 129 ảnh test: sai số tuyệt đối lớn nhất 2,6e-05, argmax trùng 100%.
+Xuất ONNX: opset 12, đầu vào `input` 1×3×192×320, đầu ra `output` 1×2×192×320 (logits). So với PyTorch trên 100 ảnh valid: sai số tuyệt đối lớn nhất 8,8e-06, argmax trùng 100%.
 
 Môi trường huấn luyện: Python 3.13.16, torch 2.14.1+cu130, onnx 1.23.2, onnxruntime 1.32.0; mã nguồn [TwinLiteNetPlus](https://github.com/chequanghuy/TwinLiteNetPlus) commit `90f1b8695ae311d5123b05f8534b2e11e42499d2` (MIT License). Siêu tham số: ô cấu hình đầu notebook.
 

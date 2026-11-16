@@ -73,14 +73,13 @@ Không dùng chung cách chuẩn hóa của hai mạng. Không coi mã lớp tro
 
 ### Phân vùng đường TwinLiteNet+
 
-Huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên `ucr_road`, chia theo lượt thu bằng `split.csv`: train 635 / valid 134 / test 129 ảnh, 108 nhóm, không nhóm nào nằm ở hai tập. Checkpoint tốt nhất ở epoch 83/100 theo mIoU valid.
+Huấn luyện bằng `training/notebooks/twinlitenetplus_train.ipynb` trên `ucr_road`, chia theo lượt thu bằng `split.csv`: train 635 / valid 263 ảnh, 108 nhóm, không nhóm nào nằm ở hai tập, không có tập test riêng. Checkpoint tốt nhất ở epoch 96/100 theo mIoU valid, nên số đo valid hơi lạc quan.
 
 | Tập | IoU road | IoU background | mIoU | Precision road | Recall road |
 |---|---|---|---|---|---|
-| Valid (134 ảnh) | 0,9609 | 0,9773 | 0,9691 | 0,9757 | 0,9844 |
-| Test (129 ảnh, không dùng khi chọn model) | 0,9700 | 0,9837 | 0,9768 | 0,9804 | 0,9892 |
+| Valid (263 ảnh) | 0,9659 | 0,9809 | 0,9734 | 0,9801 | 0,9852 |
 
-ONNX xuất ra khớp PyTorch trên 129 ảnh test: sai số tuyệt đối lớn nhất 2,6e-05, argmax trùng 100%. Chi tiết: [kết quả chi tiết](docs/results/README.md).
+ONNX xuất ra khớp PyTorch trên 100 ảnh valid: sai số tuyệt đối lớn nhất 8,8e-06, argmax trùng 100%. Chi tiết: [kết quả chi tiết](docs/results/README.md).
 
 ### Phát hiện YOLO 12 lớp
 
