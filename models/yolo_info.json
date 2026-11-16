@@ -82,7 +82,7 @@
   "onnxruntime_version": "1.31.1",
   "variant": "D6",
   "seed": 0,
-  "data_tag": "det_b4",
+  "data_tag": "ucr_det",
   "final_fit": false,
   "trained_on": "train",
   "parameters": 2510804,
