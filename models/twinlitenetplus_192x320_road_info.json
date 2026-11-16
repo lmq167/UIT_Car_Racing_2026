@@ -65,5 +65,5 @@
   "dynamic": false,
   "fake_data": false,
   "opset": 12,
-  "onnx_sha256": "9d71b311d75ce896f76a5a323ffb86ac5ae5300a7fdbd3c0443bdeb7feb0fdc9"
+  "onnx_sha256": "02b6501fbfd526c1ec429dffcb023eed27ab7bc93c889d882686047bc44cee40"
 }

@@ -63,7 +63,7 @@ Thư mục `models/` chứa hai ONNX (định dạng trao đổi mạng học s�
 | `yolo.onnx` | YOLOv5nu D6 phát hiện 12 lớp |
 | `yolo_info.json` | Danh sách lớp, chuẩn hóa, thêm đệm giữ tỉ lệ và hậu xử lý |
 
-`twinlitenetplus_192x320.onnx`: 521.971 byte, SHA256 `9d71b311d75ce896f76a5a323ffb86ac5ae5300a7fdbd3c0443bdeb7feb0fdc9` (trùng trường `onnx_sha256` trong JSON đi kèm).
+`twinlitenetplus_192x320.onnx`: 521.971 byte, SHA256 `02b6501fbfd526c1ec429dffcb023eed27ab7bc93c889d882686047bc44cee40` (trùng trường `onnx_sha256` trong JSON đi kèm).
 
 Ảnh nguồn theo siêu dữ liệu là 1280 × 720; cả hai mạng nhận đầu vào cao × rộng 192 × 320.
 ONNX giữ số thực FP32; engine (bản thực thi tối ưu) TensorRT dùng FP16 và phải tạo trên Jetson đích.
