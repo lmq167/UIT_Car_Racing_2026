@@ -124,7 +124,7 @@ Thứ tự lớp dataset khác thứ tự model D6; phải ánh xạ theo tên. 
 
 | Tệp | Kích thước (byte) | SHA256 |
 |---|---:|---|
-| `ucr_road.zip` | 62181936 | `c02dbdca3d9c76eb5be6f5043d3872132d84cf271c5db01e7ce00226939e146b` |
+| `ucr_road.zip` | 62181933 | `ade657de98b049ed966007c662a65f281624b4019d226c60832e280bf54eaf41` |
 | `ucr_det.zip` | 102593582 | `175d0de2508d51645c9df754903a2460616e72b0d83fe2d11037149349e9111e` |
 
 Tải zip và `<dataset>_SHA256SUMS.txt` vào cùng thư mục. Trên Linux: `sha256sum -c ucr_road_SHA256SUMS.txt` hay `sha256sum -c ucr_det_SHA256SUMS.txt`. Trên PowerShell: `Get-FileHash -Algorithm SHA256 -LiteralPath <đường_dẫn_zip>` rồi đối chiếu. SHA256SUMS ghi đúng tên zip không có hậu tố phiên bản.
