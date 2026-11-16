@@ -4,8 +4,20 @@ Hai notebook tự chứa mã, chạy trên Google Colab GPU (Python hiện đạ
 
 | Notebook | Mô hình | Dữ liệu vào | Đầu ra |
 |---|---|---|---|
-| `twinlitenetplus_train.ipynb` | TwinLiteNetPlus (biến thể small) phân vùng 2 lớp `background`, `road`; vào 192×320 | zip COCO segmentation `ucr_road.zip` + `split.csv` theo nhóm thu | checkpoint, ONNX opset 12 khớp `models/twinlitenetplus_192x320_road_info.json`, `results/twinlite_metrics.json` |
+| `twinlitenetplus_train.ipynb` | TwinLiteNetPlus (biến thể small; có thể so `nano`, `medium`, `large`) phân vùng 2 lớp `background`, `road`; vào 192×320 | zip COCO segmentation `ucr_road.zip` + `split.csv` theo nhóm thu, hai tập `train`, `valid` | checkpoint, ONNX opset 12 khớp `models/twinlitenetplus_192x320_road_info.json`, `twinlite_metrics.json`, `twinlite_compare.csv` |
 | `yolo_train_car.ipynb` | YOLO 12 lớp `red`, `green`, `off`, `left`, `right`, `no_left`, `no_right`, `round_barrier`, `work_barrier`, `parking`, `people`, `obstacle`; so sánh biến thể D1–D8 (D6 = YOLOv5nu 192×320 dùng trên xe) | zip YOLO `ucr_det.zip` với `train.txt`/`val.txt` ở gốc | trọng số, ONNX opset 12 + `_info.json`, CSV so sánh |
+
+## Chế độ chạy
+
+Hai notebook cùng khung: một ô cấu hình duy nhất ở đầu, chọn việc bằng `MODE`, rồi Runtime → Run all. Lần chạy đã có trong CSV so sánh được bỏ qua và trọng số đã train được dùng lại, nên chạy tiếp được sau khi Colab ngắt. Cả hai bộ dữ liệu đều chỉ có hai tập `train`, `valid`, không có tập test.
+
+| `MODE` | TwinLiteNetPlus | YOLO |
+|---|---|---|
+| `"compare"` | Mỗi biến thể × seed: train trên `train`, chọn epoch có mIoU `valid` cao nhất, đánh giá `valid` ở 5 mức sáng, ghi `twinlite_compare.csv`, xuất ONNX cho seed đầu | Mỗi biến thể (D1–D8) × seed: train, đánh giá `val` (mAP, ma trận nhầm lẫn, 5 mức sáng × ngưỡng conf), ghi `yolo_compare.csv`, xuất ONNX cho seed đầu |
+| `"final"` | Train trên `train` + `valid`, lấy epoch cuối, xuất ONNX; không có chỉ số | Train trên `train` + `val` (toàn bộ ảnh có nhãn), lấy epoch cuối, xuất ONNX; không có chỉ số |
+| `"prelabel"` | Không có | Dự đoán ảnh chưa gán nhãn và gửi Roboflow dạng nhãn chờ duyệt |
+
+`FAKE_DATA=True` kiểm quy trình trên CPU bằng ảnh giả, không cần Drive hay GPU. Số đo chỉ lấy từ `compare`; model `final` không có tập nào để đo.
 
 ## Hợp đồng đầu vào, đầu ra
 
